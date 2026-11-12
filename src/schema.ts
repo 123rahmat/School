@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS staff (
   id TEXT PRIMARY KEY, public_id TEXT, name TEXT NOT NULL, email TEXT, phone TEXT,
   role TEXT NOT NULL,              -- admin | subadmin | teacher
-  subrole TEXT,                    -- accountant | coordinator | office (sub-admins)
+  subrole TEXT,                    -- legacy role label for existing sub-admins
+  permissions TEXT, scope_classes TEXT, -- granular mini-admin permissions and '*' or JSON class scope
   is_main INTEGER NOT NULL DEFAULT 0,
   subjects TEXT, active INTEGER NOT NULL DEFAULT 1, left_at TEXT, left_reason TEXT,
   search_key TEXT, created_at TEXT NOT NULL
