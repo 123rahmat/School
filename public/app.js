@@ -331,7 +331,9 @@ function showAuthError(error, mode = 'login') {
   if (message) message.textContent = raw;
   if (!next) return;
   next.innerHTML = '';
-  if (mode === 'login' && /main administrator profile|register a new institution/i.test(raw)) {
+  if (mode === 'admin') {
+    next.innerHTML = '<div class="auth-help"><b>Platform access was not granted.</b><p>Use the Google account configured as the platform owner. Institution Main Admin accounts cannot enter this area.</p></div>';
+  } else if (mode === 'login' && /main administrator profile|register a new institution/i.test(raw)) {
     next.innerHTML = `<div class="auth-help"><b>This Google account is not registered as a main administrator.</b><p>${esc(raw)}</p><a class="btn primary" href="/signup">Register an institution</a></div>`;
   } else if (mode === 'login' && /already registered for another institution role/i.test(raw)) {
     next.innerHTML = `<div class="auth-help"><p>${esc(raw)}</p></div>`;
