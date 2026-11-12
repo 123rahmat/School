@@ -611,6 +611,8 @@ export class SchoolDO extends DurableObject<Env> {
       } catch (e) { console.error('R2 recycle-bin purge failed', f.key, e); }
     }
     this.run('DELETE FROM notifications WHERE created_at<?', new Date(Date.now() - 180 * 864e5).toISOString());
+    // Keep one year of successful receipts for administration history and safe network retries.
+    this.run("DELETE FROM api_submissions WHERE created_at<? AND status='saved'", new Date(Date.now() - 365 * 864e5).toISOString());
 
     return { students: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status!='left'")!.n), storage_bytes: this.storageUsed() };
   }
@@ -696,14 +698,65 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/internal/cron', async (c) => c.json(await this.runCron(JSON.parse(c.req.header('x-ctx')!))));
 
-    // Everything else: resolve the actor first.
+    // Resolve the actor, then use a stable client submission ID to make network retries safe.
     app.use('*', async (c, next) => {
       const ctx = JSON.parse(c.req.header('x-ctx') || 'null') as Ctx;
       if (!ctx) fail(401, 'Unauthorised');
       c.set('ctx', ctx);
-      c.set('actor', this.loadActor(ctx));
+      const actor = this.loadActor(ctx);
+      c.set('actor', actor);
       if (!['GET', 'HEAD'].includes(c.req.method) && !c.req.path.startsWith('/notifications') && !c.req.path.endsWith('/read')) this.writable(ctx);
-      await next();
+
+      const submissionId = c.req.header('x-submission-id');
+      const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method);
+      if (!submissionId || !isWrite) { await next(); return; }
+      if (!/^[A-Za-z0-9_-]{12,100}$/.test(submissionId)) fail(400, 'Invalid submission reference');
+      const path = c.req.path;
+      const method = c.req.method.toUpperCase();
+      const contentType = c.req.header('content-type') || 'application/json';
+      let requestHash: string | null = null;
+      if (contentType.includes('application/json')) {
+        const raw = await c.req.raw.clone().text();
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(method + '|' + path + '|' + raw));
+        requestHash = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, '0')).join('');
+      }
+      const existing = this.one('SELECT * FROM api_submissions WHERE id=?', submissionId);
+      if (existing) {
+        if (existing.user_key !== actor.key || existing.method !== method || existing.path !== path ||
+            (existing.request_hash && requestHash && existing.request_hash !== requestHash)) {
+          fail(409, 'This submission reference belongs to a different request. Reopen the form and submit it again.');
+        }
+        if (existing.status === 'saved') {
+          return new Response(existing.response_body || '{}', {
+            status: Number(existing.http_status) || 200,
+            headers: { 'content-type': existing.content_type || 'application/json', 'cache-control': 'no-store', 'x-submission-replayed': '1' },
+          });
+        }
+        const processingAge = Date.now() - Date.parse(String(existing.updated_at || existing.created_at || ''));
+        if (Number.isFinite(processingAge) && processingAge < 120000) {
+          fail(409, 'This submission is still being processed. Retry the same submission reference shortly.');
+        }
+        // Recover a request whose worker stopped before writing its final receipt.
+        this.run("DELETE FROM api_submissions WHERE id=? AND user_key=? AND status='processing'", submissionId, actor.key);
+      }
+      const label = String(c.req.header('x-submission-label') || (method + ' ' + path))
+        .replace(/[\\r\\n\\t]/g, ' ').trim().slice(0, 120);
+      const created = now();
+      this.run(`INSERT INTO api_submissions (id,user_key,user_name,method,path,label,request_hash,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,'processing',?,?)`, submissionId, actor.key, actor.name, method, path, label, requestHash, created, created);
+      try { await next(); }
+      catch (error) {
+        this.run("DELETE FROM api_submissions WHERE id=? AND user_key=? AND status='processing'", submissionId, actor.key);
+        throw error;
+      }
+      const response = c.res.clone();
+      const body = await response.text();
+      if (response.status >= 200 && response.status < 300) {
+        this.run(`UPDATE api_submissions SET status='saved',http_status=?,content_type=?,response_body=?,updated_at=?
+          WHERE id=? AND user_key=?`, response.status, response.headers.get('content-type') || 'application/json', body, now(), submissionId, actor.key);
+      } else {
+        this.run('DELETE FROM api_submissions WHERE id=? AND user_key=?', submissionId, actor.key);
+      }
     });
 
     app.get('/me', (c) => {
@@ -1921,6 +1974,15 @@ export class SchoolDO extends DurableObject<Env> {
     // ----- notifications -----
     app.get('/notifications', (c) => c.json(this.q('SELECT * FROM notifications WHERE user_key=? ORDER BY created_at DESC LIMIT 100', c.get('actor').key)));
     app.post('/notifications/read', (c) => { this.run('UPDATE notifications SET read_at=? WHERE user_key=? AND read_at IS NULL', now(), c.get('actor').key); return c.json({ ok: true }); });
+
+    // ----- server-confirmed submission history -----
+    app.get('/submissions', (c) => {
+      const a = c.get('actor');
+      const rows = this.isFullAdmin(a)
+        ? this.q("SELECT id,user_key,user_name,method,path,label,status,http_status,created_at,updated_at FROM api_submissions WHERE status='saved' ORDER BY created_at DESC LIMIT 500")
+        : this.q("SELECT id,user_key,user_name,method,path,label,status,http_status,created_at,updated_at FROM api_submissions WHERE user_key=? AND status='saved' ORDER BY created_at DESC LIMIT 200", a.key);
+      return c.json(rows);
+    });
 
     // ----- audit, storage, sessions & promotion -----
     app.get('/audit', (c) => { this.requireFullAdmin(c.get('actor')); return c.json(this.q('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500')); });
