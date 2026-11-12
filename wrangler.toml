@@ -20,7 +20,7 @@ new_sqlite_classes = ["SchoolDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "school-platform"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "2b6b292f-7b3e-4dc8-9db1-e570dba27d22"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
