@@ -1791,7 +1791,7 @@ export class SchoolDO extends DurableObject<Env> {
       this.audit(a, 'notice.post', 'notice', id, { audience: aud, title: b.title });
       return c.json({ ok: true, id, recipients: keys.size });
     });
-    app.delete('/notices/:id', (c) => {
+    app.delete('/notices/:id', async (c) => {
       const a = c.get('actor');
       const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!n) fail(404, 'Not found');
       if (!this.canDeleteNotice(a, n!)) fail(403, 'You can remove only notices for classes you administer or notices you posted yourself');
