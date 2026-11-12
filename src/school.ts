@@ -797,8 +797,10 @@ export class SchoolDO extends DurableObject<Env> {
       if (!s) fail(404, 'Not found');
       return c.json({
         staff: s,
-        classTeacherOf: this.q('SELECT id, name FROM classes WHERE class_teacher_id=?', id),
-        subjects: this.q('SELECT cs.subject, c.name AS class_name, c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', id),
+        classTeacherOf: this.q('SELECT id, name FROM classes WHERE class_teacher_id=? AND active=1 ORDER BY grade,name', id),
+        subjects: this.q('SELECT cs.id,cs.subject,c.name AS class_name,c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=? ORDER BY c.grade,c.name,cs.subject', id),
+        timetable: this.q('SELECT t.id,t.class_id,t.subject,t.day_of_week,t.period,t.start_time,t.end_time,t.room,c.name AS class_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? ORDER BY t.day_of_week,t.start_time', id),
+        substitutions: this.q('SELECT x.*,c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? ORDER BY x.date DESC LIMIT 100',id),
         submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
         notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
         cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
