@@ -191,7 +191,7 @@ function view(html) {
     <div class="main">
       <div class="top">
         <button class="btn menu" id="menu" aria-label="Menu">☰</button>
-        ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students or teachers — name, reg no, class, last 4 digits of phone" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
+        ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
         <button class="btn small hidden" id="install">Install app</button>
       </div>
       <div class="content">${billingBanner()}${syncStatusHtml()}${html}</div>
@@ -499,7 +499,7 @@ route('/login', async () => {
     <p class="muted small auth-description">Choose your account type, then continue with its registered Google account.</p>
     <div class="login-role-picker" id="login-role-picker" role="group" aria-label="Account type">
       <button type="button" class="login-role-option active" data-login-role="main_admin" aria-pressed="true"><span class="role-symbol">⌂</span><b>Main admin</b><small>Institution control</small></button>
-      <button type="button" class="login-role-option" data-login-role="teacher" aria-pressed="false"><span class="role-symbol">▤</span><b>Teacher</b><small>Teaching workspace</small></button>
+      <button type="button" class="login-role-option" data-login-role="teacher" aria-pressed="false"><span class="role-symbol">▤</span><b>Teacher / staff</b><small>Institution team access</small></button>
       <button type="button" class="login-role-option" data-login-role="parent" aria-pressed="false"><span class="role-symbol">♡</span><b>Parent</b><small>Family workspace</small></button>
     </div>
     <div id="gbtn" class="google-button-slot"></div>
@@ -1771,15 +1771,14 @@ route('/owner', async () => {
 // ---------- start ----------
 (async () => {
   const initialPath = currentPath();
-  const isPublicEntry = ['/', '/login', '/signup'].includes(initialPath);
-  if (isPublicEntry && !(initialPath === '/' && isInstalledApp())) {
-    // Keep the public website immediate while checking an existing browser session quietly.
+  if (initialPath === '/' && !isInstalledApp()) {
+    // Public browser visitors see the landing page immediately; existing sessions are checked quietly.
     render();
     refreshMe().then(() => {
       if (ME) render();
     }).catch(() => {});
   } else {
-    // Installed apps verify an existing device session before choosing the entry screen.
+    // Verify device sessions before showing login/signup or the installed-app home screen.
     try { await refreshMe(); } catch {}
     render();
   }
