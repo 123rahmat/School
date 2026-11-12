@@ -758,7 +758,7 @@ function studentForm(classes, s = null) {
     <div><label>Father's name *</label><input name="father_name" required value="${esc(s?.father_name)}"></div>
     <div><label>Registration number</label><input name="reg_no" placeholder="Created automatically" value="${esc(s?.reg_no)}"></div>
     <div><label>Class *</label><select name="class_id" required>${own.map((c) => `<option value="${c.id}" ${s?.class_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-    <div><label>Parent Google email * (sign-in)</label><input name="parent_email" type="email" required placeholder="parent@gmail.com" value="${esc(s?.parent_email)}"></div>
+    <div><label>Parent Google email * (sign-in identity)</label><input name="parent_email" type="email" required placeholder="parent@gmail.com" value="${esc(s?.parent_email)}"></div>
     <div><label>Parent phone (optional contact)</label><input name="parent_phone" placeholder="03001234567" value="${esc(s?.parent_phone)}"></div>
     <div><label>Date of birth</label><input name="dob" type="date" value="${esc(s?.dob)}"></div>
     <div><label>Gender</label><select name="gender"><option value=""></option>${['Male', 'Female'].map((g) => `<option ${s?.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
@@ -1084,7 +1084,7 @@ function staffForm(t = null) {
     <div><label>Subjects</label><input name="subjects" placeholder="Maths, Physics" value="${esc(t?.subjects)}"></div>
     ${ME.isMainAdmin && !t?.is_main ? `<div><label>Role</label><select name="role" id="role"><option value="teacher">Teacher</option><option value="subadmin" ${t?.role === 'subadmin' ? 'selected' : ''}>Sub-admin</option><option value="admin" ${t?.role === 'admin' ? 'selected' : ''}>Admin</option></select></div>
     <div><label>Sub-admin area</label><select name="subrole"><option value="office">Office</option><option value="accountant" ${t?.subrole === 'accountant' ? 'selected' : ''}>Accountant</option><option value="coordinator" ${t?.subrole === 'coordinator' ? 'selected' : ''}>Coordinator</option></select></div>` : ''}
-    <p class="full small muted">They sign in only with this verified Google email. Phone is optional contact information and cannot be used to sign in.</p>
+    <p class="full small muted">Google manages passwords. Changing this email changes the account's sign-in identity and revokes its existing device sessions; the new address must be verified in Google before the next sign-in. Phone is contact information only.</p>
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#tf', m).onsubmit = async (e) => {
       e.preventDefault();
