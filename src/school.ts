@@ -351,7 +351,7 @@ export class SchoolDO extends DurableObject<Env> {
 
   // ---------- attendance ----------
   attendanceSheet(a: Actor, classId: string, date: string) {
-    const cls = this.classOf(a, classId, 'view', date);
+    const cls = this.classOf(a, classId, 'view');
     const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
     const students = this.q(`SELECT s.id, s.name, s.father_name, s.reg_no, COALESCE(r.status,'P') AS status FROM students s
       LEFT JOIN attendance_records r ON r.student_id=s.id AND r.date=? WHERE s.class_id=? AND s.status IN ('active','pending') ORDER BY s.name`, date, classId);
@@ -360,7 +360,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   saveAttendance(a: Actor, classId: string, date: string, records: Record<string, string>, submit: boolean) {
-    this.classOf(a, classId, 'teacher', date);
+    this.classOf(a, classId, 'teacher');
     if (date > pkt().date) fail(400, 'Cannot mark attendance for a future date');
     if (this.one('SELECT 1 FROM holidays WHERE date=?', date)) fail(400, 'This date is a holiday');
     const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
