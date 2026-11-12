@@ -118,7 +118,20 @@ async function finishLogin(c: any, rows: any[], pick: any) {
   return c.json({ ok: true, kind: r.kind, token });
 }
 
-app.get('/api/config', (c) => c.json({ googleClientId: c.env.GOOGLE_CLIENT_ID || null }));
+app.get('/api/config', (c) => c.json({
+  googleClientId: c.env.GOOGLE_CLIENT_ID || null,
+  contactEmail: c.env.PUBLIC_CONTACT_EMAIL || null,
+}));
+
+app.post('/api/auth/logout', async (c) => {
+  const auth = c.req.header('authorization');
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : getCookie(c, 'sid');
+  if (token) {
+    await c.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE token_hash=?').bind(await sha256(token)).run();
+  }
+  deleteCookie(c, 'sid', { path: '/' });
+  return c.json({ ok: true });
+});
 
 app.post('/api/auth/google', async (c) => {
   const { credential, pick } = await c.req.json<any>();
