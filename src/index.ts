@@ -165,7 +165,7 @@ app.post('/api/auth/google', async (c) => {
   // The dedicated /admin entry requests platform_owner. Only the configured
   // OWNER_EMAIL can obtain this role; institution administrators cannot.
   if (identity.email === normId(c.env.OWNER_EMAIL)) {
-    if (requestedRole && !['main_admin', 'platform_owner'].includes(requestedRole)) fail(403, 'This is the platform owner account. Use the platform administrator sign-in page.');
+    if (requestedRole !== 'platform_owner') fail(403, 'This is the platform owner account. Sign in through the dedicated /admin page.');
     await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
     return c.json({ ok: true, kind: 'owner' });
   }
