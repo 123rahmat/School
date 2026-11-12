@@ -276,7 +276,7 @@ function showAuthError(error, mode = 'login') {
   if (!next) return;
   next.innerHTML = '';
   if (mode === 'login' && /not registered|not linked|not found/i.test(raw)) {
-    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution account with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
+    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution workspace with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
   } else if (/not configured/i.test(raw)) {
     next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
   } else if (mode === 'signup') {
@@ -465,7 +465,7 @@ function landingPage() {
 route('/login', async () => {
   authPage(`
     <h1>Welcome back</h1>
-    <p class="muted small">Sign in with the Google account email registered by your institution. No passwords, email codes or phone sign-in.</p>
+    <p class="muted small">Use the Google account connected to your institution profile. Your access is personal and protected; passwords, email codes and phone login are not used.</p>
     <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
     <div id="authnext"></div>
@@ -492,7 +492,7 @@ route('/login', async () => {
       return;
     }
     await refreshMe();
-    if (!ME) throw new Error('Google verified your account, but the School session was not created. Please retry.');
+    if (!ME) throw new Error('Google verified your account, but your secure session was not created. Please retry.');
     go('/');
     flushOutbox();
   }, 'signin_with', 'login');
@@ -500,13 +500,20 @@ route('/login', async () => {
 
 route('/signup', async () => {
   authPage(`
-    <h1>Create your institution account</h1>
-    <p class="muted small">Register your institution. Your verified Google account becomes the main administrator sign-in.</p>
+    <h1 id="signup-heading">Let’s set up your institution</h1>
+    <p id="signup-description" class="muted small">Tell us about your organisation. Your verified Google account becomes its main administrator sign-in.</p>
     <form id="signupForm" class="stack">
       <label for="signup-school">Institution name</label>
-      <input id="signup-school" name="school_name" placeholder="e.g. Green Valley School" autocomplete="organization" required maxlength="120">
-      <label for="signup-kind">Institution type</label>
-      <select id="signup-kind" name="kind" required><option value="school">School</option><option value="academy">Academy</option></select>
+      <input id="signup-school" name="school_name" placeholder="e.g. Northstar Learning Centre" autocomplete="organization" required maxlength="120">
+      <label for="signup-kind">Institution category</label>
+      <select id="signup-kind" name="kind" required>
+        <option value="school">School</option>
+        <option value="college">College</option>
+        <option value="university">University</option>
+        <option value="academy">Academy</option>
+        <option value="training_institute">Training institute</option>
+        <option value="other">Other education provider</option>
+      </select>
       <label for="signup-admin">Your name</label>
       <input id="signup-admin" name="admin_name" placeholder="Administrator name" autocomplete="name" required maxlength="120">
       <label for="signup-phone">Contact phone (optional)</label>
@@ -521,7 +528,7 @@ route('/signup', async () => {
   const updateSignupCopy = () => {
     const noun = categoryLabels[kindSelect.value] || 'institution';
     $('#signup-heading').textContent = `Create your ${noun} workspace`;
-    $('#signup-description').textContent = `Set up a dedicated workspace for your ${noun}. Your verified Google account becomes its main administrator account.`;
+    $('#signup-description').textContent = `Create a private workspace for your ${noun}. Your verified Google account becomes its main administrator sign-in.`;
   };
   kindSelect.addEventListener('change', updateSignupCopy);
   await mountGoogleButton($('#gbtn'), async (credential) => {
