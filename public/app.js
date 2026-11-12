@@ -991,8 +991,9 @@ function bindFees(s, p) {
     <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
       $('#of', m).onsubmit = async (e) => {
         e.preventDefault();
-        const heads = $$('input[data-h]', m).map((i) => ({ head_id: i.dataset.h, amount: i.value === '' ? null : Number(i.value) }));
-        await act(() => S(`/students/${s.id}/fee`, { body: { heads } }), 'Student fee saved'); closeModal(); render();
+        const heads = $('input[data-h]', m).map((i) => ({ head_id: i.dataset.h, amount: i.value === '' ? null : Number(i.value) }));
+        if (!confirm('Save the individual fee amounts for ' + s.name + '? The current unpaid voucher may be recalculated.')) return;
+        await act(() => S(`/students/${s.id}/fee`, { body: { heads, confirm:true } }), 'Student fee saved'); closeModal(); render();
       };
     });
   };
@@ -1004,18 +1005,18 @@ function bindFees(s, p) {
     <form id="ff" class="form"><div><label>Fine amount (0 = waive)</label><input type="number" min="0" name="amount" value="${v.fine}" required></div>
     <div><label>Reason (parent is told)</label><input name="reason" required></div>
     <div class="full row"><button class="btn primary">Save fine</button>${v.fine_locked ? '<button type="button" class="btn" id="auto">Back to automatic fine</button>' : ''}<button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-      $('#ff', m).onsubmit = async (ev) => { ev.preventDefault(); await act(() => S(`/vouchers/${v.id}/fine`, { body: formData(ev.target) }), 'Fine updated'); closeModal(); render(); };
-      const au = $('#auto', m); if (au) au.onclick = async () => { await act(() => S(`/vouchers/${v.id}/fine`, { body: { auto: true } }), 'Automatic fine restored'); closeModal(); render(); };
+      $('#ff', m).onsubmit = async (ev) => { ev.preventDefault(); if (!confirm('Save the fine of Rs ' + ev.target.elements.amount.value + ' for ' + v.month + '? The parent will be notified.')) return; await act(() => S(`/vouchers/${v.id}/fine`, { body: { ...formData(ev.target), confirm:true } }), 'Fine updated'); closeModal(); render(); };
+      const au = $('#auto', m); if (au) au.onclick = async () => { if (!confirm('Restore the automatic fine calculation for this voucher?')) return; await act(() => S(`/vouchers/${v.id}/fine`, { body: { auto: true, confirm:true } }), 'Automatic fine restored'); closeModal(); render(); };
     });
   });
   const d = $('#disc'); if (d) d.onclick = () => modal(`<h2>Add discount</h2><form id="df" class="form">
     <div><label>Kind</label><select name="kind"><option>sibling</option><option>scholarship</option><option>staff child</option><option>custom</option></select></div>
     <div><label>Amount per month</label><input type="number" name="amount" min="1" required></div><div class="full"><label>Note</label><input name="note"></div>
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#df', m).onsubmit = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/discounts`, { body: formData(e.target) }), 'Discount added — applies from the next voucher'); closeModal(); render(); };
+    $('#df', m).onsubmit = async (e) => { e.preventDefault(); const b = formData(e.target); if (!confirm('Add this ' + b.kind + ' discount of Rs ' + b.amount + ' per month for ' + s.name + '? It will affect future vouchers.')) return; await act(() => S(`/students/${s.id}/discounts`, { body: { ...b, confirm:true } }), 'Discount added — applies from the next voucher'); closeModal(); render(); };
   });
-  $$('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}`, { method: 'DELETE' }), 'Removed'); render(); });
-  $$('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason } }), 'Receipt cancelled'); render(); });
+  $('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this recurring discount from ' + s.name + '?')) return; await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}?confirm=1`, { method: 'DELETE' }), 'Removed'); render(); });
+  $('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; if (!confirm('Cancel this verified receipt and reverse its amount from the student voucher? This is a financial correction.')) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason, confirm:true } }), 'Receipt cancelled'); render(); });
   const pz = $('#pause'); if (pz) pz.onclick = async () => {
     if (p.reminderPause) { await act(() => S(`/students/${s.id}/reminder-pause`, { body: { off: true } }), 'Reminders resumed'); return render(); }
     const reason = prompt('Why pause fee reminders for this student? (e.g. agreed late payment)'); if (!reason) return;
