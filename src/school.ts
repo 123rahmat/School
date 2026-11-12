@@ -1022,9 +1022,9 @@ export class SchoolDO extends DurableObject<Env> {
       const staff = staffRows.filter((s) =>
         s.name.toLowerCase().includes(lower) || (s.subjects || '').toLowerCase().includes(lower) || (digits.length >= 4 && (s.phone || '').endsWith(digits)) ||
         sk.split(' ').every((part) => String(s.search_key).split(' ').some((x: string) => x.startsWith(part)))
-      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined, userId: this.isAdmin(a) ? s.public_id : undefined }));
+      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined, userId: this.isFullAdmin(a) ? s.public_id : undefined }));
       let users: Row[] = [];
-      if (this.isAdmin(a)) {
+      if (this.isFullAdmin(a)) {
         const staffUsers = staffRows.filter((u) =>
           String(u.public_id || '').toLowerCase().includes(lower) ||
           String(u.name || '').toLowerCase().includes(lower) ||
