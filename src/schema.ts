@@ -154,6 +154,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_entity ON audit_log(entity, entity_id);
 CREATE INDEX IF NOT EXISTS audit_created ON audit_log(created_at);
+
+-- Successful API write receipts prevent duplicate records after interrupted network requests.
+CREATE TABLE IF NOT EXISTS api_submissions (
+  id TEXT PRIMARY KEY, user_key TEXT NOT NULL, user_name TEXT, method TEXT NOT NULL, path TEXT NOT NULL,
+  label TEXT, request_hash TEXT, status TEXT NOT NULL DEFAULT 'processing', http_status INTEGER,
+  content_type TEXT, response_body TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS api_submissions_user_created ON api_submissions(user_key, created_at);
+CREATE INDEX IF NOT EXISTS api_submissions_created ON api_submissions(created_at);
 `;
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
