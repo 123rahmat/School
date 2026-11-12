@@ -101,6 +101,7 @@ export class SchoolDO extends DurableObject<Env> {
         permissions: new Set(permissions), scopeClasses: new Set(scopeClasses), scopeAll };
       for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
       for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
+      for (const r of this.q('SELECT class_id FROM class_substitutions WHERE substitute_teacher_id=? AND date=?', s!.id, pkt().date)) a.teaches.add(r.class_id);
       return a;
     }
     const g = this.one('SELECT * FROM guardians WHERE id=?', ctx.refId);
@@ -133,8 +134,8 @@ export class SchoolDO extends DurableObject<Env> {
     if (this.isFullAdmin(a)) return ['1=1', []];
     if (a.type === 'guardian') return [`${alias}.guardian_id=?`, [a.id]];
     if (a.role === 'subadmin') {
-      if (!this.hasPermission(a, 'students.view') && !this.hasPermission(a, 'students.manage') && !this.canFeesAll(a)) return ['0=1', []];
-      const ids = this.scopedClassIds(a);
+      if (!this.hasPermission(a, 'students.view') && !this.hasPermission(a, 'students.manage') && !this.canFeesAll(a) && !this.hasPermission(a, 'attendance.manage') && !this.hasPermission(a, 'notices.manage') && !a.teaches.size) return ['0=1', []];
+      const ids = [...new Set([...this.scopedClassIds(a), ...a.teaches])];
       if (!ids.length) return ['0=1', []];
       return [`${alias}.class_id IN (${ids.map(() => '?').join(',')})`, ids];
     }
@@ -151,23 +152,28 @@ export class SchoolDO extends DurableObject<Env> {
     let ok = false;
     if (need === 'edit') ok = this.canManageStudents(a) && scoped;
     else if (need === 'fees') ok = (this.canFeesAll(a) && scoped) || a.classTeacherOf.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
-    else ok = this.isFullAdmin(a) || (a.role === 'subadmin' && scoped && (this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a))) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    else ok = this.isFullAdmin(a) || (a.role === 'subadmin' && scoped && (this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage') || this.hasPermission(a, 'notices.manage'))) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
     if (!ok) fail(403, 'You do not have access to this student');
     return st;
   }
 
-  classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view'): Row {
+  isSubstitute(a: Actor, classId: string, date = pkt().date) {
+    return a.type === 'staff' && !!this.one('SELECT 1 FROM class_substitutions WHERE class_id=? AND substitute_teacher_id=? AND date=?', classId, a.id, date);
+  }
+  classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view', date = pkt().date): Row {
     const c = this.one('SELECT * FROM classes WHERE id=?', id);
     if (!c) fail(404, 'Class not found');
     if (this.isFullAdmin(a)) return c!;
+    if (a.classTeacherOf.has(id)) return c!;
+    if (need === 'teacher' && this.isSubstitute(a, id, date)) return c!;
+    if (need === 'view' && a.teaches.has(id)) return c!;
     if (a.role === 'subadmin') {
       if (!this.inClassScope(a, id)) fail(403, 'This class is outside your assigned scope');
       if (need === 'teacher' && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Attendance management permission is required');
-      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view'].some((p) => this.hasPermission(a, p));
+      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage'].some((p) => this.hasPermission(a, p));
       if (allowed) return c!;
       fail(403, 'Your account has no access to this class');
     }
-    if (need === 'teacher' ? a.classTeacherOf.has(id) : a.teaches.has(id)) return c!;
     fail(403, 'You do not have access to this class');
     return c!;
   }
@@ -349,7 +355,7 @@ export class SchoolDO extends DurableObject<Env> {
 
   // ---------- attendance ----------
   attendanceSheet(a: Actor, classId: string, date: string) {
-    const cls = this.classOf(a, classId);
+    const cls = this.classOf(a, classId, 'view', date);
     const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
     const students = this.q(`SELECT s.id, s.name, s.father_name, s.reg_no, COALESCE(r.status,'P') AS status FROM students s
       LEFT JOIN attendance_records r ON r.student_id=s.id AND r.date=? WHERE s.class_id=? AND s.status IN ('active','pending') ORDER BY s.name`, date, classId);
@@ -358,7 +364,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   saveAttendance(a: Actor, classId: string, date: string, records: Record<string, string>, submit: boolean) {
-    this.classOf(a, classId, 'teacher');
+    this.classOf(a, classId, 'teacher', date);
     if (date > pkt().date) fail(400, 'Cannot mark attendance for a future date');
     if (this.one('SELECT 1 FROM holidays WHERE date=?', date)) fail(400, 'This date is a holiday');
     const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
@@ -714,8 +720,10 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ id: a.id, userId: a.publicId || null, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), isFullAdmin: this.isFullAdmin(a),
         permissions: [...a.permissions], scopeAll: a.scopeAll, scopeClasses: [...a.scopeClasses],
         canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canViewStudents: this.isFullAdmin(a) || this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage'),
+        canManageAttendance: this.isFullAdmin(a) || this.hasPermission(a, 'attendance.manage'), canManageNotices: this.isFullAdmin(a) || this.hasPermission(a, 'notices.manage'),
+        canViewStaff: this.isFullAdmin(a) || this.hasPermission(a, 'staff.view') || this.canManageTimetable(a),
         canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
-        schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
+        schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], teaches: [...a.teaches], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
         outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
     });
