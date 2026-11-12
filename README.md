@@ -91,12 +91,15 @@ a Google Client Secret in frontend code or commit it to the repository.
 
 ## Tests
 
-`npm test` runs the repository sanity checks for Google-only authentication, deployment bindings,
-the public landing page, PWA/offline queue configuration and idempotent attendance submission.
-`npm run typecheck` runs TypeScript checks.
+Run `npm ci` for a clean lockfile-based install, then `npm run check` to run TypeScript checks,
+the repository sanity suite and a Wrangler production-bundle dry run. The same checks run in
+GitHub Actions on pushes and pull requests targeting the default branch.
 
-The older browser UI walkthrough in `test/ui.mjs` still uses the retired email/phone-code test flow and
-must be migrated before it can be treated as a valid Google-authenticated browser test.
+`npm test` is a static/configuration sanity suite, not a full live integration test.
+`test/e2e.mjs` and `test/ui.mjs` are legacy walkthroughs that still use the retired email/phone-code
+authentication flow. Do not treat them as valid tests of the current Google-only login until they
+are migrated to the current authentication flow.
+
 
 ## Deploy to Cloudflare
 
