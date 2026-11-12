@@ -18,6 +18,9 @@ export interface Actor {
   classTeacherOf: Set<string>;
   teaches: Set<string>;
   children: string[];
+  permissions: Set<string>;
+  scopeClasses: Set<string>;
+  scopeAll: boolean;
 }
 
 /** Spelling-forgiving key: Muhammad / Mohammad / Muhammed all become "mhmd". */
@@ -53,6 +56,8 @@ export class SchoolDO extends DurableObject<Env> {
       for (const alter of [
         'ALTER TABLE vouchers ADD COLUMN fine_locked INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE staff ADD COLUMN public_id TEXT',
+        'ALTER TABLE staff ADD COLUMN permissions TEXT',
+        'ALTER TABLE staff ADD COLUMN scope_classes TEXT',
         'ALTER TABLE guardians ADD COLUMN public_id TEXT',
       ]) { try { this.sql.exec(alter); } catch { /* already there */ } }
       // Give existing accounts a stable 128-bit hexadecimal public ID; these IDs are safe to share for lookup.
@@ -76,12 +81,24 @@ export class SchoolDO extends DurableObject<Env> {
 
   // ---------- identity & access layer ----------
   loadActor(ctx: Ctx): Actor {
-    const base = { classTeacherOf: new Set<string>(), teaches: new Set<string>(), children: [] as string[], subrole: null, isMain: false };
-    if (ctx.refId === 'system') return { ...base, key: 'system', type: 'system', id: 'system', publicId: '', name: 'System', role: 'system', isMain: true };
+    const base = { classTeacherOf: new Set<string>(), teaches: new Set<string>(), children: [] as string[], subrole: null, isMain: false, permissions: new Set<string>(), scopeClasses: new Set<string>(), scopeAll: false };
+    if (ctx.refId === 'system') return { ...base, key: 'system', type: 'system', id: 'system', publicId: '', name: 'System', role: 'system', isMain: true, scopeAll: true };
     if (ctx.kind === 'staff') {
       const s = this.one('SELECT * FROM staff WHERE id=? AND active=1', ctx.refId);
       if (!s) fail(401, 'Your account is not active. Please contact the school.');
-      const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, publicId: s!.public_id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main };
+      let permissions: string[] = [];
+      if (s!.permissions) { try { const parsed = JSON.parse(s!.permissions); if (Array.isArray(parsed)) permissions = parsed.filter((x: any) => typeof x === 'string'); } catch {} }
+      else if (s!.role === 'subadmin') {
+        // One-time compatibility defaults for sub-admins created before granular permissions existed.
+        permissions = s!.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
+          : s!.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
+          : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+      }
+      let scopeAll = !s!.scope_classes || s!.scope_classes === '*';
+      let scopeClasses: string[] = [];
+      if (!scopeAll) { try { const parsed = JSON.parse(s!.scope_classes); if (Array.isArray(parsed)) scopeClasses = parsed.filter((x: any) => typeof x === 'string'); } catch { scopeAll = true; } }
+      const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, publicId: s!.public_id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main,
+        permissions: new Set(permissions), scopeClasses: new Set(scopeClasses), scopeAll };
       for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
       for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
       return a;
@@ -93,18 +110,34 @@ export class SchoolDO extends DurableObject<Env> {
     return { ...base, key: 'g:' + g!.id, type: 'guardian', id: g!.id, publicId: g!.public_id, name: g!.name || 'Parent', role: 'parent', children: kids };
   }
 
-  isAdmin(a: Actor) { return a.role === 'admin' || a.role === 'system' || a.role === 'subadmin'; }
+  isAdmin(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && a.permissions.size > 0); }
   isFullAdmin(a: Actor) { return a.role === 'admin' || a.role === 'system'; }
-  canFeesAll(a: Actor) { return this.isFullAdmin(a) || a.subrole === 'accountant' || a.subrole === 'office'; }
-  canManageStudents(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && a.subrole !== 'accountant'); }
-  requireAdmin(a: Actor) { if (!this.isAdmin(a)) fail(403, 'Only admins can do this'); }
-  requireFullAdmin(a: Actor) { if (!this.isFullAdmin(a)) fail(403, 'Only the admin can do this'); }
+  hasPermission(a: Actor, permission: string) { return this.isFullAdmin(a) || a.permissions.has(permission); }
+  inClassScope(a: Actor, classId: string) { return this.isFullAdmin(a) || (a.role === 'subadmin' ? (a.scopeAll || a.scopeClasses.has(classId)) : a.teaches.has(classId)); }
+  scopedClassIds(a: Actor): string[] {
+    if (this.isFullAdmin(a)) return this.q('SELECT id FROM classes WHERE active=1').map((r) => r.id);
+    if (a.role === 'subadmin') return a.scopeAll ? this.q('SELECT id FROM classes WHERE active=1').map((r) => r.id) : [...a.scopeClasses];
+    return [...a.teaches];
+  }
+  canFeesAll(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'fees.manage')); }
+  canManageStudents(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'students.manage')); }
+  canManageTimetable(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'timetable.manage')); }
+  canManageSyllabus(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'syllabus.manage')); }
+  requireAdmin(a: Actor) { if (!this.isAdmin(a)) fail(403, 'Only administrators can do this'); }
+  requirePermission(a: Actor, permission: string) { if (!this.hasPermission(a, permission)) fail(403, 'Your account has not been granted the ' + permission.replace('.', ' ') + ' permission'); }
+  requireFullAdmin(a: Actor) { if (!this.isFullAdmin(a)) fail(403, 'Only a full administrator can do this'); }
   requireMain(a: Actor) { if (!a.isMain) fail(403, 'Only the main admin can do this'); }
 
   /** SQL filter for the students this person may see. Every student list goes through it. */
   studentScope(a: Actor, alias = 'st'): [string, any[]] {
-    if (this.isAdmin(a)) return ['1=1', []];
+    if (this.isFullAdmin(a)) return ['1=1', []];
     if (a.type === 'guardian') return [`${alias}.guardian_id=?`, [a.id]];
+    if (a.role === 'subadmin') {
+      if (!this.hasPermission(a, 'students.view') && !this.hasPermission(a, 'students.manage') && !this.canFeesAll(a)) return ['0=1', []];
+      const ids = this.scopedClassIds(a);
+      if (!ids.length) return ['0=1', []];
+      return [`${alias}.class_id IN (${ids.map(() => '?').join(',')})`, ids];
+    }
     const ids = [...a.teaches];
     if (!ids.length) return ['0=1', []];
     return [`${alias}.class_id IN (${ids.map(() => '?').join(',')})`, ids];
@@ -114,10 +147,11 @@ export class SchoolDO extends DurableObject<Env> {
     const s = this.one('SELECT * FROM students WHERE id=?', id);
     if (!s) fail(404, 'Student not found');
     const st = s!;
+    const scoped = this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, st.class_id));
     let ok = false;
-    if (need === 'edit') ok = this.canManageStudents(a);
-    else if (need === 'fees') ok = this.canFeesAll(a) || a.classTeacherOf.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
-    else ok = this.isAdmin(a) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    if (need === 'edit') ok = this.canManageStudents(a) && scoped;
+    else if (need === 'fees') ok = (this.canFeesAll(a) && scoped) || a.classTeacherOf.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    else ok = this.isFullAdmin(a) || (a.role === 'subadmin' && scoped && (this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a))) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
     if (!ok) fail(403, 'You do not have access to this student');
     return st;
   }
@@ -125,7 +159,14 @@ export class SchoolDO extends DurableObject<Env> {
   classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view'): Row {
     const c = this.one('SELECT * FROM classes WHERE id=?', id);
     if (!c) fail(404, 'Class not found');
-    if (this.isAdmin(a)) return c!;
+    if (this.isFullAdmin(a)) return c!;
+    if (a.role === 'subadmin') {
+      if (!this.inClassScope(a, id)) fail(403, 'This class is outside your assigned scope');
+      if (need === 'teacher' && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Attendance management permission is required');
+      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view'].some((p) => this.hasPermission(a, p));
+      if (allowed) return c!;
+      fail(403, 'Your account has no access to this class');
+    }
     if (need === 'teacher' ? a.classTeacherOf.has(id) : a.teaches.has(id)) return c!;
     fail(403, 'You do not have access to this class');
     return c!;
