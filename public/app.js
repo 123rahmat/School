@@ -1170,36 +1170,43 @@ route('/staff/:id', async ({ id }) => {
   on('edit', () => staffForm(t));
   on('react', async () => { if (!confirm('Reactivate ' + t.name + ' and restore their sign-in access?')) return; await act(() => S(`/staff/${id}/reactivate`, { body: { confirm: true } }), 'Reactivated'); render(); });
   on('replace', () => modal(`<h2>Replace ${esc(t.name)} with a new teacher</h2>
-    <p class="small muted">This creates a new teacher account with a separate permanent ID. The old teacher is signed out and marked as former. Past attendance, student records, messages and audit history remain attached to the old profile.</p>
+    <p class="small muted">This creates a separate teacher account. Nothing transfers automatically. Select each class-teacher assignment, subject assignment and timetable period that the new teacher should receive. Unselected responsibilities are left unassigned. Past attendance, results, fees, notices and audit history stay with the former teacher or their original records.</p>
     <form id="replaceTeacherForm" class="form">
       <div><label>New teacher's full name *</label><input name="name" required maxlength="120"></div>
       <div><label>New teacher's Google email *</label><input name="email" type="email" required autocomplete="off"></div>
-      <div><label>New teacher's phone (optional)</label><input name="phone" inputmode="tel" placeholder="03xx xxxxxxx"></div>
-      <div><label>Subjects (optional)</label><input name="subjects" placeholder="Mathematics, Physics"></div>
-      <div><label>Replacement date</label><input name="from_date" type="date" value="${today()}" required></div>
-      <div class="full stack">
-        <label class="row"><input type="checkbox" name="transfer_classes" value="1" checked> Transfer current class-teacher assignments</label>
-        <label class="row"><input type="checkbox" name="transfer_subjects" value="1" checked> Transfer current subject assignments</label>
-        <label class="row"><input type="checkbox" name="transfer_timetable" value="1" checked> Transfer timetable periods</label>
+      <div><label>New teacher's phone (optional)</label><input name="phone" inputmode="tel"></div>
+      <div><label>Subjects description (optional)</label><input name="subjects" placeholder="Mathematics, Physics"></div>
+      <div class="full"><label>Replacement effective date</label><input name="from_date" type="date" value="${today()}" required></div>
+      <div class="full stack"><h3>Choose exact responsibilities to transfer</h3>
+        <b>Class teacher assignments</b>
+        ${d.classTeacherOf.map((x) => `<label class="row"><input type="checkbox" name="transfer_class_ids" value="${x.id}"> ${esc(x.name)} — class teacher</label>`).join('') || '<p class="small muted">No class-teacher assignments.</p>'}
+        <b>Subject assignments</b>
+        ${d.subjects.map((x) => `<label class="row"><input type="checkbox" name="transfer_subject_ids" value="${x.id}"> ${esc(x.class_name)} — ${esc(x.subject)}</label>`).join('') || '<p class="small muted">No subject assignments.</p>'}
+        <b>Timetable periods</b>
+        ${d.timetable.map((x) => `<label class="row"><input type="checkbox" name="transfer_timetable_ids" value="${x.id}"> ${esc(x.class_name)} — ${esc(x.subject)} · day ${x.day_of_week}, period ${x.period}, ${esc(x.start_time)}–${esc(x.end_time)}</label>`).join('') || '<p class="small muted">No timetable periods.</p>'}
       </div>
-      <p class="full small muted">The new teacher must sign in with their own verified Google account. Untransferred responsibilities are unassigned. The former teacher's history is not deleted.</p>
-      <div class="full row"><button class="btn primary">Create new teacher and replace</button><button type="button" class="btn" data-close>Cancel</button></div>
+      <p class="full small muted">The replacement teacher signs in with their own verified Google account and receives a new permanent ID. You can select some assignments but leave others vacant. Cash held by the former teacher must be handed over or settled before replacement.</p>
+      <div class="full row"><button class="btn primary">Create new teacher and apply selected transfers</button><button type="button" class="btn" data-close>Cancel</button></div>
     </form>`, (m) => {
       $('#replaceTeacherForm', m).onsubmit = async (e) => {
         e.preventDefault();
         const form = e.target;
         const b = formData(form);
-        for (const key of ['transfer_classes', 'transfer_subjects', 'transfer_timetable']) b[key] = !!form.elements[key].checked;
-        if (!confirm('Create a NEW teacher account, revoke ' + t.name + '\\'s access, and transfer the selected current assignments? The old teacher history will remain.')) return;
+        b.transfer_class_ids = $$('input[name="transfer_class_ids"]:checked', form).map((x) => x.value);
+        b.transfer_subject_ids = $$('input[name="transfer_subject_ids"]:checked', form).map((x) => x.value);
+        b.transfer_timetable_ids = $$('input[name="transfer_timetable_ids"]:checked', form).map((x) => x.value);
+        if (!confirm('Create a NEW teacher account for ' + b.name + ' and sign out ' + t.name + '? Transfer exactly ' +
+          (b.transfer_class_ids.length + b.transfer_subject_ids.length + b.transfer_timetable_ids.length) +
+          ' selected assignment(s). Everything else will be left unassigned.')) return;
         b.confirm = true;
         let result = await act(() => S(`/staff/${id}/replace`, { body: b }));
         if (result?.needsConfirm) {
-          if (!confirm(result.message + '\n\nContinue only after the cash has been physically handed over or settled.')) return;
+          if (!confirm(result.message + '\\n\\nContinue only after the cash has been physically handed over or settled.')) return;
           result = await act(() => S(`/staff/${id}/replace`, { body: { ...b, confirm: true, confirm_cash: true } }));
         }
         if (result?.new_id) {
           closeModal();
-          toast('Replacement teacher created. The former account is now inactive.');
+          toast('New teacher created. Only the selected assignments were transferred.');
           go('/staff/' + result.new_id);
         }
       };
