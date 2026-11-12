@@ -37,9 +37,9 @@ fees but not message threads. The platform owner sees billing and usage only, ne
    from a date, year-end promotion with exceptions.
 3. **Attendance** — everyone present by default, tap the exceptions, draft → review → submit, final for the
    teacher; change requests; admin corrections with reason (parent told); holiday calendar; monthly register
-   with %, 3-in-a-row and low-attendance warnings; CSV/print. Previously opened data may be available offline;
-   attendance drafts and submissions are saved on the device and queued to sync when the connection returns.
-   Other create/update operations still require a live connection.
+   with %, 3-in-a-row and low-attendance warnings; CSV/print. Attendance retains its date-specific queue, while
+   other school forms and supported file uploads use a shared IndexedDB queue in the browser and installed PWA.
+   Pending means saved on this device only; received means the school server has acknowledged the submission.
 4. **Fees** — fee heads and per-class plans, sibling/scholarship/custom discounts, monthly vouchers with arrears
    and late fines, printable 3-copy vouchers; three ways to pay (cash to class teacher, Easypaisa/JazzCash slip
    upload, office); verify/reject; numbered receipts; duplicate transaction IDs blocked; cash held per teacher and
@@ -65,8 +65,10 @@ and can add, change or waive the fine on any single voucher with a reason.
 **WhatsApp / SMS from the admin's own phone.** Alerts are queued with the text ready; the admin taps WhatsApp or SMS
 to send from their own number, at no cost.
 
-**Not built yet (later, per the plan):** automatic reading of slip amounts, timetable and substitution, homework
-diary, teacher leave and salary, own-device mode.
+**Deliberately excluded from the focused school workflow:** weekly timetable, daily teacher substitution and
+substitution bonuses, and a syllabus document library. Existing deployed databases retain any legacy rows and
+files from these modules; the cleanup does not erase historical records. Automatic reading of slip amounts,
+homework diary, teacher leave and salary remain outside the current scope.
 
 ## Run it locally
 
