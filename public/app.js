@@ -307,6 +307,8 @@ function showAuthError(error, mode = 'login') {
   next.innerHTML = '';
   if (mode === 'login' && /main administrator profile|register a new institution/i.test(raw)) {
     next.innerHTML = `<div class="auth-help"><b>This Google account is not registered as a main administrator.</b><p>${esc(raw)}</p><a class="btn primary" href="/signup">Register an institution</a></div>`;
+  } else if (mode === 'login' && /already registered for another institution role/i.test(raw)) {
+    next.innerHTML = `<div class="auth-help"><p>${esc(raw)}</p></div>`;
   } else if (/not configured/i.test(raw)) {
     next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
   } else if (mode === 'signup') {
