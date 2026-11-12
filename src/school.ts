@@ -471,7 +471,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
   voucherBalance(v: Row) { return this.voucherTotal(v) - v.paid; }
 
-  generateVouchers(a: Actor, month: string, studentIds?: string[]) {
+  generateVouchers(a: Actor, month: string, studentIds?: string[], classIds?: string[]) {
     if (!/^\d{4}-\d{2}$/.test(month)) fail(400, 'Month should be YYYY-MM');
     const heads = this.q('SELECT * FROM fee_heads');
     const dueDay = Math.min(28, Math.max(1, this.num('due_day') || 10));
@@ -479,6 +479,7 @@ export class SchoolDO extends DurableObject<Env> {
     const due = `${month}-${String(dueDay).padStart(2, '0')}`;
     let students = this.q("SELECT * FROM students WHERE status='active'");
     if (studentIds) students = students.filter((s) => studentIds.includes(s.id));
+    if (classIds) students = students.filter((s) => classIds.includes(s.class_id));
     let created = 0;
     let num = Number(this.one('SELECT COALESCE(MAX(number),1000) AS n FROM vouchers')!.n);
     // Sibling discount: from setting? Discounts are stored per student; nothing automatic beyond what the admin sets.
@@ -1338,11 +1339,13 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/fees/setup', (c) => {
       const a = c.get('actor');
       let classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name');
-      if (!this.canFeesAll(a)) {
+      if (!this.isFullAdmin(a)) {
         classes = classes.filter((x) => this.canSetFees(a, x.id));
         if (!classes.length) fail(403, 'No access');
       }
-      return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans: this.q('SELECT * FROM fee_plans'), classes, editable: classes.filter((x) => this.canSetFees(a, x.id)).map((x) => x.id) });
+      const allowedIds = new Set(classes.map((x) => x.id));
+      const plans = this.q('SELECT * FROM fee_plans').filter((x) => allowedIds.has(x.class_id));
+      return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans, classes, editable: classes.filter((x) => this.canSetFees(a, x.id)).map((x) => x.id) });
     });
     app.post('/fees/heads', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -1420,7 +1423,9 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/fees/generate', async (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
       const b = await c.req.json<any>();
-      return c.json(this.generateVouchers(a, b.month || pkt().month));
+      const classIds = this.isFullAdmin(a) ? undefined : this.scopedClassIds(a).filter((id) => this.canSetFees(a, id));
+      if (!this.isFullAdmin(a) && !classIds?.length) fail(403, 'No fee-manageable classes are assigned to this account');
+      return c.json(this.generateVouchers(a, b.month || pkt().month, undefined, classIds));
     });
     app.get('/vouchers/:id', (c) => {
       const a = c.get('actor');
