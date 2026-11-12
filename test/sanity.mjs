@@ -26,7 +26,7 @@ assert.match(worker, /app\.post\('\/api\/auth\/google'/, 'Google sign-in endpoin
 assert.match(worker, /app\.post\('\/api\/signup\/google'/, 'Google-based institution signup endpoint must exist');
 assert.match(worker, /app\.post\('\/api\/auth\/logout'/, 'Server-side session revocation endpoint must exist');
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
-assert.match(worker, /RSASSA-PKCS1-v1_5/, 'Google ID token signature must be verified using Google's RSA signing key');
+assert.match(worker, /RSASSA-PKCS1-v1_5/, "Google ID token signature must be verified using Google's RSA signing key");
 assert.match(worker, /oauth2\/v3\/certs/, 'Google signing keys must come from the official JWKS endpoint');
 assert.match(worker, /claims\.aud !== env\.GOOGLE_CLIENT_ID/, 'Google ID token audience must be checked');
 assert.match(worker, /String\(claims\.email_verified\) !== 'true'/, 'Google verified-email claim must be checked');
