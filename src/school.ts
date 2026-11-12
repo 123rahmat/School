@@ -141,7 +141,7 @@ export class SchoolDO extends DurableObject<Env> {
     if (this.isFullAdmin(a)) return ['1=1', []];
     if (a.type === 'guardian') return [`${alias}.guardian_id=?`, [a.id]];
     if (a.role === 'subadmin') {
-      if (!this.hasPermission(a, 'students.view') && !this.hasPermission(a, 'students.manage') && !this.canFeesAll(a) && !this.hasPermission(a, 'attendance.manage') && !this.hasPermission(a, 'notices.manage') && !a.teaches.size) return ['0=1', []];
+      if (!this.hasPermission(a, 'students.view') && !this.hasPermission(a, 'students.manage') && !this.canFeesAll(a) && !this.hasPermission(a, 'attendance.manage') && !this.hasPermission(a, 'notices.manage') && !this.hasPermission(a, 'results.manage') && !a.teaches.size) return ['0=1', []];
       const ids = [...new Set([...this.scopedClassIds(a), ...a.teaches])];
       if (!ids.length) return ['0=1', []];
       return [`${alias}.class_id IN (${ids.map(() => '?').join(',')})`, ids];
@@ -159,7 +159,7 @@ export class SchoolDO extends DurableObject<Env> {
     let ok = false;
     if (need === 'edit') ok = this.canManageStudents(a) && scoped;
     else if (need === 'fees') ok = (this.canFeesAll(a) && scoped) || a.classTeacherOf.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
-    else ok = this.isFullAdmin(a) || (a.role === 'subadmin' && scoped && (this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage') || this.hasPermission(a, 'notices.manage'))) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    else ok = this.isFullAdmin(a) || (a.role === 'subadmin' && scoped && (this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage') || this.hasPermission(a, 'notices.manage') || this.hasPermission(a, 'results.manage'))) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
     if (!ok) fail(403, 'You do not have access to this student');
     return st;
   }
@@ -177,7 +177,7 @@ export class SchoolDO extends DurableObject<Env> {
     if (a.role === 'subadmin') {
       if (!this.inClassScope(a, id)) fail(403, 'This class is outside your assigned scope');
       if (need === 'teacher' && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Attendance management permission is required');
-      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage'].some((p) => this.hasPermission(a, p));
+      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage'].some((p) => this.hasPermission(a, p));
       if (allowed) return c!;
       fail(403, 'Your account has no access to this class');
     }
@@ -734,6 +734,7 @@ export class SchoolDO extends DurableObject<Env> {
         permissions: [...a.permissions], scopeAll: a.scopeAll, scopeClasses: [...a.scopeClasses],
         canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canViewStudents: this.isFullAdmin(a) || this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage'),
         canManageAttendance: this.isFullAdmin(a) || this.hasPermission(a, 'attendance.manage'), canManageNotices: this.isFullAdmin(a) || this.hasPermission(a, 'notices.manage'),
+        canDecideRequests: this.isFullAdmin(a) || this.hasPermission(a, 'attendance.manage') || this.canManageStudents(a),
         canViewStaff: this.isFullAdmin(a) || this.hasPermission(a, 'staff.view') || this.canManageTimetable(a),
         canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], teaches: [...a.teaches], children, settings,
@@ -1564,7 +1565,17 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.get('/change-requests', (c) => {
       const a = c.get('actor');
-      const rows = this.isAdmin(a) ? this.q("SELECT * FROM change_requests ORDER BY status='open' DESC, created_at DESC LIMIT 200") : this.q('SELECT * FROM change_requests WHERE requested_by=? ORDER BY created_at DESC LIMIT 100', a.key);
+      let rows = this.q("SELECT * FROM change_requests ORDER BY status='open' DESC, created_at DESC LIMIT 300");
+      if (!this.isFullAdmin(a)) {
+        if (a.role === 'subadmin' && (this.hasPermission(a, 'attendance.manage') || this.canManageStudents(a))) {
+          rows = rows.filter((r) => {
+            if (r.kind === 'attendance' && !this.hasPermission(a, 'attendance.manage')) return false;
+            if (r.kind === 'student' && !this.canManageStudents(a)) return false;
+            const student = this.one('SELECT class_id FROM students WHERE id=?', r.ref);
+            return !!student && this.inClassScope(a, student.class_id);
+          });
+        } else rows = rows.filter((r) => r.requested_by === a.key);
+      }
       return c.json(rows.map((r) => ({ ...r, detail: JSON.parse(r.detail), student_name: this.one('SELECT name FROM students WHERE id=?', r.ref)?.name, requested_by_name: this.one('SELECT name FROM staff WHERE id=?', String(r.requested_by).slice(2))?.name })));
     });
     app.post('/change-requests/:id/decide', async (c) => {
