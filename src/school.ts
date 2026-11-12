@@ -788,9 +788,41 @@ export class SchoolDO extends DurableObject<Env> {
         if ((k === 'role' || k === 'subrole') && !a.isMain) continue;
         if (s![k] !== v) { changes[k] = { old: s![k], new: v }; this.run(`UPDATE staff SET ${k}=? WHERE id=?`, v, id); }
       }
+      let accessChanged = false;
+      if (a.isMain && (['permissions', 'scope_classes', 'scope_all'].some((k) => k in b) || changes.role)) {
+        const current = this.one('SELECT * FROM staff WHERE id=?', id)!;
+        const nextRole = String(current.role || 'teacher');
+        if (nextRole === 'subadmin') {
+          const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage']);
+          let permissions: string[] = [];
+          if (Array.isArray(b.permissions)) permissions = [...new Set(b.permissions.filter((p: any) => typeof p === 'string'))];
+          else if (current.permissions) { try { const parsed = JSON.parse(current.permissions); if (Array.isArray(parsed)) permissions = parsed; } catch {} }
+          else permissions = current.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
+            : current.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
+            : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+          if (!permissions.length || permissions.some((p) => !allowedPermissions.has(p))) fail(400, 'Choose at least one valid Mini Admin permission');
+          if (permissions.some((p) => ['fees.manage','attendance.manage','timetable.manage','syllabus.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
+          const previousScope: string[] = (() => { try { const v = JSON.parse(current.scope_classes || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
+          const scopeAll = b.scope_all !== undefined ? !!b.scope_all : ('scope_classes' in b ? false : (!current.scope_classes || current.scope_classes === '*'));
+          const scopeIds = [...new Set(Array.isArray(b.scope_classes) ? b.scope_classes.map(String) : previousScope)];
+          if (!scopeAll && (!scopeIds.length || scopeIds.some((cid) => !this.one('SELECT 1 FROM classes WHERE id=? AND active=1', cid)))) fail(400, 'Choose one or more active classes for this Mini Admin');
+          const permissionValue = JSON.stringify(permissions), scopeValue = scopeAll ? '*' : JSON.stringify(scopeIds);
+          if (current.permissions !== permissionValue || current.scope_classes !== scopeValue) {
+            this.run('UPDATE staff SET permissions=?, scope_classes=? WHERE id=?', permissionValue, scopeValue, id);
+            changes.permissions = { old: current.permissions, new: permissionValue };
+            changes.scope_classes = { old: current.scope_classes, new: scopeValue };
+            accessChanged = true;
+          }
+        } else if (current.permissions || current.scope_classes) {
+          this.run('UPDATE staff SET permissions=NULL, scope_classes=NULL WHERE id=?', id);
+          changes.permissions = { old: current.permissions, new: null };
+          changes.scope_classes = { old: current.scope_classes, new: null };
+          accessChanged = true;
+        }
+      }
       if (changes.name) this.run('UPDATE staff SET search_key=? WHERE id=?', skeleton(b.name), id);
       const n = this.one('SELECT * FROM staff WHERE id=?', id)!;
-      if (changes.email || changes.phone) await this.syncLogin('staff', id, [n.email, n.phone], true);
+      if (changes.email || changes.phone || changes.role || accessChanged) await this.syncLogin('staff', id, [n.email, n.phone], true);
       this.audit(a, 'staff.edit', 'staff', id, changes);
       return c.json(n);
     });
