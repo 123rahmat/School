@@ -759,6 +759,36 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true });
     });
 
+    // Replace a teacher with a genuinely new profile. Historical attendance,
+    // messages, audit entries and cash receipts remain attached to the former ID.
+    app.post('/staff/:id/replace', async (c) => {
+      const a = c.get('actor'); this.requireMain(a);
+      const oldId = c.req.param('id');
+      const old = this.one("SELECT * FROM staff WHERE id=? AND role='teacher' AND active=1", oldId);
+      if (!old) fail(404, 'Active teacher not found');
+      const b = await c.req.json<any>();
+      const name = String(b.name || '').trim();
+      const email = normId(b.email || '');
+      const phone = normId(b.phone || '') || null;
+      const effective = String(b.from_date || pkt().date);
+      if (!name || !email) fail(400, 'The replacement teacher name and Google email are required');
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
+      if (email === normId(old.email)) fail(400, 'A replacement teacher must use their own Google account email');
+      if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email)) fail(409, 'This Google email already belongs to an active staff account');
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(effective) || effective < pkt().date) fail(400, 'Choose today or a future replacement date');
+      const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + oldId)?.n || 0);
+      if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
+      const newId = this.replaceTeacherProfile(a, old, { name, email, phone, subjects: b.subjects || null }, effective, {
+        classes: b.transfer_classes !== false,
+        subjects: b.transfer_subjects !== false,
+        timetable: b.transfer_timetable !== false,
+      });
+      await this.syncLogin('staff', oldId, [], true);
+      await this.syncLogin('staff', newId, [email]);
+      this.audit(a, 'staff.replace', 'staff', oldId, { replacement_id: newId, effective, cash, transfer_classes: b.transfer_classes !== false, transfer_subjects: b.transfer_subjects !== false });
+      return c.json({ ok: true, old_id: oldId, new_id: newId, old_name: old.name, new_name: name, cash });
+    });
+
     // ----- classes -----
     app.get('/classes', (c) => {
       const a = c.get('actor');
