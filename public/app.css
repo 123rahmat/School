@@ -613,3 +613,11 @@ img, video, canvas, svg { max-width: 100%; }
   .side nav a, .tabs a { min-height: 44px; }
   .btn, button, select, input[type=checkbox] { touch-action: manipulation; }
 }
+
+
+/* ChatGPT-style collapsible workspace navigation on desktop. */
+@media (min-width: 861px) {
+  .top .menu { display: inline-flex; flex: 0 0 42px; width: 42px; min-height: 42px; align-items: center; justify-content: center; }
+  .layout.nav-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+  .layout.nav-collapsed > .side { display: none; }
+}
