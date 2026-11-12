@@ -545,6 +545,7 @@ owner.post('/schools/:id', async (c) => {
   const allowed = ['name', 'kind', 'tier', 'price_override', 'extra_storage_gb', 'grace_days', 'status', 'renews_at', 'cycle', 'launch_price_until'];
   const kinds = new Set(['school', 'college', 'university', 'academy', 'training_institute', 'other']);
   if ('kind' in b && !kinds.has(String(b.kind))) fail(400, 'Choose a supported institution category');
+  if ('cycle' in b && !['monthly', 'yearly'].includes(String(b.cycle))) fail(400, 'Billing cycle must be monthly or yearly.');
   if ('extra_storage_gb' in b) {
     const gb = Number(b.extra_storage_gb);
     if (!Number.isFinite(gb) || gb < 0 || gb > 500 || gb % 5 !== 0) fail(400, 'Extra storage must be allocated in 5 GB blocks (maximum 500 GB).');
