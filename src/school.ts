@@ -1004,6 +1004,7 @@ export class SchoolDO extends DurableObject<Env> {
         subjects: this.q('SELECT cs.subject, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', cl.id),
         students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
         substitution: this.one('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? AND x.date=?', cl.id, pkt().date),
+        substitutionHistory: this.q('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? ORDER BY x.date DESC LIMIT 50', cl.id),
         canManageSubstitution: this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, cl.id)),
         substitutionRate: Number(this.one('SELECT amount_per_day FROM class_substitution_rates WHERE class_id=?', cl.id)?.amount_per_day || 0),
         canEditSubstitutionRate: this.isFullAdmin(a),
