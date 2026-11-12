@@ -6,7 +6,7 @@ export interface Env {
   OWNER_EMAIL: string;
   PAYMENT_ACCOUNTS: string;
   GOOGLE_CLIENT_ID?: string;   // Google Identity Services Web client ID
-  GOOGLE_CLIENT_ID?: string;    // Sign in with Google
+  PUBLIC_CONTACT_EMAIL?: string; // Optional public contact shown on the landing page
 }
 
 /** The trusted identity the Worker passes to a school's object. Never comes from the browser. */
