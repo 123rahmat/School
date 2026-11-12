@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './util';
 
 type Statement = { sql: string; values: unknown[] };
-type Reply = { results: Record<string, unknown>[]; changes: number; lastRowId: number | null };
+type Reply = { results: Record<string, unknown>[]; changes: number };
 
 const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS plans (tier TEXT PRIMARY KEY, min_students INTEGER NOT NULL, max_students INTEGER NOT NULL, monthly INTEGER NOT NULL, yearly INTEGER NOT NULL, storage_gb REAL NOT NULL, sub_admins INTEGER NOT NULL, sort INTEGER NOT NULL)",
@@ -24,8 +24,10 @@ const SCHEMA = [
 
 export class PlatformDO extends DurableObject<Env> {
   private sql: SqlStorage;
+  private state: DurableObjectState;
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
+    this.state = state;
     this.sql = state.storage.sql;
     state.blockConcurrencyWhile(async () => {
       for (const sql of SCHEMA) this.sql.exec(sql);
@@ -39,7 +41,7 @@ export class PlatformDO extends DurableObject<Env> {
   private execute(s: Statement): Reply {
     if (!s || typeof s.sql !== 'string' || s.sql.length > 100000 || !Array.isArray(s.values)) throw new Error('Invalid platform SQL statement');
     const cursor = this.sql.exec(s.sql, ...s.values);
-    return { results: cursor.toArray() as Record<string, unknown>[], changes: cursor.rowsWritten ?? 0, lastRowId: cursor.lastRowId ?? null };
+    return { results: cursor.toArray() as Record<string, unknown>[], changes: cursor.rowsWritten ?? 0 };
   }
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -49,7 +51,7 @@ export class PlatformDO extends DurableObject<Env> {
       if (url.pathname === '/_batch') {
         const statements = (body as { statements: Statement[] }).statements;
         if (!Array.isArray(statements) || statements.length > 50) return Response.json({ error: 'Invalid batch' }, { status: 400 });
-        const results = this.sql.transactionSync(() => statements.map((s) => this.execute(s)));
+        const results = this.state.storage.transactionSync(() => statements.map((s) => this.execute(s)));
         return Response.json(results);
       }
       return Response.json(this.execute(body as Statement));
@@ -67,13 +69,13 @@ export class PlatformDatabase {
     const prepared: any = {
       bind: (...values: unknown[]) => { statement.values = values; return prepared; },
       first: async (column?: string) => { const r = await this.send('/_sql', statement); const row = r.results[0]; return column ? row?.[column] ?? null : row ?? null; },
-      all: async () => { const r = await this.send('/_sql', statement); return { results: r.results, success: true, meta: { changes: r.changes, last_row_id: r.lastRowId } }; },
-      run: async () => { const r = await this.send('/_sql', statement); return { success: true, meta: { changes: r.changes, last_row_id: r.lastRowId } }; },
+      all: async () => { const r = await this.send('/_sql', statement); return { results: r.results, success: true, meta: { changes: r.changes, last_row_id: null } }; },
+      run: async () => { const r = await this.send('/_sql', statement); return { success: true, meta: { changes: r.changes, last_row_id: null } }; },
       toStatement: () => ({ sql: statement.sql, values: [...statement.values] })
     };
     return prepared;
   }
-  async batch(items: any[]) { const rows = await this.send('/_batch', { statements: items.map((x) => x.toStatement()) }); return rows.map((r: any) => ({ success: true, results: r.results, meta: { changes: r.changes, last_row_id: r.lastRowId } })); }
+  async batch(items: any[]) { const rows = await this.send('/_batch', { statements: items.map((x) => x.toStatement()) }); return rows.map((r: any) => ({ success: true, results: r.results, meta: { changes: r.changes, last_row_id: null } })); }
   private async send(path: string, body: unknown): Promise<any> {
     const response = await this.stub.fetch('https://platform.internal' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const result: any = await response.json();
