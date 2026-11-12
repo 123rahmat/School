@@ -1806,7 +1806,7 @@ route('/notifications', async () => {
 // ---------- settings ----------
 route('/settings', async () => {
   const tab = query().tab || 'general';
-  const tabs = [['general', 'General'], ...(ME.role === 'admin' ? [['payments', 'Payment accounts']] : []), ['holidays', 'Holidays'], ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
+  const tabs = [['general', 'General'], ...(ME.role === 'admin' ? [['payments', 'Payment accounts']] : []), ['holidays', 'Holidays'], ...(ME.isFullAdmin ? [['bonuses', 'Substitution bonuses']] : []), ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
   let body = '';
   if (tab === 'general') {
     const { settings: s, schoolName } = await S('/settings');
