@@ -826,12 +826,18 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
       if (!b.subject) fail(400, 'Subject is required');
-      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', 'cs_' + rid(10), c.req.param('id'), b.subject.trim(), b.teacher_id || null);
+      const subjectId = 'cs_' + rid(10);
+      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', subjectId, c.req.param('id'), b.subject.trim(), b.teacher_id || null);
+      if (b.teacher_id) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+        rid(10), c.req.param('id'), b.subject.trim(), b.teacher_id, pkt().date, a.key);
       this.audit(a, 'class.subject.add', 'class', c.req.param('id'), b);
       return c.json({ ok: true });
     });
     app.delete('/classes/:id/subjects/:sid', (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
+      const sub = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
+      if (sub?.teacher_id) this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
+        pkt().date, sub.class_id, sub.subject, sub.teacher_id);
       this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
       this.audit(a, 'class.subject.remove', 'class', c.req.param('id'), c.req.param('sid'));
       return c.json({ ok: true });
