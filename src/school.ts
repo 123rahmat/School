@@ -852,6 +852,117 @@ export class SchoolDO extends DurableObject<Env> {
       });
     });
 
+    // ----- timetable: weekly periods with server-side teacher, class and room conflict checks -----
+    app.get('/timetable', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Only institution staff can open the timetable');
+      const classId = c.req.query('class_id');
+      if (classId) this.classOf(a, classId);
+      let where = '1=1', params: any[] = [];
+      if (!this.isAdmin(a)) { where = 't.teacher_id=?'; params = [a.id]; }
+      if (classId) { where += ' AND t.class_id=?'; params.push(classId); }
+      const slots = this.q('SELECT t.*, c.name AS class_name, st.name AS teacher_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id LEFT JOIN staff st ON st.id=t.teacher_id WHERE ' + where + ' ORDER BY t.day_of_week,t.start_time,c.grade,c.name,t.period', ...params);
+      return c.json({ slots, canManage: this.isFullAdmin(a) });
+    });
+    app.post('/timetable', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      const id = String(b.id || 'tt_' + rid(10));
+      const classId = String(b.class_id || '');
+      const subject = String(b.subject || '').trim();
+      const teacherId = String(b.teacher_id || '') || null;
+      const day = Number(b.day_of_week), period = Number(b.period);
+      const start = String(b.start_time || ''), end = String(b.end_time || '');
+      const room = String(b.room || '').trim() || null;
+      if (!classId || !subject) fail(400, 'Choose a class and enter a subject');
+      this.classOf(a, classId);
+      if (!Number.isInteger(day) || day < 1 || day > 6) fail(400, 'Choose a weekday from Monday to Saturday');
+      if (!Number.isInteger(period) || period < 1 || period > 16) fail(400, 'Period number must be between 1 and 16');
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(end) || end <= start) fail(400, 'Enter a valid time range; the end must be after the start');
+      if (teacherId && !this.one("SELECT 1 FROM staff WHERE id=? AND role='teacher' AND active=1", teacherId)) fail(400, 'Choose an active teacher account');
+      const conflicts = this.q("SELECT t.id,t.class_id,t.subject,t.teacher_id,t.day_of_week,t.period,t.start_time,t.end_time,t.room,c.name AS class_name,st.name AS teacher_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id LEFT JOIN staff st ON st.id=t.teacher_id WHERE t.day_of_week=? AND t.id<>? AND t.start_time<? AND t.end_time>? AND (t.class_id=? OR (? IS NOT NULL AND t.teacher_id=?) OR (? IS NOT NULL AND t.room=?))",
+        day, id, end, start, classId, teacherId, teacherId, room, room);
+      if (conflicts.length) {
+        const warnings = conflicts.map((x) => ({
+          type: x.class_id === classId ? 'class' : x.teacher_id && teacherId && x.teacher_id === teacherId ? 'teacher' : 'room',
+          message: x.class_id === classId
+            ? 'This class already has ' + x.subject + ' scheduled from ' + x.start_time + ' to ' + x.end_time
+            : x.teacher_id && teacherId && x.teacher_id === teacherId
+              ? (x.teacher_name || 'This teacher') + ' is already teaching ' + x.class_name + ' from ' + x.start_time + ' to ' + x.end_time
+              : 'Room ' + room + ' is already booked for ' + x.class_name + ' from ' + x.start_time + ' to ' + x.end_time,
+          conflicting_slot_id: x.id,
+        }));
+        return c.json({ error: 'Timetable conflict: resolve the highlighted overlap before saving.', conflicts: warnings }, 409);
+      }
+      const exists = this.one('SELECT id FROM timetable_slots WHERE id=?', id);
+      if (exists) {
+        this.run('UPDATE timetable_slots SET class_id=?,subject=?,teacher_id=?,day_of_week=?,period=?,start_time=?,end_time=?,room=?,updated_at=? WHERE id=?',
+          classId, subject, teacherId, day, period, start, end, room, now(), id);
+      } else {
+        this.run('INSERT INTO timetable_slots (id,class_id,subject,teacher_id,day_of_week,period,start_time,end_time,room,created_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+          id, classId, subject, teacherId, day, period, start, end, room, a.key, now());
+      }
+      const current = this.one('SELECT * FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?) LIMIT 1', classId, subject);
+      if (current && current.teacher_id !== teacherId) {
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
+          pkt().date, classId, subject, current.teacher_id);
+        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, current.id);
+        if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+          rid(10), classId, subject, teacherId, pkt().date, a.key);
+      } else if (!current) {
+        this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', 'cs_' + rid(10), classId, subject, teacherId);
+        if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+          rid(10), classId, subject, teacherId, pkt().date, a.key);
+      }
+      this.audit(a, exists ? 'timetable.edit' : 'timetable.add', 'timetable', id, { classId, subject, teacherId, day, period, start, end, room });
+      return c.json(this.one('SELECT * FROM timetable_slots WHERE id=?', id));
+    });
+    app.delete('/timetable/:id', (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const id = c.req.param('id');
+      const slot = this.one('SELECT * FROM timetable_slots WHERE id=?', id);
+      if (!slot) fail(404, 'Timetable period not found');
+      this.run('DELETE FROM timetable_slots WHERE id=?', id);
+      this.audit(a, 'timetable.delete', 'timetable', id, slot);
+      return c.json({ ok: true });
+    });
+
+    // ----- syllabus documents: private PDFs associated with a class and subject -----
+    app.get('/syllabus', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Only institution staff can open the syllabus library');
+      const rows = this.q("SELECT d.id,d.class_id,d.subject,d.title,d.file_key,d.file_name,d.uploaded_by,d.created_at,c.name AS class_name,st.name AS uploader FROM syllabus_documents d JOIN classes c ON c.id=d.class_id LEFT JOIN staff st ON st.id=substr(d.uploaded_by,3) WHERE d.deleted_at IS NULL ORDER BY c.grade,c.name,d.subject,d.created_at DESC");
+      return c.json(this.isAdmin(a) ? rows : rows.filter((r) => a.teaches.has(r.class_id)));
+    });
+    app.post('/syllabus', async (c) => {
+      const a = c.get('actor'); const ctx = c.get('ctx');
+      if (a.type !== 'staff') fail(403, 'Only institution staff can upload syllabus documents');
+      const form = await c.req.formData();
+      const classId = String(form.get('class_id') || '');
+      const subject = String(form.get('subject') || '').trim();
+      const title = String(form.get('title') || '').trim();
+      const file = form.get('file');
+      if (!classId || !subject || !title || !file || typeof file !== 'object' || !('stream' in file)) fail(400, 'Class, subject, title and a PDF file are required');
+      this.classOf(a, classId);
+      if (!this.isAdmin(a) && !a.teaches.has(classId)) fail(403, 'You can only upload syllabus for an assigned class');
+      if ((file as File).type !== 'application/pdf' && !String((file as File).name || '').toLowerCase().endsWith('.pdf')) fail(400, 'Upload a PDF document');
+      const key = await this.putFile(ctx, a, file as File, 'syllabus', 20);
+      const id = 'sy_' + rid(10);
+      this.run('INSERT INTO syllabus_documents (id,class_id,subject,title,file_key,file_name,uploaded_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
+        id, classId, subject, title, key, (file as File).name, a.key, now());
+      this.audit(a, 'syllabus.upload', 'syllabus', id, { classId, subject, title });
+      return c.json({ ok: true, id });
+    });
+    app.delete('/syllabus/:id', (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const doc = this.one('SELECT * FROM syllabus_documents WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
+      if (!doc) fail(404, 'Syllabus document not found');
+      this.run('UPDATE syllabus_documents SET deleted_at=? WHERE id=?', now(), doc.id);
+      this.run('UPDATE files SET deleted_at=? WHERE key=?', now(), doc.file_key);
+      this.audit(a, 'syllabus.delete', 'syllabus', doc.id, { title: doc.title });
+      return c.json({ ok: true });
+    });
+
     // ----- students -----
     app.get('/students', (c) => {
       const a = c.get('actor');
