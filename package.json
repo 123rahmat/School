@@ -7,7 +7,6 @@
     "test": "node test/sanity.mjs",
     "dev": "wrangler dev --local --port 8787",
     "typecheck": "tsc",
-    "db:local": "wrangler d1 migrations apply DB --local",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run",
     "check": "npm run typecheck && npm test && npm run build"
