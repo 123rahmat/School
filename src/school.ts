@@ -916,7 +916,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (email === normId(old.email)) fail(400, 'A replacement teacher must use their own Google account email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email)) fail(409, 'This Google email already belongs to an active staff account');
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Teacher replacement takes effect today. Future-dated handovers are not activated automatically yet.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Teacher replacement takes effect today. Future-dated handovers are not activated automatically yet.');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + oldId)?.n || 0);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
       const classIds = [...new Set(Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids.map(String) : [])];
@@ -1040,14 +1040,16 @@ export class SchoolDO extends DurableObject<Env> {
       if (teacherId === cl!.class_teacher_id) fail(400, 'The assigned class teacher cannot be their own substitute');
       const dayNumber = new Date(date + 'T00:00:00Z').getUTCDay();
       if (!dayNumber) fail(400, 'Sunday does not have a scheduled timetable day');
+      const existingAssignment = this.one('SELECT id,status,bonus_paid_at FROM class_substitutions WHERE class_id=? AND date=?', classId, date);
+      if (existingAssignment) fail(409, existingAssignment.status === 'completed' || existingAssignment.bonus_paid_at ? 'This class substitution is completed and is part of the bonus history.' : 'A substitute is already assigned to this class on this date. Remove that assignment before replacing it.');
+      const alreadySubstituting = this.one('SELECT c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? AND x.date=? LIMIT 1', teacherId, date);
+      if (alreadySubstituting) fail(409, teacher.name + ' is already assigned to cover ' + alreadySubstituting.class_name + ' on ' + date);
       const periods = this.q('SELECT * FROM timetable_slots WHERE class_id=? AND day_of_week=? ORDER BY start_time', classId, dayNumber);
       const conflicts: string[] = [];
       for (const period of periods) {
         const existing = this.one('SELECT t.id,c.name AS class_name,t.subject,t.start_time,t.end_time FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? AND t.day_of_week=? AND t.class_id<>? AND t.start_time<? AND t.end_time>? LIMIT 1',
           teacherId, dayNumber, classId, period.end_time, period.start_time);
         if (existing) conflicts.push(teacher.name + ' already teaches ' + existing.class_name + ' (' + existing.subject + ') from ' + existing.start_time + ' to ' + existing.end_time);
-        const substitution = this.one('SELECT c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? AND x.date=? AND x.class_id<>? LIMIT 1', teacherId, date, classId);
-        if (substitution) conflicts.push(teacher.name + ' is already assigned as a substitute for ' + substitution.class_name + ' on ' + date);
       }
       if (conflicts.length) return c.json({ error: 'Substitute teacher timetable conflict. Choose another teacher or resolve the schedule first.', conflicts: [...new Set(conflicts)] }, 409);
       const id = 'sub_' + rid(10);
