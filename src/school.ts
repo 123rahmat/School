@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Hono } from 'hono';
-import { Env, Ctx, now, rid, normId, pkt, addDays, HttpError, fail } from './util';
+import { Env, Ctx, now, rid, normId, pkt, addDays, HttpError, fail, platformDb } from './util';
 import { SCHOOL_SCHEMA, DEFAULT_SETTINGS } from './schema';
 
 type Row = Record<string, any>;
@@ -217,11 +217,11 @@ export class SchoolDO extends DurableObject<Env> {
   /** Keep the platform sign-in lookup in step with the school's records. */
   async syncLogin(kind: 'staff' | 'guardian', refId: string, ids: string[], revoke = false) {
     const schoolId = this.schoolId();
-    const stmts = [this.env.DB.prepare('DELETE FROM logins WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId)];
+    const stmts = [platformDb(this.env).prepare('DELETE FROM logins WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId)];
     for (const i of [...new Set(ids.map(normId).filter((value) => value.includes('@')))])
-      stmts.push(this.env.DB.prepare('INSERT OR IGNORE INTO logins (identifier, school_id, kind, ref_id) VALUES (?,?,?,?)').bind(i, schoolId, kind, refId));
-    if (revoke) stmts.push(this.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId));
-    await this.env.DB.batch(stmts);
+      stmts.push(platformDb(this.env).prepare('INSERT OR IGNORE INTO logins (identifier, school_id, kind, ref_id) VALUES (?,?,?,?)').bind(i, schoolId, kind, refId));
+    if (revoke) stmts.push(platformDb(this.env).prepare('UPDATE sessions SET revoked=1 WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId));
+    await platformDb(this.env).batch(stmts);
   }
   schoolId(): string { return this.one("SELECT value FROM meta WHERE key='school_id'")?.value as string; }
 
