@@ -571,6 +571,9 @@ img, video, canvas, svg { max-width: 100%; }
 
 /* ---------- Final cross-device layout safeguards ---------- */
 .layout { grid-template-columns: minmax(0, 240px) minmax(0, 1fr); }
+@media (min-width: 861px) and (max-width: 1180px) {
+  .layout { grid-template-columns: minmax(0, 218px) minmax(0, 1fr); }
+}
 .main, .content, .top, .row, .card, .stat, .table-wrap { min-width: 0; }
 .content > *, .content form, .content section { max-width: 100%; }
 .row > *, .form > *, .grid > * { min-width: 0; }
