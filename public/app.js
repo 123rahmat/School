@@ -161,12 +161,17 @@ function view(html) {
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students or teachers — name, reg no, class, last 4 digits of phone" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
         <button class="btn small hidden" id="install">Install app</button>
       </div>
-      <div class="content">${billingBanner()}${html}</div>
+      <div class="content">${billingBanner()}${syncStatusHtml()}${html}</div>
     </div>
   </div>`;
   $('#menu').onclick = () => $('#side').classList.toggle('open');
   $$('#side nav a').forEach((a) => a.addEventListener('click', () => $('#side').classList.remove('open')));
-  const lo = $('#logout'); if (lo) lo.onclick = async (e) => { e.preventDefault(); await api('/api/auth/logout', { body: {} }).catch(() => {}); ME = null; go('/login'); };
+  const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
+    e.preventDefault();
+    await api('/api/auth/logout', { body: {} }).catch(() => {});
+    clearPrivateOfflineData();
+    ME = null; BILL = null; go('/login');
+  };
   setupSearch();
   setupInstall();
 }
@@ -351,8 +356,8 @@ function landingPage() {
           <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
           <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
           <p class="landing-lead">School Manager brings everyday institution operations into one organised workspace: student records, staff, classes, attendance, fees, parent communication, results and reports.</p>
-          <div class="landing-actions"><a class="btn primary" href="#/signup">Create an institution account</a><a class="btn" href="#/login">Sign in</a></div>
-          <div class="landing-secondary-actions"><button class="btn" id="landing-install" type="button">Install app</button><a href="#/login">Prefer the browser? Use in browser</a></div>
+          <div class="landing-actions landing-entry-actions"><a class="btn primary" href="#/login">Use in browser</a><button class="btn" id="landing-install" type="button">Install app</button></div>
+          <div class="landing-secondary-actions"><a href="#/signup">New institution? Create an account</a><span>Use the browser or install on a supported phone, tablet or desktop.</span></div>
           <p class="landing-note">Start with a 14-day trial for up to 50 students. No password, email code or phone login is used.</p>
         </div>
         <div class="landing-preview" aria-label="Illustration of an education management dashboard">
@@ -400,7 +405,8 @@ function landingPage() {
       </section>
       <section class="landing-cta">
         <div><div class="landing-eyebrow">READY TO GET ORGANISED?</div><h2>Start with your institution's workspace.</h2><p>Create your account and complete the guided setup. You can also sign in to an existing account.</p></div>
-        <div class="landing-actions"><a class="btn primary" href="#/signup">Create account</a><a class="btn" href="#/login">Sign in</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
+        <div class="landing-actions landing-entry-actions"><a class="btn primary" href="#/login">Use in browser</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
+        <p class="small muted"><a href="#/signup">Create a new institution account</a></p>
       </section>
     </main>
     <footer class="landing-footer" id="contact">
@@ -1031,18 +1037,48 @@ route('/attendance', async () => {
   ${ME.role === 'admin' ? '<h2>Holidays</h2><p><a href="#/settings?tab=holidays">Manage holiday calendar</a></p>' : ''}`);
 });
 
-const OUTBOX = 'att-outbox';
-const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX) || '[]'); } catch { return []; } };
+// Offline attendance is queued per signed-in person and institution so one user's work
+// can never be replayed under another user's session on a shared device.
+const offlineIdentity = () => ME ? [ME.schoolName || 'platform', ME.id || ME.kind, ME.kind || 'user'].map(x => String(x).replace(/[^a-z0-9_-]/gi, '_')).join(':') : 'signed-out';
+const OUTBOX = () => 'att-outbox-v2:' + offlineIdentity();
+const DRAFT_PREFIX = () => 'att-draft-v2:' + offlineIdentity() + ':';
+const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX()) || '[]'); } catch { return []; } };
+const saveOutbox = (items) => { try { localStorage.setItem(OUTBOX(), JSON.stringify(items)); } catch { toast('This device could not save the offline queue. Check device storage.'); } };
+function syncStatusHtml() {
+  if (!ME) return '';
+  const count = outbox().length;
+  if (!navigator.onLine) return `<div class="sync-status offline" role="status"><b>Offline mode</b><span>Previously opened records may be available. Attendance changes are saved on this device and queued for sync.</span>${count ? `<strong>${count} attendance item(s) waiting</strong>` : ''}</div>`;
+  if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
+  return '';
+}
+function clearPrivateOfflineData() {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('att-draft-v2:' + offlineIdentity() + ':') || key === OUTBOX()) localStorage.removeItem(key);
+    }
+  } catch {}
+  if (navigator.serviceWorker?.controller) navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_PRIVATE_CACHES' });
+}
 async function flushOutbox() {
-  const items = outbox(); if (!items.length || !navigator.onLine) return;
+  if (!ME || !navigator.onLine) return;
+  const items = outbox(); if (!items.length) return;
   const left = [];
   for (const it of items) {
-    try { await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records } }); toast('Offline attendance synced'); }
-    catch (e) { if (!e.status || e.status >= 500) left.push(it); else toast('Could not sync attendance: ' + e.message); }
+    try {
+      await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records }, quiet: true });
+      toast(it.submit ? 'Queued attendance submitted to the server' : 'Queued attendance draft synced');
+    } catch (e) {
+      // Preserve every failed item. A 401 needs sign-in; a 409/400 needs an explicit human review.
+      left.push({ ...it, lastError: e.message, blocked: !!e.status && e.status < 500, lastTriedAt: new Date().toISOString() });
+      if (e.status === 401) break;
+    }
   }
-  try { localStorage.setItem(OUTBOX, JSON.stringify(left)); } catch {}
+  saveOutbox(left);
+  if (left.length && left.some(x => x.blocked)) toast('Some offline attendance needs review. Open Attendance and check the affected date.');
+  if (!left.length) render();
 }
-window.addEventListener('online', flushOutbox);
+window.addEventListener('online', () => { flushOutbox(); });
+window.addEventListener('offline', () => { if (ME) render(); });
 setInterval(flushOutbox, 60000);
 
 route('/attendance/:id', async ({ id }) => {
@@ -1051,7 +1087,7 @@ route('/attendance/:id', async ({ id }) => {
   const canMark = ME.isAdmin || ME.classTeacherOf.includes(id);
   const locked = d.status === 'submitted' && !ME.isAdmin;
   const recs = Object.fromEntries(d.students.map((s) => [s.id, s.status]));
-  const draftKey = `att-draft:${id}:${date}`;
+  const draftKey = DRAFT_PREFIX() + `${id}:${date}`;
   if (d.status !== 'submitted') { try { Object.assign(recs, JSON.parse(localStorage.getItem(draftKey) || '{}')); } catch {} }
   view(`<div class="row between"><div><h1 style="margin:0">Attendance — ${esc(d.class.name)}</h1>
   <div class="muted">${d.status === 'submitted' ? `Submitted ${fmtTime(d.submitted_at)}` : d.status === 'draft' ? 'Draft saved' : 'Everyone is present by default — tap only the exceptions.'}</div></div>
@@ -1085,8 +1121,8 @@ route('/attendance/:id', async ({ id }) => {
       toast(submit ? 'Submitted — parents of absent and late students are being told' : 'Draft saved');
     } catch (e) {
       if (!e.status || e.status === 503) {
-        const ob = outbox().filter((x) => !(x.classId === id && x.date === date)); ob.push({ classId: id, date, records: recs, submit });
-        try { localStorage.setItem(OUTBOX, JSON.stringify(ob)); } catch {}
+        const ob = outbox().filter((x) => !(x.classId === id && x.date === date)); ob.push({ classId: id, date, records: recs, submit, queuedAt: new Date().toISOString() });
+        saveOutbox(ob);
         toast('You are offline. Saved on this device; it will sync automatically.');
       } else toast(e.message);
     }
