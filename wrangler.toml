@@ -32,6 +32,4 @@ crons = ["5 * * * *"]
 
 [vars]
 OWNER_EMAIL = "owner@example.com"
-# "1" shows sign-in codes on screen. Set to "0" in production and configure an email/SMS provider.
-DEV_OTP = "1"
 PAYMENT_ACCOUNTS = "Easypaisa 0300-0000000 / JazzCash 0300-0000000"
