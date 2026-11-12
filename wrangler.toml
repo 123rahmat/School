@@ -1,4 +1,4 @@
-name = "school-ms"
+name = "school"
 main = "src/index.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -32,7 +32,7 @@ crons = ["5 * * * *"]
 
 [vars]
 GOOGLE_CLIENT_ID = "705601663817-i9vpppf9dr8emr41ebu6due0nl68aijh.apps.googleusercontent.com"
-OWNER_EMAIL = "owner@example.com"
+OWNER_EMAIL = "Rahmatsps098@gmail.com"
 PAYMENT_ACCOUNTS = "Easypaisa 0300-0000000 / JazzCash 0300-0000000"
 
 [observability.logs]
