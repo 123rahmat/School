@@ -231,86 +231,94 @@ async function refreshMe() {
 function authPage(inner) {
   $('#app').innerHTML = `<div class="auth"><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div></div>`;
 }
+async function mountGoogleButton(target, onCredential, buttonText = 'signin_with') {
+  const cfg = await api('/api/config').catch(() => ({}));
+  if (!cfg.googleClientId) {
+    target.innerHTML = '<p class="small muted">Google sign-in is not configured yet. Add your Google OAuth Web Client ID in Cloudflare Worker settings.</p>';
+    return;
+  }
+  try {
+    if (!window.google?.accounts?.id) {
+      await new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-google-identity]');
+        if (existing) {
+          existing.addEventListener('load', resolve, { once: true });
+          existing.addEventListener('error', reject, { once: true });
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.dataset.googleIdentity = '1';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Google sign-in could not load. Please check your connection.'));
+        document.head.appendChild(script);
+      });
+    }
+    google.accounts.id.initialize({
+      client_id: cfg.googleClientId,
+      callback: ({ credential }) => Promise.resolve(onCredential(credential)).catch((error) => {
+        const message = $('#authmsg');
+        if (message) message.textContent = error.message || 'Google sign-in failed.';
+      }),
+    });
+    google.accounts.id.renderButton(target, { theme: 'outline', size: 'large', text: buttonText, shape: 'rectangular', width: 320 });
+  } catch (error) {
+    const message = $('#authmsg');
+    if (message) message.textContent = error.message || 'Google sign-in could not be loaded.';
+  }
+}
+
 route('/login', async () => {
   authPage(`
-    <h1>Sign in</h1>
-    <p class="muted small">Use the email or phone number your school registered. No password needed.</p>
-    <form id="f1"><input name="identifier" placeholder="Email or phone (03xx…)" required autofocus><button class="btn primary">Send code</button></form>
-    <form id="f2" class="hidden"><p class="muted small" id="msg"></p><input name="code" inputmode="numeric" placeholder="6-digit code" required><button class="btn primary">Sign in</button></form>
-    <div id="choose" class="hidden stack"></div>
-    <div id="gbtn" style="margin-top:14px"></div>
-    <p class="small muted" style="margin-top:16px">New school? <a href="#/signup">Start a free 14-day trial</a></p>`);
-  const cfg = await api('/api/config').catch(() => ({}));
-  if (cfg.googleClientId) {
-    const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
-    s.onload = () => {
-      google.accounts.id.initialize({ client_id: cfg.googleClientId, callback: async ({ credential }) => {
-        const go2 = async (pick) => {
-          const r = await act(() => api('/api/auth/google', { body: { credential, pick } }));
-          if (r.choose) {
-            $('#f1').classList.add('hidden'); $('#choose').classList.remove('hidden');
-            $('#choose').innerHTML = '<p>Choose where to sign in:</p>' + r.choose.map((c) => `<button class="btn" data-pick="${c.pick}">${esc(c.label)}</button>`).join('');
-            $$('#choose button').forEach((b) => b.onclick = () => go2(Number(b.dataset.pick)));
-            return;
-          }
-          await refreshMe(); go('/');
-        };
-        go2();
-      } });
-      google.accounts.id.renderButton($('#gbtn'), { theme: 'outline', size: 'large', text: 'signin_with', width: 300 });
-    };
-    document.head.appendChild(s);
-  }
-  let identifier = '';
-  $('#f1').onsubmit = async (e) => {
-    e.preventDefault();
-    identifier = formData(e.target).identifier;
-    const r = await act(() => api('/api/auth/start', { body: { identifier } }));
-    $('#f1').classList.add('hidden'); $('#f2').classList.remove('hidden');
-    $('#msg').innerHTML = esc(r.message) + (r.devCode ? `<br><b>Test mode code: ${esc(r.devCode)}</b>` : '');
-    $('#f2 input').focus();
-  };
-  const verify = async (code, pick) => {
-    const r = await act(() => api('/api/auth/verify', { body: { identifier, code, pick } }));
+    <h1>Sign in to School Manager</h1>
+    <p class="muted small">Use the Google account email registered by your school. Email codes, phone sign-in and passwords are not used.</p>
+    <div id="gbtn" style="margin-top:18px"></div>
+    <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
+    <p class="small muted" style="margin-top:16px">Starting a new school? <a href="#/signup">Create a school account</a></p>`);
+  await mountGoogleButton($('#gbtn'), async (credential) => {
+    const r = await api('/api/auth/google', { body: { credential } });
     if (r.choose) {
-      $('#f2').classList.add('hidden');
-      $('#choose').classList.remove('hidden');
-      $('#choose').innerHTML = '<p>Choose where to sign in:</p>' + r.choose.map((c) => `<button class="btn" data-pick="${c.pick}">${esc(c.label)}</button>`).join('');
-      $$('#choose button').forEach((b) => b.onclick = () => verify(code, Number(b.dataset.pick)));
+      $('#gbtn').classList.add('hidden');
+      $('#authmsg').textContent = 'This Google email is linked to more than one school. Choose a school:';
+      const choose = document.createElement('div');
+      choose.className = 'stack';
+      choose.innerHTML = r.choose.map((item) => `<button class="btn" data-pick="${item.pick}">${esc(item.label)}</button>`).join('');
+      $('#authmsg').after(choose);
+      $$('button[data-pick]', choose).forEach((button) => button.onclick = async () => {
+        const picked = await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
+        await refreshMe();
+        go('/');
+      });
       return;
     }
-    await refreshMe(); go('/');
-  };
-  $('#f2').onsubmit = (e) => { e.preventDefault(); verify(formData(e.target).code); };
+    await refreshMe();
+    go('/');
+  }, 'signin_with');
 });
 
 route('/signup', async () => {
   authPage(`
-    <h1>Start your free trial</h1>
-    <p class="muted small">14 days free, up to 50 students. No card needed.</p>
-    <form id="f1">
-      <input name="school_name" placeholder="School or academy name" required>
+    <h1>Start a school account</h1>
+    <p class="muted small">Create your administrator account using a verified Google email. That same Google account will be your only sign-in method.</p>
+    <form id="signupForm" class="stack">
+      <input name="school_name" placeholder="School or academy name" required maxlength="120">
       <select name="kind" style="width:100%;margin-bottom:10px"><option value="school">School</option><option value="academy">Academy</option></select>
-      <input name="admin_name" placeholder="Your name" required>
-      <input name="email" type="email" placeholder="Your email" required>
-      <input name="phone" placeholder="Your phone (optional)">
-      <button class="btn primary">Continue</button>
+      <input name="admin_name" placeholder="Administrator name" required maxlength="120">
+      <input name="phone" placeholder="Contact phone (optional)" inputmode="tel">
     </form>
-    <form id="f2" class="hidden"><p class="muted small" id="msg"></p><input name="code" inputmode="numeric" placeholder="6-digit code" required><button class="btn primary">Create school</button></form>
-    <p class="small muted" style="margin-top:16px">Already registered? <a href="#/login">Sign in</a></p>`);
-  let email = '';
-  $('#f1').onsubmit = async (e) => {
-    e.preventDefault();
-    const b = formData(e.target); email = b.email;
-    const r = await act(() => api('/api/signup/start', { body: b }));
-    $('#f1').classList.add('hidden'); $('#f2').classList.remove('hidden');
-    $('#msg').innerHTML = esc(r.message) + (r.devCode ? `<br><b>Test mode code: ${esc(r.devCode)}</b>` : '');
-  };
-  $('#f2').onsubmit = async (e) => {
-    e.preventDefault();
-    await act(() => api('/api/signup/verify', { body: { email, code: formData(e.target).code } }));
-    await refreshMe(); go('/setup');
-  };
+    <div id="gbtn" style="margin-top:16px"></div>
+    <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
+    <p class="small muted" style="margin-top:16px">Already registered? <a href="#/login">Sign in with Google</a></p>`);
+  await mountGoogleButton($('#gbtn'), async (credential) => {
+    const form = $('#signupForm');
+    if (!form.reportValidity()) return;
+    const details = formData(form);
+    const r = await api('/api/signup/google', { body: { ...details, credential } });
+    await refreshMe();
+    go('/setup');
+  }, 'signup_with');
 });
 
 route('/setup', async () => {
@@ -418,8 +426,8 @@ function studentForm(classes, s = null) {
     <div><label>Father's name *</label><input name="father_name" required value="${esc(s?.father_name)}"></div>
     <div><label>Registration number</label><input name="reg_no" placeholder="Created automatically" value="${esc(s?.reg_no)}"></div>
     <div><label>Class *</label><select name="class_id" required>${own.map((c) => `<option value="${c.id}" ${s?.class_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-    <div><label>Parent phone * (sign-in)</label><input name="parent_phone" required placeholder="03001234567" value="${esc(s?.parent_phone)}"></div>
-    <div><label>Parent email</label><input name="parent_email" type="email" value="${esc(s?.parent_email)}"></div>
+    <div><label>Parent Google email * (sign-in)</label><input name="parent_email" type="email" required placeholder="parent@gmail.com" value="${esc(s?.parent_email)}"></div>
+    <div><label>Parent phone (optional contact)</label><input name="parent_phone" placeholder="03001234567" value="${esc(s?.parent_phone)}"></div>
     <div><label>Date of birth</label><input name="dob" type="date" value="${esc(s?.dob)}"></div>
     <div><label>Gender</label><select name="gender"><option value=""></option>${['Male', 'Female'].map((g) => `<option ${s?.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
     <div><label>Admission date</label><input name="admission_date" type="date" value="${esc(s?.admission_date || today())}"></div>
@@ -441,7 +449,7 @@ function studentForm(classes, s = null) {
 
 function importDialog() {
   modal(`<h2>Import students</h2>
-  <p class="small">Save your Excel sheet as <b>CSV</b> with these columns in the first row:<br><code>name, father_name, class, parent_phone, parent_email, reg_no, dob, gender, address</code><br>
+  <p class="small">Save your Excel sheet as <b>CSV</b> with these columns in the first row:<br><code>name, father_name, class, parent_email, parent_phone, reg_no, dob, gender, address</code><br>
   Class must match a class name exactly, e.g. <code>7-B</code>. Registration number is created automatically if empty.</p>
   <button class="btn small" id="tpl">Download template</button>
   <p><input type="file" id="file" accept=".csv,text/csv"></p>
@@ -739,12 +747,12 @@ route('/staff', async () => {
 function staffForm(t = null) {
   modal(`<h2>${t ? 'Edit' : 'Add'} staff</h2><form id="tf" class="form">
     <div><label>Name *</label><input name="name" required value="${esc(t?.name)}"></div>
-    <div><label>Email (sign-in)</label><input name="email" type="email" value="${esc(t?.email)}"></div>
-    <div><label>Phone (sign-in)</label><input name="phone" value="${esc(t?.phone)}"></div>
+    <div><label>Google email * (sign-in)</label><input name="email" type="email" required value="${esc(t?.email)}"></div>
+    <div><label>Phone (optional contact)</label><input name="phone" value="${esc(t?.phone)}"></div>
     <div><label>Subjects</label><input name="subjects" placeholder="Maths, Physics" value="${esc(t?.subjects)}"></div>
     ${ME.isMainAdmin && !t?.is_main ? `<div><label>Role</label><select name="role" id="role"><option value="teacher">Teacher</option><option value="subadmin" ${t?.role === 'subadmin' ? 'selected' : ''}>Sub-admin</option><option value="admin" ${t?.role === 'admin' ? 'selected' : ''}>Admin</option></select></div>
     <div><label>Sub-admin area</label><select name="subrole"><option value="office">Office</option><option value="accountant" ${t?.subrole === 'accountant' ? 'selected' : ''}>Accountant</option><option value="coordinator" ${t?.subrole === 'coordinator' ? 'selected' : ''}>Coordinator</option></select></div>` : ''}
-    <p class="full small muted">They sign in with this email (code by email) or phone (code by SMS). Nobody can join a school without being added.</p>
+    <p class="full small muted">They sign in only with this verified Google email. Phone is optional contact information and cannot be used to sign in.</p>
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#tf', m).onsubmit = async (e) => {
       e.preventDefault();
