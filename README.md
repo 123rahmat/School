@@ -1,8 +1,8 @@
 # School Manager
 
-A school management system where each school gets its own isolated space to manage students, teachers,
-attendance and fees, with parent alerts, fee reminders and receipts running automatically. It runs on
-Cloudflare, installs on any phone or computer from the browser, and schools pay a monthly or yearly plan by size.
+A school and academy management system where each institution gets its own isolated workspace for students,
+staff, classes, attendance, fees, family communication, results and reports. It runs on Cloudflare and can be
+used in a browser or installed as a web app on supported phones, tablets and desktop browsers.
 
 Built from the design plan (*School management system: design plan*, Nov 2026), core build steps 1–5.
 
@@ -25,10 +25,11 @@ fees but not message threads. The platform owner sees billing and usage only, ne
 
 ## What is included
 
-1. **School spaces, sign-in, roles, installable app, owner panel** — password-less sign-in with a one-time code
-   (email or phone), sessions tied to a device that the main admin can sign out, new-device alerts, free 14-day
-   trial sign-up, owner panel with manual slip confirmation, billing stages (trial → active → reminder → grace → paused → restored),
-   automatic invoices sized by active students, support access granted by the school for set hours.
+1. **Institution spaces, Google-only sign-in, roles, installable app, owner panel** — Google Identity Services
+   verifies the user's Google ID token; the verified email is matched to a staff or guardian record. New
+   institution registration creates the main administrator profile and a 14-day trial. Sessions can be revoked
+   by the main admin, with new-device alerts and platform billing controls. Password, email-code and phone login
+   are not enabled.
 2. **Students and teachers** — add one by one or import CSV (from Excel), auto registration numbers, duplicate
    warning, siblings share one parent sign-in, teacher-added students await confirmation, profiles with change
    history, forgiving search (Muhammad/Mohammad/Muhammed, partial words, last 4 phone digits), mark as left /
@@ -36,7 +37,9 @@ fees but not message threads. The platform owner sees billing and usage only, ne
    from a date, year-end promotion with exceptions.
 3. **Attendance** — everyone present by default, tap the exceptions, draft → review → submit, final for the
    teacher; change requests; admin corrections with reason (parent told); holiday calendar; monthly register
-   with %, 3-in-a-row and low-attendance warnings; CSV/print; works offline and syncs later.
+   with %, 3-in-a-row and low-attendance warnings; CSV/print. Previously opened data may be available offline;
+   attendance drafts and submissions are saved on the device and queued to sync when the connection returns.
+   Other create/update operations still require a live connection.
 4. **Fees** — fee heads and per-class plans, sibling/scholarship/custom discounts, monthly vouchers with arrears
    and late fines, printable 3-copy vouchers; three ways to pay (cash to class teacher, Easypaisa/JazzCash slip
    upload, office); verify/reject; numbered receipts; duplicate transaction IDs blocked; cash held per teacher and
@@ -79,25 +82,19 @@ npm run db:local
 npm run dev
 ```
 
-Open http://localhost:8787. Choose **Start a free 14-day trial**. In test mode (`DEV_OTP = "1"` in `wrangler.toml`)
-the sign-in code is shown on screen. Sign in as the platform owner with the `OWNER_EMAIL` address.
+Open http://localhost:8787. Add `http://localhost:8787` as an authorized JavaScript origin in
+the Google OAuth Web client, then use Google sign-in. Set `OWNER_EMAIL` to the Google account that should access
+the platform owner panel. For local development, you may also set `GOOGLE_CLIENT_ID` in `.dev.vars`; never put
+a Google Client Secret in frontend code or commit it to the repository.
 
 ## Tests
 
-With `npm run dev` running:
+`npm test` runs the repository sanity checks for Google-only authentication, deployment bindings,
+the public landing page, PWA/offline queue configuration and idempotent attendance submission.
+`npm run typecheck` runs TypeScript checks.
 
-```bash
-npm test
-```
-
-runs 77 end-to-end checks, including the plan's must-pass security tests (a parent cannot read another child, a
-teacher cannot open a class they don't teach, school A cannot read school B, a removed or signed-out user is refused).
-
-```bash
-node test/ui.mjs
-```
-
-opens every screen in a real browser as admin, teacher (phone size), parent and owner.
+The older browser UI walkthrough in `test/ui.mjs` still uses the retired email/phone-code test flow and
+must be migrated before it can be treated as a valid Google-authenticated browser test.
 
 ## Deploy to Cloudflare
 
@@ -115,35 +112,19 @@ npx wrangler r2 bucket create school-files
 npx wrangler d1 migrations apply DB --remote
 ```
 
-Before going live, edit `wrangler.toml`: set `OWNER_EMAIL` to your email, `PAYMENT_ACCOUNTS` to your own Easypaisa
-and JazzCash numbers (where schools pay *you*), and `DEV_OTP = "0"`.
+Before production use, verify `OWNER_EMAIL`, `GOOGLE_CLIENT_ID`, optional `PUBLIC_CONTACT_EMAIL`, and
+`PAYMENT_ACCOUNTS` in `wrangler.toml` or Cloudflare Worker Settings → Variables and Secrets.
 
-Sign-in codes are delivered by these providers. Add the keys as secrets (never in `wrangler.toml`):
+Google sign-in is the only authentication method. Staff and guardian records must contain the exact Google email
+address they use. Phone numbers remain optional contact information and are never login identifiers. When a Google
+email is not registered, the sign-in page offers the user a path to create a new institution account or ask their
+institution administrator to add that exact email.
 
-- Email codes, via [Resend](https://resend.com) (free tier, verify your domain first):
+The Web Client ID is public configuration. Do not put a Google Client Secret in browser code or commit credentials
+to GitHub. The current Google Identity Services ID-token flow does not need the Google Client Secret.
 
-```bash
-npx wrangler secret put RESEND_API_KEY
-```
-
-  Also set `EMAIL_FROM = "School Manager <login@yourdomain.pk>"` under `[vars]`.
-
-- Phone codes for parents, via [Twilio](https://twilio.com) SMS, or WhatsApp if you set `TWILIO_WHATSAPP_FROM`:
-
-```bash
-npx wrangler secret put TWILIO_ACCOUNT_SID
-```
-
-```bash
-npx wrangler secret put TWILIO_AUTH_TOKEN
-```
-
-  Also set `TWILIO_SMS_FROM` (a number or Messaging Service SID) under `[vars]`.
-
-- Sign in with Google: create an OAuth Web client in Google Cloud Console, add your site as an authorised
-  JavaScript origin, and set `GOOGLE_CLIENT_ID` under `[vars]`. The button appears on the sign-in page.
-
-Google sign-in is the only authentication method. Staff and parent records must have the exact email address of the\nGoogle account they use. Phone numbers may be saved for contact and school communications, but are never accepted as\na login identity. Existing accounts that only had phone-based login must have a Google email added by the school admin.\n\nFor local development, put the Web Client ID in `.dev.vars` (do not commit that file). In Cloudflare, add\n`GOOGLE_CLIENT_ID` under the Worker’s Settings → Variables and Secrets. The client ID is public configuration; do not\nput a Google client secret in browser code or commit credentials to GitHub.\n\nThen deploy:
+The public landing page reads its optional contact email from `PUBLIC_CONTACT_EMAIL`. Set it to an address you
+want visitors to use; the project does not publish a guessed contact address.
 
 ```bash
 npm run deploy
