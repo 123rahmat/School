@@ -1078,23 +1078,71 @@ route('/staff', async () => {
 });
 
 function staffForm(t = null) {
-  modal(`<h2>${t ? 'Edit' : 'Add'} staff</h2><form id="tf" class="form">
-    <div><label>Name *</label><input name="name" required value="${esc(t?.name)}"></div>
-    <div><label>Google email * (sign-in)</label><input name="email" type="email" required value="${esc(t?.email)}"></div>
-    <div><label>Phone (optional contact)</label><input name="phone" value="${esc(t?.phone)}"></div>
-    <div><label>Subjects</label><input name="subjects" placeholder="Maths, Physics" value="${esc(t?.subjects)}"></div>
-    ${ME.isMainAdmin && !t?.is_main ? `<div><label>Role</label><select name="role" id="role"><option value="teacher">Teacher</option><option value="subadmin" ${t?.role === 'subadmin' ? 'selected' : ''}>Sub-admin</option><option value="admin" ${t?.role === 'admin' ? 'selected' : ''}>Admin</option></select></div>
-    <div><label>Sub-admin area</label><select name="subrole"><option value="office">Office</option><option value="accountant" ${t?.subrole === 'accountant' ? 'selected' : ''}>Accountant</option><option value="coordinator" ${t?.subrole === 'coordinator' ? 'selected' : ''}>Coordinator</option></select></div>` : ''}
-    <p class="full small muted">Google manages passwords. Changing this email changes the account's sign-in identity and revokes its existing device sessions; the new address must be verified in Google before the next sign-in. Phone is contact information only.</p>
-    <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#tf', m).onsubmit = async (e) => {
-      e.preventDefault();
-      const b = formData(e.target);
-      if (t) await act(() => S('/staff/' + t.id, { method: 'PATCH', body: b }), 'Saved');
-      else await act(() => S('/staff', { body: b }), 'Added');
-      closeModal(); render();
-    };
-  });
+  const permissionOptions = [
+    ['dashboard.view', 'Dashboard overview'], ['staff.view', 'View staff directory'],
+    ['students.view', 'View student profiles'], ['students.manage', 'Add and edit student records'],
+    ['fees.manage', 'Manage fees, vouchers, payments and fee reports'], ['attendance.manage', 'Manage attendance and corrections'],
+    ['timetable.manage', 'Manage weekly timetable and teacher periods'], ['syllabus.manage', 'Upload and manage syllabus documents'],
+    ['classes.view', 'View assigned classes'], ['notices.manage', 'Create and manage notices'], ['results.manage', 'Upload, assign and publish results'],
+  ];
+  const defaults = t?.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
+    : t?.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
+    : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+  let currentPermissions = [];
+  try { currentPermissions = Array.isArray(t?.permissions) ? t.permissions : (t?.permissions ? JSON.parse(t.permissions) : defaults); } catch { currentPermissions = defaults; }
+  let scopeIds = [];
+  try { scopeIds = t?.scope_classes && t.scope_classes !== '*' ? JSON.parse(t.scope_classes) : []; } catch {}
+  const scopeAll = !t?.scope_classes || t.scope_classes === '*';
+  const classes = Array.isArray(ME.classes) ? ME.classes : [];
+  const permissionHtml = permissionOptions.map(([value, label]) =>
+    '<label class="row" style="margin:0"><input type="checkbox" name="permissions" value="' + value + '" ' +
+    (currentPermissions.includes(value) ? 'checked' : '') + '> ' + label + '</label>').join('');
+  const classHtml = classes.map((c) =>
+    '<label class="row" style="margin:0"><input type="checkbox" name="scope_classes" value="' + esc(c.id) + '" ' +
+    (scopeIds.includes(c.id) ? 'checked' : '') + '> ' + esc(c.name) + '</label>').join('');
+  const miniConfig = ME.isMainAdmin && !t?.is_main
+    ? '<div><label>Account role</label><select name="role" id="staff-role">' +
+      '<option value="teacher" ' + (t?.role === 'teacher' || !t ? 'selected' : '') + '>Teacher / staff</option>' +
+      '<option value="subadmin" ' + (t?.role === 'subadmin' ? 'selected' : '') + '>Mini Admin (delegated access)</option>' +
+      '<option value="admin" ' + (t?.role === 'admin' ? 'selected' : '') + '>Full administrator</option></select></div>' +
+      '<div><label>Mini Admin label</label><select name="subrole">' +
+      '<option value="office" ' + (t?.subrole === 'office' ? 'selected' : '') + '>Office</option>' +
+      '<option value="accountant" ' + (t?.subrole === 'accountant' ? 'selected' : '') + '>Accountant</option>' +
+      '<option value="coordinator" ' + (t?.subrole === 'coordinator' ? 'selected' : '') + '>Coordinator</option></select></div>' +
+      '<div class="full stack" id="mini-admin-config" style="display:' + (t?.role === 'subadmin' ? 'block' : 'none') + '">' +
+      '<h3 style="margin:0">Mini Admin permissions</h3><p class="small muted">Select only the tasks this person may perform. Fee, attendance, timetable and syllabus access also provides limited student identity details in the selected classes.</p>' +
+      '<div class="grid">' + permissionHtml + '</div><div class="divider"></div><h3 style="margin:0">Class scope</h3>' +
+      '<label class="row" style="margin:0"><input type="checkbox" name="scope_all" id="scope-all" value="1" ' + (scopeAll ? 'checked' : '') + '> All active classes in the institution</label>' +
+      '<div id="scope-class-list" style="display:' + (scopeAll ? 'none' : 'block') + '"><p class="small muted">Or select the exact classes this Mini Admin may access.</p>' +
+      '<div class="grid">' + (classHtml || '<p class="small muted">Create classes before assigning a class-limited Mini Admin.</p>') + '</div></div></div>'
+    : '';
+  modal('<h2>' + (t ? 'Edit' : 'Add') + ' staff account</h2><form id="tf" class="form">' +
+    '<div><label>Name *</label><input name="name" required maxlength="120" value="' + esc(t?.name) + '"></div>' +
+    '<div><label>Google email * (sign-in)</label><input name="email" type="email" required autocomplete="off" value="' + esc(t?.email) + '"></div>' +
+    '<div><label>Phone (optional contact)</label><input name="phone" inputmode="tel" value="' + esc(t?.phone) + '"></div>' +
+    '<div><label>Subjects</label><input name="subjects" placeholder="Maths, Physics" value="' + esc(t?.subjects) + '"></div>' +
+    miniConfig +
+    '<p class="full small muted">Google manages passwords. Changing this email changes the account sign-in identity and revokes its existing device sessions. The new address must be verified in Google before the next sign-in. Phone is contact information only.</p>' +
+    '<div class="full row"><button class="btn primary">Save account</button><button type="button" class="btn" data-close>Cancel</button></div></form>', (m) => {
+      const role = $('#staff-role', m), config = $('#mini-admin-config', m), scope = $('#scope-all', m), classList = $('#scope-class-list', m);
+      if (role && config) role.onchange = () => { config.style.display = role.value === 'subadmin' ? 'block' : 'none'; };
+      if (scope && classList) scope.onchange = () => { classList.style.display = scope.checked ? 'none' : 'block'; };
+      $('#tf', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const b = formData(form);
+        if (b.role === 'subadmin') {
+          b.permissions = $$('input[name="permissions"]:checked', form).map((x) => x.value);
+          b.scope_all = !!form.elements.scope_all?.checked;
+          b.scope_classes = $$('input[name="scope_classes"]:checked', form).map((x) => x.value);
+          if (!b.permissions.length) return toast('Select at least one Mini Admin permission.');
+          if (!b.scope_all && !b.scope_classes.length) return toast('Choose all classes or select one or more classes.');
+        }
+        if (t) await act(() => S('/staff/' + t.id, { method: 'PATCH', body: b }), 'Saved');
+        else await act(() => S('/staff', { body: b }), 'Added');
+        closeModal(); await refreshMe(); render();
+      };
+    });
 }
 
 route('/staff/:id', async ({ id }) => {
