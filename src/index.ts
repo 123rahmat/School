@@ -8,6 +8,24 @@ type V = { Bindings: Env; Variables: { sess: Sess } };
 const app = new Hono<V>();
 
 const SESSION_DAYS = 30;
+const SESSION_COOKIE = '__Host-inst_session';
+
+app.use('*', async (c, next) => {
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (c.req.path.startsWith('/api/') || c.req.path.startsWith('/files/')) c.header('Cache-Control', 'no-store, private');
+  const fetchSite = c.req.header('sec-fetch-site');
+  if (fetchSite === 'cross-site') return c.json({ error: 'Cross-site requests are not allowed.' }, 403);
+  const origin = c.req.header('origin');
+  if (origin) {
+    try {
+      if (new URL(origin).origin !== new URL(c.req.url).origin) return c.json({ error: 'Cross-origin requests are not allowed.' }, 403);
+    } catch { return c.json({ error: 'Invalid request origin.' }, 403); }
+  }
+  await next();
+});
 
 app.onError((err, c) => {
   if (err instanceof HttpError) return c.json({ error: err.message }, err.status as any);
@@ -29,7 +47,7 @@ async function ctxFor(env: Env, schoolId: string, kind: 'staff' | 'guardian', re
   const p = await planFor(env, s);
   return {
     schoolId, kind, refId, schoolStatus: s.status,
-    studentCap: s.tier === 'trial' ? 50 : 1e9, // paid schools keep working past their tier; it is resized at renewal
+    studentCap: Number(p?.max_students || 50),
     storageLimitBytes: Math.round((p.storage_gb + s.extra_storage_gb) * 1024 ** 3),
   };
 }
@@ -47,7 +65,7 @@ async function callSchoolJson(env: Env, ctx: Ctx, path: string, body?: any): Pro
 }
 const systemCtx = (env: Env, id: string) => ctxFor(env, id, 'staff', 'system');
 
-async function createSession(c: any, schoolId: string, kind: string, refId: string, label: string) {
+async function createSession(c: any, schoolId: string, kind: string, refId: string, label: string): Promise<void> {
   const token = rid(32);
   const device = (c.req.header('user-agent') || 'unknown').slice(0, 120);
   const t = now();
@@ -55,17 +73,17 @@ async function createSession(c: any, schoolId: string, kind: string, refId: stri
   const seen = await c.env.DB.prepare('SELECT 1 FROM sessions WHERE school_id=? AND kind=? AND ref_id=? AND device=? LIMIT 1').bind(schoolId, kind, refId, device).first();
   await c.env.DB.prepare('INSERT INTO sessions (token_hash, school_id, kind, ref_id, device, label, created_at, last_seen, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .bind(await sha256(token), schoolId, kind, refId, device, label, t, t, exp).run();
-  setCookie(c, 'sid', token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: SESSION_DAYS * 86400 });
+  setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: SESSION_DAYS * 86400 });
+  deleteCookie(c, SESSION_COOKIE, { path: '/' });
+  deleteCookie(c, 'sid', { path: '/' });
   if (!seen && kind !== 'owner') {
     const ctx = await systemCtx(c.env, schoolId);
     await callSchoolJson(c.env, ctx, '/internal/notify-admins', { title: 'New device sign-in', body: `${label} signed in on a new device: ${device.slice(0, 60)}` }).catch(() => {});
   }
-  return token;
 }
 
 async function loadSession(c: any): Promise<Sess | null> {
-  const auth = c.req.header('authorization');
-  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : getCookie(c, 'sid');
+  const token = getCookie(c, SESSION_COOKIE);
   if (!token) return null;
   const h = await sha256(token);
   const s: any = await c.env.DB.prepare('SELECT * FROM sessions WHERE token_hash=? AND revoked=0 AND expires_at>?').bind(h, now()).first();
@@ -111,11 +129,11 @@ async function loginRows(env: Env, email: string) {
 
 async function finishLogin(c: any, rows: any[], pick: any) {
   const r = rows[Number(pick ?? 0)];
-  if (!r) fail(403, 'This Google email is not registered with an active school account. Ask your school admin to add it.');
+  if (!r) fail(403, 'This Google email is not linked to an active institution account. Ask your institution administrator to add it.');
   const ctx = await ctxFor(c.env, r.school_id, r.kind, r.ref_id);
   const me = await callSchoolJson(c.env, ctx, '/me');
-  const token = await createSession(c, r.school_id, r.kind, r.ref_id, me.name);
-  return c.json({ ok: true, kind: r.kind, token });
+  await createSession(c, r.school_id, r.kind, r.ref_id, me.name);
+  return c.json({ ok: true, kind: r.kind });
 }
 
 app.get('/api/config', (c) => c.json({
@@ -125,10 +143,11 @@ app.get('/api/config', (c) => c.json({
 
 app.post('/api/auth/logout', async (c) => {
   const auth = c.req.header('authorization');
-  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : getCookie(c, 'sid');
+  const token = getCookie(c, SESSION_COOKIE);
   if (token) {
     await c.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE token_hash=?').bind(await sha256(token)).run();
   }
+  deleteCookie(c, SESSION_COOKIE, { path: '/' });
   deleteCookie(c, 'sid', { path: '/' });
   return c.json({ ok: true });
 });
@@ -139,8 +158,8 @@ app.post('/api/auth/google', async (c) => {
 
   // The platform owner uses the same verified Google sign-in, with no email-code fallback.
   if (identity.email === normId(c.env.OWNER_EMAIL)) {
-    const token = await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
-    return c.json({ ok: true, kind: 'owner', token });
+    await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
+    return c.json({ ok: true, kind: 'owner' });
   }
 
   const rows = await loginRows(c.env, identity.email);
@@ -159,17 +178,20 @@ app.post('/api/signup/google', async (c) => {
   if (identity.email === normId(c.env.OWNER_EMAIL)) fail(403, 'The platform owner account cannot register a school.');
   const name = String(school_name || '').trim();
   const adminName = String(admin_name || identity.name || '').trim();
-  if (!name || !adminName) fail(400, 'School name and administrator name are required.');
+  const allowedKinds = new Set(['school', 'college', 'university', 'academy', 'training_institute', 'other']);
+  const institutionKind = String(kind || '');
+  if (!name || !adminName) fail(400, 'Institution name and administrator name are required.');
+  if (!allowedKinds.has(institutionKind)) fail(400, 'Choose a supported institution category.');
 
   const schoolId = await createSchool(c.env, {
     name,
-    kind: kind === 'academy' ? 'academy' : 'school',
+    kind: institutionKind,
     admin: { name: adminName, email: identity.email, phone: normId(phone) || '' },
   });
   const ctx = await ctxFor(c.env, schoolId, 'staff', 'system');
   const me = await callSchoolJson(c.env, ctx, '/internal/main-admin', {});
-  const token = await createSession(c, schoolId, 'staff', me.id, adminName);
-  return c.json({ ok: true, kind: 'staff', token, schoolId });
+  await createSession(c, schoolId, 'staff', me.id, adminName);
+  return c.json({ ok: true, kind: 'staff', schoolId });
 });
 
 async function createSchool(env: Env, b: { name: string; kind?: string; admin: { name: string; email: string; phone?: string } }) {
@@ -413,7 +435,7 @@ app.get('/api/whoami', async (c) => {
   const ctx = await ctxFor(c.env, s.school_id, s.kind as any, s.ref_id);
   const r = await callSchool(c.env, ctx, '/me');
   if (!r.ok) return c.json({ signedIn: false });
-  return c.json({ signedIn: true, ...(await r.json<any>()), schoolStatus: ctx.schoolStatus });
+  return c.json({ signedIn: true, schoolId: s.school_id, institutionType: ctx.institutionType, ...(await r.json<any>()), schoolStatus: ctx.schoolStatus });
 });
 
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
