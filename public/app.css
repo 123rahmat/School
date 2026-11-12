@@ -347,3 +347,12 @@ body:has(.landing-shell) { background: #081323; }
   .security-points { grid-template-columns: 1fr; }
   .landing-footer { grid-template-columns: 1fr; }.landing-footer > div:first-child { grid-column: auto; }
 }
+
+.sync-status { display:flex; flex-wrap:wrap; align-items:center; gap:7px 14px; margin:0 0 16px; padding:11px 14px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.035); font-size:.82rem; }
+.sync-status b { color:var(--head); }
+.sync-status span { color:var(--muted); }
+.sync-status strong { margin-left:auto; color:var(--warn); font-size:.78rem; }
+.sync-status.offline { border-color:var(--warn-line); background:var(--warn-soft); }
+.sync-status.queued { border-color:var(--info-line); background:var(--info-soft); }
+.landing-entry-actions .btn { min-width:180px; }
+@media (max-width:760px) { .sync-status { align-items:flex-start; flex-direction:column; gap:4px; } .sync-status strong { margin-left:0; } }
