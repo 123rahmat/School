@@ -1872,14 +1872,33 @@ export class SchoolDO extends DurableObject<Env> {
 
   replaceTeacher(a: Actor, classId: string, teacherId: string | null, from: string, subjectsToo = false) {
     const cl = this.one('SELECT * FROM classes WHERE id=?', classId); if (!cl) fail(404, 'Class not found');
-    if (teacherId && !this.one('SELECT 1 FROM staff WHERE id=? AND active=1', teacherId)) fail(400, 'Unknown teacher');
+    if (teacherId && !this.one("SELECT 1 FROM staff WHERE id=? AND role='teacher' AND active=1", teacherId)) fail(400, 'Choose an active teacher account');
+    const oldTeacherId = cl!.class_teacher_id;
+    const movedSubjects = subjectsToo && oldTeacherId && teacherId
+      ? this.q('SELECT id, subject FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, oldTeacherId) : [];
+    if (movedSubjects.length) {
+      const periods = this.q('SELECT * FROM timetable_slots WHERE class_id=? AND teacher_id=?', classId, oldTeacherId);
+      for (const period of periods) {
+        const conflict = this.one('SELECT t.id,c.name AS class_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? AND t.day_of_week=? AND t.id<>? AND t.start_time<? AND t.end_time>? LIMIT 1',
+          teacherId, period.day_of_week, period.id, period.end_time, period.start_time);
+        if (conflict) fail(409, 'Timetable conflict: the replacement teacher is already assigned to ' + conflict.class_name + ' during ' + period.start_time + '–' + period.end_time);
+      }
+    }
     this.tx(() => {
       this.run('UPDATE class_teacher_assignments SET to_date=? WHERE class_id=? AND to_date IS NULL', addDays(from, -1), classId);
       if (teacherId) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), classId, teacherId, from);
-      if (subjectsToo && cl!.class_teacher_id && teacherId) this.run('UPDATE class_subjects SET teacher_id=? WHERE class_id=? AND teacher_id=?', teacherId, classId, cl!.class_teacher_id);
+      for (const sub of movedSubjects) {
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
+          addDays(from, -1), classId, sub.subject, oldTeacherId);
+        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, sub.id);
+        this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+          rid(10), classId, sub.subject, teacherId, from, a.key);
+      }
+      if (movedSubjects.length) this.run('UPDATE timetable_slots SET teacher_id=?, updated_at=? WHERE class_id=? AND teacher_id=?',
+        teacherId, now(), classId, oldTeacherId);
       this.run('UPDATE classes SET class_teacher_id=? WHERE id=?', teacherId, classId);
     });
-    this.audit(a, 'class.replace_teacher', 'class', classId, { old: cl!.class_teacher_id, new: teacherId, from });
-    if (teacherId) this.notify('s:' + teacherId, 'Class assigned', `You are now the class teacher of ${cl!.name} from ${from}.`);
+    this.audit(a, 'class.replace_teacher', 'class', classId, { old: oldTeacherId, new: teacherId, from, subjectsToo, timetablePeriodsTransferred: movedSubjects.length });
+    if (teacherId) this.notify('s:' + teacherId, 'Class assigned', 'You are now the class teacher of ' + cl!.name + ' from ' + from + '.');
   }
 }
