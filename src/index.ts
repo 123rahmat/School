@@ -155,7 +155,7 @@ async function verifyGoogleIdentity(env: Env, credential: unknown) {
   }
   if (!jwk) fail(401, 'Google sign-in failed');
   let publicKey: CryptoKey;
-  try { publicKey = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']); }
+  try { publicKey = await crypto.subtle.importKey('jwk', jwk!, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']); }
   catch { fail(503, 'Google verification is temporarily unavailable. Please retry.'); }
   const signedContent = new TextEncoder().encode(parts[0] + '.' + parts[1]);
   const signature = decodeBase64Url(parts[2]);
