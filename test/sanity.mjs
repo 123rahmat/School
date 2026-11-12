@@ -81,6 +81,7 @@ assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.star
 assert.match(school, /day\.submitted_by === a\.key/, 'Attendance submit retry must be idempotent for the same submitter');
 assert.doesNotMatch(school, /this\.classOf\(a,\s*classId,\s*'(?:view|teacher)',\s*date\)/, 'Attendance access must not retain the removed dated-substitution argument');
 assert.match(school, /async runCron\(ctx: Ctx\)/, 'Cron cleanup that awaits R2 deletions must be asynchronous');
+assert.match(school, /app\.delete\('\/notices\/:id', async \(c\) => \{/, 'Notice deletion handler must be async before awaiting its confirmation body');
 assert.match(school, /app\.post\('\/internal\/cron', async \(c\) => c\.json\(await this\.runCron/, 'The internal cron route must await asynchronous cleanup');
 
 assert.ok(!app.includes("route('/timetable'") && !app.includes("route('/syllabus'") && !app.includes('substitution-bonuses'), 'Focused school UI must not expose removed teaching modules');
