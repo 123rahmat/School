@@ -1428,8 +1428,9 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true });
     });
     app.post('/students/:id/discounts', async (c) => {
-      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only admins or the accountant can set discounts');
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only assigned fee managers can set discounts');
       const s = this.student(a, c.req.param('id'), 'fees'); const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm this student discount before saving');
       if (!['sibling', 'scholarship', 'staff child', 'custom'].includes(b.kind) || !(Number(b.amount) > 0)) fail(400, 'Choose a kind and an amount');
       this.run('INSERT INTO student_discounts VALUES (?,?,?,?,?)', 'sd_' + rid(10), s.id, b.kind, Math.round(Number(b.amount)), b.note || null);
       this.audit(a, 'discount.add', 'student', s.id, b);
@@ -1437,7 +1438,9 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.delete('/students/:id/discounts/:did', (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
-      this.run('DELETE FROM student_discounts WHERE id=? AND student_id=?', c.req.param('did'), c.req.param('id'));
+      const student = this.student(a, c.req.param('id'), 'fees');
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removing this student discount');
+      this.run('DELETE FROM student_discounts WHERE id=? AND student_id=?', c.req.param('did'), student.id);
       this.audit(a, 'discount.remove', 'student', c.req.param('id'), c.req.param('did'));
       return c.json({ ok: true });
     });
@@ -1607,8 +1610,11 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans, classes, editable: classes.filter((x) => this.canSetFees(a, x.id)).map((x) => x.id) });
     });
     app.post('/fees/heads', async (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
-      const b = await c.req.json<any>(); if (!b.name) fail(400, 'Name required');
+      const a = c.get('actor');
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.canFeesAll(a) && a.scopeAll))) fail(403, 'Creating shared fee heads requires full-institution fee management');
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm adding this shared fee head');
+      if (!b.name) fail(400, 'Name required');
       this.run('INSERT INTO fee_heads VALUES (?,?,?)', 'fh_' + rid(8), b.name, b.monthly === false ? 0 : 1);
       this.audit(a, 'fee_head.add', null, null, b); return c.json({ ok: true });
     });
@@ -1824,8 +1830,10 @@ export class SchoolDO extends DurableObject<Env> {
         voucher: { ...v, total: this.voucherTotal(v), balance: this.voucherBalance(v) }, school: this.one("SELECT value FROM meta WHERE key='school_name'")?.value,
         verified_by_name: this.one('SELECT name FROM staff WHERE id=?', String(p!.verified_by || '').slice(2))?.name });
     });
-    app.post('/payments/:id/verify', (c) => {
+    app.post('/payments/:id/verify', async (c) => {
       const a = c.get('actor');
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the slip amount, student and transaction reference, then confirm verification');
       const p = this.one("SELECT * FROM payments WHERE id=? AND status='submitted'", c.req.param('id')); if (!p) fail(404, 'Payment not found or already handled');
       if (!this.canVerify(a, p!)) fail(403, 'You cannot verify this payment');
       if (p!.submitted_by === a.key && a.type !== 'staff') fail(403, 'You cannot verify your own payment');
@@ -1834,9 +1842,10 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true, receipt });
     });
     app.post('/payments/:id/reject', async (c) => {
-      const a = c.get('actor'); const { reason } = await c.req.json<any>();
+      const a = c.get('actor'); const { reason, confirm } = await c.req.json<any>();
       const p = this.one("SELECT * FROM payments WHERE id=? AND status='submitted'", c.req.param('id')); if (!p) fail(404, 'Not found');
       if (!this.canVerify(a, p!)) fail(403, 'You cannot reject this payment');
+      if (confirm !== true) fail(400, 'Confirm that this payment slip should be rejected');
       if (!reason) fail(400, 'A reason is required');
       this.run("UPDATE payments SET status='rejected', reason=?, verified_by=?, verified_at=? WHERE id=?", reason, a.key, now(), p!.id);
       this.notifyParentOf(p!.student_id, 'Slip rejected', `Reason: ${reason}. Please upload again.`);
@@ -1876,8 +1885,9 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ teachers: Object.values(byTeacher), handovers: this.q('SELECT h.*, t.name FROM cash_handovers h JOIN staff t ON t.id=h.teacher_id ORDER BY h.created_at DESC LIMIT 50') });
     });
     app.post('/cash/handover', async (c) => {
-      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only the accountant or admin can confirm a handover');
-      const { teacher_id, amount } = await c.req.json<any>();
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only an assigned fee manager can confirm a handover');
+      const { teacher_id, amount, confirm } = await c.req.json<any>();
+      if (confirm !== true) fail(400, 'Confirm the teacher cash handover');
       const items = this.q("SELECT * FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + teacher_id)
         .filter((p) => this.isFullAdmin(a) || this.inClassScope(a, p.class_id));
       const total = items.reduce((t, p) => t + p.amount, 0);
