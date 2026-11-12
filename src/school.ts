@@ -172,17 +172,40 @@ export class SchoolDO extends DurableObject<Env> {
   }
   schoolId(): string { return this.one("SELECT value FROM meta WHERE key='school_id'")?.value as string; }
 
-  storageUsed(): number { return Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM files WHERE deleted_at IS NULL')?.n || 0); }
+  /** Physical R2 usage: active files, recycle-bin files awaiting purge, and uploads in flight. */
+  storageUsed(): number {
+    const files = Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM files')?.n || 0);
+    const pending = Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM file_upload_reservations')?.n || 0);
+    return files + pending;
+  }
 
   async putFile(ctx: Ctx, a: Actor, file: File, kind: string, maxMb = 10): Promise<string> {
     if (file.size > maxMb * 1024 * 1024) fail(400, `File too large (max ${maxMb} MB)`);
-    if (this.storageUsed() + file.size > ctx.storageLimitBytes) fail(507, 'Storage is full. Ask the main admin to add a storage block.');
     const key = `${ctx.schoolId}/${kind}/${rid(16)}-${(file.name || 'file').replace(/[^\w.-]/g, '_').slice(-60)}`;
-    await this.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
-    this.run('INSERT INTO files (key, size, kind, uploaded_by, content_type, created_at) VALUES (?,?,?,?,?,?)', key, file.size, kind, a.key, file.type, now());
-    const used = this.storageUsed(), lim = ctx.storageLimitBytes;
-    for (const pct of [95, 80]) {
-      if (used / lim >= pct / 100 && (used - file.size) / lim < pct / 100) { this.notifyAdmins('Storage warning', `Storage is ${pct}% full.`, { mainOnly: true }); break; }
+    const reservation = 'up_' + rid(12);
+    // Reserve synchronously before the network await. Concurrent uploads in this
+    // Durable Object see the reservation and cannot collectively exceed the quota.
+    if (this.storageUsed() + file.size > ctx.storageLimitBytes) fail(507, 'Storage is full. Add a 5 GB storage block under Billing.');
+    this.run('INSERT INTO file_upload_reservations (id, key, size, created_at) VALUES (?,?,?,?)', reservation, key, file.size, now());
+    try {
+      await this.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+      this.tx(() => {
+        this.run('INSERT INTO files (key, size, kind, uploaded_by, content_type, created_at) VALUES (?,?,?,?,?,?)', key, file.size, kind, a.key, file.type, now());
+        this.run('DELETE FROM file_upload_reservations WHERE id=?', reservation);
+      });
+    } catch (error) {
+      try { await this.env.FILES.delete(key); } catch (cleanupError) { console.error('R2 upload cleanup failed', key, cleanupError); }
+      this.run('DELETE FROM file_upload_reservations WHERE id=?', reservation);
+      throw error;
+    }
+    const used = this.storageUsed(), limit = ctx.storageLimitBytes;
+    const before = Math.max(0, used - file.size);
+    const threshold = [98, 95, 80].find((pct) => used / limit >= pct / 100 && before / limit < pct / 100);
+    if (threshold) {
+      const remaining = Math.max(0, 100 - used / limit * 100);
+      this.notifyAdmins(threshold >= 98 ? 'Storage almost full' : 'Storage warning',
+        threshold >= 98 ? `Only ${remaining.toFixed(1)}% storage remains. Add storage under Billing to avoid upload interruptions.` : `Storage has reached ${threshold}% of its limit.`,
+        { mainOnly: true });
     }
     return key;
   }
@@ -505,11 +528,21 @@ export class SchoolDO extends DurableObject<Env> {
       }
     }
 
-    // Recycle bin: remove files deleted more than 30 days ago.
+    // Clean abandoned upload reservations and recycle-bin objects only after R2 confirms deletion.
+    const staleReservation = new Date(Date.now() - 60 * 60e3).toISOString();
+    for (const r of this.q('SELECT id, key FROM file_upload_reservations WHERE created_at<?', staleReservation)) {
+      try {
+        await this.env.FILES.delete(r.key);
+        this.run('DELETE FROM file_upload_reservations WHERE id=?', r.id);
+      } catch (e) { console.error('R2 reservation cleanup failed', r.key, e); }
+    }
+    // Recycle bin: retain quota until physical R2 deletion succeeds after 30 days.
     const cutoff = new Date(Date.now() - 30 * 864e5).toISOString();
     for (const f of this.q('SELECT key FROM files WHERE deleted_at IS NOT NULL AND deleted_at<?', cutoff)) {
-      this.ctx.waitUntil(this.env.FILES.delete(f.key));
-      this.run('DELETE FROM files WHERE key=?', f.key);
+      try {
+        await this.env.FILES.delete(f.key);
+        this.run('DELETE FROM files WHERE key=? AND deleted_at IS NOT NULL', f.key);
+      } catch (e) { console.error('R2 recycle-bin purge failed', f.key, e); }
     }
     this.run('DELETE FROM notifications WHERE created_at<?', new Date(Date.now() - 180 * 864e5).toISOString());
 
@@ -1518,8 +1551,14 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/audit', (c) => { this.requireFullAdmin(c.get('actor')); return c.json(this.q('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500')); });
     app.get('/storage', (c) => {
       this.requireFullAdmin(c.get('actor'));
-      return c.json({ used: this.storageUsed(), limit: c.get('ctx').storageLimitBytes, byKind: this.q('SELECT kind, SUM(size) AS bytes, COUNT(*) AS n FROM files WHERE deleted_at IS NULL GROUP BY kind'),
-        byUser: this.q('SELECT uploaded_by, SUM(size) AS bytes FROM files WHERE deleted_at IS NULL GROUP BY uploaded_by ORDER BY bytes DESC LIMIT 20') });
+      const active = Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM files WHERE deleted_at IS NULL')?.n || 0);
+      const trash = Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM files WHERE deleted_at IS NOT NULL')?.n || 0);
+      const pending = Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM file_upload_reservations')?.n || 0);
+      return c.json({
+        used: active + trash + pending, active, trash, pending, limit: c.get('ctx').storageLimitBytes,
+        byKind: this.q('SELECT kind, SUM(size) AS bytes, COUNT(*) AS n FROM files GROUP BY kind'),
+        byUser: this.q('SELECT uploaded_by, SUM(size) AS bytes FROM files WHERE deleted_at IS NULL GROUP BY uploaded_by ORDER BY bytes DESC LIMIT 20'),
+      });
     });
     app.get('/sessions', (c) => c.json(this.q('SELECT * FROM academic_sessions ORDER BY created_at DESC')));
     app.post('/promotion', async (c) => {
