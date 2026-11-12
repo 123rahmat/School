@@ -1,5 +1,6 @@
+import { PlatformDatabase } from './platform';
 export interface Env {
-  DB: D1Database;
+  PLATFORM: DurableObjectNamespace;
   SCHOOL: DurableObjectNamespace;
   FILES: R2Bucket;
   ASSETS: Fetcher;
@@ -67,3 +68,10 @@ export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 export const fail = (status: number, msg: string): never => { throw new HttpError(status, msg); };
+
+const platformDatabases = new WeakMap<Env, PlatformDatabase>();
+export function platformDb(env: Env): PlatformDatabase {
+  let db = platformDatabases.get(env);
+  if (!db) { db = new PlatformDatabase(env.PLATFORM); platformDatabases.set(env, db); }
+  return db;
+}
