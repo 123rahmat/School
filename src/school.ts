@@ -64,6 +64,8 @@ export class SchoolDO extends DurableObject<Env> {
         'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_at TEXT',
         'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_by TEXT',
         'ALTER TABLE class_substitutions ADD COLUMN bonus_note TEXT',
+        'ALTER TABLE enrollments ADD COLUMN to_date TEXT',
+        'ALTER TABLE enrollments ADD COLUMN class_name_snapshot TEXT',
         'ALTER TABLE notices ADD COLUMN subject TEXT',
         'ALTER TABLE guardians ADD COLUMN public_id TEXT',
       ]) { try { this.sql.exec(alter); } catch { /* already there */ } }
