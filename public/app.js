@@ -437,7 +437,7 @@ function view(html) {
   };
   menu.onclick = () => setNavOpen(mobileNav() ? !side.classList.contains('open') : layout.classList.contains('nav-collapsed'));
   scrim.onclick = () => setNavOpen(false);
-  $('#side nav a').forEach((a) => a.addEventListener('click', () => setNavOpen(false)));
+  $$('#side nav a').forEach((a) => a.addEventListener('click', () => setNavOpen(false)));
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
@@ -1236,8 +1236,8 @@ function bindFees(s, p) {
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#df', m).onsubmit = async (e) => { e.preventDefault(); const b = formData(e.target); if (!confirm('Add this ' + b.kind + ' discount of Rs ' + b.amount + ' per month for ' + s.name + '? It will affect future vouchers.')) return; await act(() => S(`/students/${s.id}/discounts`, { body: { ...b, confirm:true } }), 'Discount added — applies from the next voucher'); closeModal(); render(); };
   });
-  $('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this recurring discount from ' + s.name + '?')) return; await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}?confirm=1`, { method: 'DELETE' }), 'Removed'); render(); });
-  $('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; if (!confirm('Cancel this verified receipt and reverse its amount from the student voucher? This is a financial correction.')) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason, confirm:true } }), 'Receipt cancelled'); render(); });
+  $$('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this recurring discount from ' + s.name + '?')) return; await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}?confirm=1`, { method: 'DELETE' }), 'Removed'); render(); });
+  $$('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; if (!confirm('Cancel this verified receipt and reverse its amount from the student voucher? This is a financial correction.')) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason, confirm:true } }), 'Receipt cancelled'); render(); });
   const pz = $('#pause'); if (pz) pz.onclick = async () => {
     if (p.reminderPause) { await act(() => S(`/students/${s.id}/reminder-pause`, { body: { off: true } }), 'Reminders resumed'); return render(); }
     const reason = prompt('Why pause fee reminders for this student? (e.g. agreed late payment)'); if (!reason) return;
@@ -1480,7 +1480,7 @@ route('/classes', async () => {
         if (!subject.trim() || !confirm('Assign ' + teacher_id + ' to teach ' + subject + ' in ' + c.name + '?')) return;
         await act(() => S(`/classes/${c.id}/subjects`, { body: { subject, teacher_id, confirm: true } }), 'Subject added'); closeModal(); render();
       };
-      $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject teacher assignment? Historical attendance and subject history remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
+      $$('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject teacher assignment? Historical attendance and subject history remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
   });
   if ($('#add')) $('#add').onclick = () => form(null);
@@ -1723,8 +1723,8 @@ route('/fees/slips', async () => {
   <td>${esc(p.txn_id || '')}</td><td>${p.slip_key ? `<a target="_blank" href="/files/${esc(p.slip_key.split('/').slice(1).join('/'))}">View</a>` : ''}</td>
   <td class="row">${p.status === 'submitted' && p.can_verify ? `<button class="btn small primary" data-v="${p.id}">Verify</button><button class="btn small danger" data-r="${p.id}">Reject</button>` : p.receipt_no ? `<a href="/receipt/${p.id}">#${p.receipt_no}</a>` : esc(p.reason || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Nothing here</td></tr>'}
   </tbody></table></div><p class="small muted">Check each slip against the institution's Easypaisa/JazzCash account before verifying. Duplicate transaction IDs are blocked automatically.</p>`);
-  $('[data-v]').forEach((b) => b.onclick = async () => { if (!confirm('Verify this submitted payment slip and issue an official receipt? Check the amount and transaction reference first.')) return; const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: { confirm:true } })); toast(`Verified — receipt #${r.receipt}`); render(); });
-  $('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; if (!confirm('Reject this payment slip and send the reason to the parent?')) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason, confirm:true } }), 'Rejected'); render(); });
+  $$('[data-v]').forEach((b) => b.onclick = async () => { if (!confirm('Verify this submitted payment slip and issue an official receipt? Check the amount and transaction reference first.')) return; const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: { confirm:true } })); toast(`Verified — receipt #${r.receipt}`); render(); });
+  $$('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; if (!confirm('Reject this payment slip and send the reason to the parent?')) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason, confirm:true } }), 'Rejected'); render(); });
 });
 
 route('/fees/defaulters', async () => {
@@ -1791,7 +1791,7 @@ route('/notices', async () => {
   view(`<div class="row between"><h1>Notices</h1>${ME.kind === 'staff' ? '<button class="btn primary" id="new">New notice</button>' : ''}</div>
   <div class="card">${rows.map(noticeItem).join('') || '<span class="muted">No notices yet</span>'}</div>`);
   for (const n of rows) S(`/notices/${n.id}/read`, { body: {} }).catch(() => {});
-  $('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice for everyone? Teachers cannot edit or remove notices after posting; only the class teacher or authorized administrator can remove it.')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE', body: { confirm: true } }), 'Removed'); render(); });
+  $$('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice for everyone? Teachers cannot edit or remove notices after posting; only the class teacher or authorized administrator can remove it.')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE', body: { confirm: true } }), 'Removed'); render(); });
   const nb = $('#new'); if (nb) nb.onclick = () => modal(`<h2>New notice</h2><form id="nf" class="form">
     <div><label>Send to</label><select name="audience" id="aud">
       ${ME.role === 'admin' || ME.subrole === 'office' ? '<option value="school">Whole school (all parents and staff)</option>' : ''}
@@ -1879,8 +1879,8 @@ route('/results', async () => {
       $$('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
     };
   });
-  $('[data-pub]').forEach((b) => b.onclick = async () => { if (!confirm('Publish this result to parents in the selected class? It will become visible in parent accounts.')) return; const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title, confirm:true } })); toast(`Published ${r.published}; parents notified`); render(); });
-  $('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this result PDF? It goes to the recycle bin for 30 days and may disappear from student view.')) return; await act(() => S('/results/' + a.dataset.del + '?confirm=1', { method: 'DELETE' }), 'Deleted'); render(); });
+  $$('[data-pub]').forEach((b) => b.onclick = async () => { if (!confirm('Publish this result to parents in the selected class? It will become visible in parent accounts.')) return; const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title, confirm:true } })); toast(`Published ${r.published}; parents notified`); render(); });
+  $$('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this result PDF? It goes to the recycle bin for 30 days and may disappear from student view.')) return; await act(() => S('/results/' + a.dataset.del + '?confirm=1', { method: 'DELETE' }), 'Deleted'); render(); });
   $$('[data-assign]').forEach((b) => b.onclick = async () => {
     const q = prompt('Registration number of the student?'); if (!q) return;
     const r = await S('/search?q=' + encodeURIComponent(q)); const s = r.students.find((x) => x.reg_no === q) || r.students[0];
@@ -1899,8 +1899,8 @@ route('/requests', async () => {
   <td>${badge(r.status, r.status === 'approved' ? 'ok' : r.status === 'declined' ? 'bad' : 'warn')}</td>
   <td class="row">${ME.canDecideRequests && r.status === 'open' ? `<button class="btn small primary" data-a="${r.id}">Approve</button><button class="btn small" data-d="${r.id}">Decline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No requests</td></tr>'}
   </tbody></table></div>${ME.isAdmin ? '<p class="small muted">Student detail requests: open the student and edit the record, then approve.</p>' : ''}`);
-  $('[data-a]').forEach((b) => b.onclick = async () => { if (!confirm('Approve this request and apply the requested record correction?')) return; await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true, confirm: true } }), 'Approved'); render(); });
-  $('[data-d]').forEach((b) => b.onclick = async () => { if (!confirm('Decline this request?')) return; await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false, confirm: true } }), 'Declined'); render(); });
+  $$('[data-a]').forEach((b) => b.onclick = async () => { if (!confirm('Approve this request and apply the requested record correction?')) return; await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true, confirm: true } }), 'Approved'); render(); });
+  $$('[data-d]').forEach((b) => b.onclick = async () => { if (!confirm('Decline this request?')) return; await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false, confirm: true } }), 'Declined'); render(); });
 });
 
 // ---------- WhatsApp / SMS from the admin's own phone ----------
@@ -2062,7 +2062,7 @@ route('/settings', async () => {
     </tbody></table></div>
     <button class="btn primary" id="run" style="margin-top:12px">Review decisions and start ${esc(b.new_session)}</button>`;
     $('#run').onclick = async () => {
-      $('[data-st]').forEach((sel) => {
+      $$('[data-st]').forEach((sel) => {
         const target = $('[data-nextst="' + sel.dataset.st + '"]').value;
         if (sel.value !== 'promoted' || target !== (nextClass[students.find((x) => x.id === sel.dataset.st)?.class_id] || students.find((x) => x.id === sel.dataset.st)?.class_id)) {
           decisions[sel.dataset.st] = { outcome: sel.value, class_id: target };
@@ -2183,14 +2183,14 @@ route('/owner', async () => {
       '<div class="row"><button class="btn primary small" data-storage-approve="' + esc(r.id) + '">Approve ' + (Number(r.blocks) * 5) + ' GB</button><button class="btn danger small" data-storage-reject="' + esc(r.id) + '">Decline</button></div></div>'
     ).join('') : '<p class="small muted">No pending extra-storage requests.</p>');
   $('.content').append(storageQueue);
-  $('[data-storage-approve]', storageQueue).forEach((button) => button.onclick = async () => {
+  $$('[data-storage-approve]', storageQueue).forEach((button) => button.onclick = async () => {
     button.disabled = true;
     try {
       await api('/api/owner/storage-requests/' + encodeURIComponent(button.dataset.storageApprove) + '/approve', { body: {} });
       toast('Additional storage allocated.'); render();
     } catch (error) { toast(error.message); button.disabled = false; }
   });
-  $('[data-storage-reject]', storageQueue).forEach((button) => button.onclick = async () => {
+  $$('[data-storage-reject]', storageQueue).forEach((button) => button.onclick = async () => {
     const reason = prompt('Why is this storage request being declined?');
     if (!reason) return;
     try {
@@ -2198,7 +2198,7 @@ route('/owner', async () => {
       toast('Storage request declined.'); render();
     } catch (error) { toast(error.message); }
   });
-  $('[data-ok]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/owner/slips/${b.dataset.ok}/confirm`, { body: {} }), 'Confirmed; school renewed'); render(); });
+  $$('[data-ok]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/owner/slips/${b.dataset.ok}/confirm`, { body: {} }), 'Confirmed; school renewed'); render(); });
   $$('[data-no]').forEach((b) => b.onclick = async () => { const reason = prompt('Reason for rejecting?'); if (!reason) return; await act(() => api(`/api/owner/slips/${b.dataset.no}/reject`, { body: { reason } }), 'Rejected'); render(); });
   $('#bill').onclick = async () => { await act(() => api('/api/owner/run-billing', { body: {} }), 'Billing run complete'); render(); };
   $('#new').onclick = () => modal(`<h2>Add institution</h2><form id="nf" class="form"><div class="full"><label>Institution name</label><input name="name" required></div>
