@@ -25,12 +25,19 @@ assert.match(worker, /app\.post\('\/api\/auth\/logout'/, 'Server-side session re
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
 assert.match(worker, /claims\.aud !== env\.GOOGLE_CLIENT_ID/, 'Google ID token audience must be checked');
 assert.match(worker, /String\(claims\.email_verified\) !== 'true'/, 'Google verified-email claim must be checked');
+assert.match(worker, /'platform_owner'/, 'Dedicated platform owner sign-in role must be supported');
+assert.match(worker, /requestedRole === 'platform_owner'.*not authorized for platform administration/s, 'Non-owner Google accounts must be rejected from platform administration');
+assert.match(worker, /identity\.email === normId\(c\.env\.OWNER_EMAIL\)/, 'Platform owner identity must match the configured owner email');
+assert.match(worker, /identity\.email === normId\(c\.env\.OWNER_EMAIL\) fail\(403, 'The platform owner account cannot register an institution\.'\)/, 'Platform owner must not register an institution');
 
 assert.match(app, /function landingPage\(\)/, 'Public landing page must exist');
 assert.match(app, /Use in browser/, 'Landing page must provide browser access');
 assert.match(app, /Install app/, 'Landing page must provide install action');
 assert.match(app, /route\('\/login'/, 'Google login page must exist');
 assert.match(app, /route\('\/signup'/, 'Google signup page must exist');
+assert.match(app, /route\('\/admin'/, 'Dedicated platform owner sign-in page must exist');
+assert.match(app, /role: 'platform_owner'/, 'Platform admin page must request the restricted owner role');
+assert.match(app, /href="\/admin"/, 'Platform admin sign-in must be discoverable from the public footer');
 assert.match(app, /data-login-role="main_admin"/, 'Main administrator sign-in choice must exist');
 assert.match(app, /data-login-role="teacher"/, 'Teacher sign-in choice must exist');
 assert.match(app, /data-login-role="parent"/, 'Parent sign-in choice must exist');
@@ -46,6 +53,8 @@ assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the
 assert.ok(worker.includes("!/^[a-f0-9]{32}$/.test(me.userId)"), 'Server must validate the permanent hexadecimal profile ID before issuing a session');
 assert.match(worker, /new main administrator profile was created without its secure account ID/, 'Institution signup must validate the new main administrator ID');
 assert.match(school, /publicId: s!\.public_id/, 'Staff accounts must expose their assigned account ID');
+assert.match(school, /That Google sign-in email is already assigned to another active staff account/, 'Staff email changes must prevent duplicate active sign-in identities');
+assert.match(school, /UPDATE sessions SET revoked=1 WHERE school_id=\? AND kind=\? AND ref_id=\?/, 'Sign-in identity changes must revoke existing sessions');
 assert.match(school, /publicId: g!\.public_id/, 'Parent accounts must expose their assigned account ID');
 assert.match(school, /lower\(hex\(randomblob\(16\)\)\)/, 'Account IDs must be generated as opaque hexadecimal values');
 assert.match(school, /userId: u\.public_id/, 'Administrator search must return account IDs for lookup');
