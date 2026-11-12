@@ -254,8 +254,26 @@ app.get('/api/billing', requireSession(['staff', 'guardian']), async (c) => {
   const plans = (await c.env.DB.prepare('SELECT * FROM plans ORDER BY sort').all()).results;
   const announcements = (await c.env.DB.prepare('SELECT * FROM announcements WHERE school_id IS NULL OR school_id=? ORDER BY created_at DESC LIMIT 5').bind(s.school_id).all()).results;
   const support = await c.env.DB.prepare('SELECT granted_until FROM support_access WHERE school_id=?').bind(s.school_id).first();
-  return c.json({ ...base, cycle: sc.cycle, plan, plans, invoices, slips, students: sc.students, storage_bytes: sc.storage_bytes,
-    storage_limit_bytes: ctx.storageLimitBytes, accounts: c.env.PAYMENT_ACCOUNTS, announcements, support });
+  const storageRequests = (await c.env.DB.prepare('SELECT id, blocks, status, created_at, decided_at, decision_note FROM storage_requests WHERE school_id=? ORDER BY created_at DESC LIMIT 10').bind(s.school_id).all()).results;
+  return c.json({ ...base, institution_kind: sc.kind, cycle: sc.cycle, plan, plans, invoices, slips, students: sc.students, storage_bytes: sc.storage_bytes,
+    storage_limit_bytes: ctx.storageLimitBytes, accounts: c.env.PAYMENT_ACCOUNTS, announcements, support, storage_requests: storageRequests });
+});
+
+app.post('/api/billing/storage-request', requireSession(['staff']), async (c) => {
+  const { ctx, me } = await requireMainAdmin(c);
+  const { blocks, note } = await c.req.json<any>();
+  const count = Number(blocks);
+  if (!Number.isInteger(count) || count < 1 || count > 10) fail(400, 'Request between 1 and 10 storage blocks. Each block adds 5 GB.');
+  const requestId = 'sr_' + rid(12);
+  try {
+    await c.env.DB.prepare('INSERT INTO storage_requests (id, school_id, requested_by, blocks, status, created_at, decision_note) VALUES (?,?,?,?,?,?,?)')
+      .bind(requestId, ctx.schoolId, me.id, count, 'pending', now(), String(note || '').slice(0, 500)).run();
+  } catch (error) {
+    const existing = await c.env.DB.prepare("SELECT id FROM storage_requests WHERE school_id=? AND status='pending'").bind(ctx.schoolId).first();
+    if (existing) fail(409, 'Your institution already has a pending storage request. Your platform owner will review it.');
+    throw error;
+  }
+  return c.json({ ok: true, id: requestId, additional_gb: count * 5 });
 });
 
 app.post('/api/billing/invoice', requireSession(['staff']), async (c) => {
@@ -371,8 +389,12 @@ async function runBilling(env: Env) {
 const owner = new Hono<V>();
 owner.use('*', requireSession(['owner']));
 owner.get('/overview', async (c) => {
-  const schools = (await c.env.DB.prepare(`SELECT s.*, (SELECT COUNT(*) FROM billing_slips b WHERE b.school_id=s.id AND b.status='submitted') AS slips_waiting,
-     (SELECT granted_until FROM support_access a WHERE a.school_id=s.id) AS support_until FROM schools s ORDER BY s.created_at DESC`).all()).results as any[];
+  const schools = (await c.env.DB.prepare(`SELECT s.*, p.storage_gb AS base_storage_gb, p.sub_admins AS plan_sub_admins,
+     (SELECT COUNT(*) FROM billing_slips b WHERE b.school_id=s.id AND b.status='submitted') AS slips_waiting,
+     (SELECT granted_until FROM support_access a WHERE a.school_id=s.id) AS support_until
+     FROM schools s LEFT JOIN plans p ON p.tier=s.tier ORDER BY s.created_at DESC`).all()).results as any[];
+  const storageRequests = (await c.env.DB.prepare(`SELECT r.*, s.name AS institution_name, s.kind AS institution_kind, s.extra_storage_gb
+     FROM storage_requests r JOIN schools s ON s.id=r.school_id WHERE r.status='pending' ORDER BY r.created_at ASC`).all()).results as any[];
   const slips = (await c.env.DB.prepare(`SELECT b.*, s.name AS school_name, i.amount AS invoice_amount, i.period_start, i.period_end, i.tier
      FROM billing_slips b JOIN schools s ON s.id=b.school_id JOIN invoices i ON i.id=b.invoice_id WHERE b.status='submitted' ORDER BY b.created_at`).all()).results;
   const month = pkt().month;
@@ -380,10 +402,35 @@ owner.get('/overview', async (c) => {
      COALESCE(SUM(CASE WHEN status='open' THEN amount END),0) AS expected FROM invoices`).bind(month).first();
   const plans = (await c.env.DB.prepare('SELECT * FROM plans ORDER BY sort').all()).results;
   const today = pkt().date;
-  return c.json({ schools, slips, income, plans,
+  return c.json({ schools, slips, storageRequests, income, plans,
     byStatus: schools.reduce((a: any, s) => ((a[s.status] = (a[s.status] || 0) + 1), a), {}),
     renewalsThisWeek: schools.filter((s) => s.renews_at >= today && s.renews_at <= addDays(today, 7)),
     trialsEnding: schools.filter((s) => s.status === 'trial' && s.renews_at <= addDays(today, 7)) });
+});
+owner.post('/storage-requests/:id/approve', async (c) => {
+  const id = c.req.param('id');
+  const r: any = await c.env.DB.prepare("SELECT * FROM storage_requests WHERE id=? AND status='pending'").bind(id).first();
+  if (!r) fail(404, 'Pending storage request not found');
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE schools SET extra_storage_gb=extra_storage_gb+? WHERE id=? AND EXISTS (SELECT 1 FROM storage_requests WHERE id=? AND status='pending')").bind(r.blocks * 5, r.school_id, id),
+    c.env.DB.prepare("UPDATE storage_requests SET status='approved', decided_at=?, decision_note='Approved by platform owner' WHERE id=? AND status='pending'").bind(now(), id),
+  ]);
+  if (Number(results[0]?.meta?.changes || 0) !== 1) fail(409, 'This request has already been handled');
+  const ctx = await systemCtx(c.env, r.school_id);
+  await callSchoolJson(c.env, ctx, '/internal/notify-admins', { title: 'Extra storage approved', body: `Your request was approved. An additional ${r.blocks * 5} GB is now available.`, mainOnly: true }).catch(() => {});
+  return c.json({ ok: true, added_gb: r.blocks * 5 });
+});
+owner.post('/storage-requests/:id/reject', async (c) => {
+  const id = c.req.param('id');
+  const { reason } = await c.req.json<any>();
+  const note = String(reason || '').trim().slice(0, 500);
+  if (!note) fail(400, 'Provide a reason for declining the request');
+  const r: any = await c.env.DB.prepare("SELECT * FROM storage_requests WHERE id=? AND status='pending'").bind(id).first();
+  if (!r) fail(404, 'Pending storage request not found');
+  await c.env.DB.prepare("UPDATE storage_requests SET status='rejected', decided_at=?, decision_note=? WHERE id=? AND status='pending'").bind(now(), note, id).run();
+  const ctx = await systemCtx(c.env, r.school_id);
+  await callSchoolJson(c.env, ctx, '/internal/notify-admins', { title: 'Extra storage request update', body: `Your request was not approved: ${note}`, mainOnly: true }).catch(() => {});
+  return c.json({ ok: true });
 });
 owner.post('/slips/:id/confirm', async (c) => { await confirmSlip(c.env, c.req.param('id')); return c.json({ ok: true }); });
 owner.post('/slips/:id/reject', async (c) => {
@@ -404,15 +451,30 @@ owner.get('/slips/:id/file', async (c) => {
 });
 owner.post('/schools', async (c) => {
   const b = await c.req.json<any>();
-  if (!b.name || !b.admin_name || !b.admin_email) fail(400, 'Name, admin name and admin email are required');
-  const id = await createSchool(c.env, { name: b.name, admin: { name: b.admin_name, email: normId(b.admin_email), phone: normId(b.admin_phone) } });
+  if (!b.name || !b.admin_name || !b.admin_email) fail(400, 'Institution name, administrator name and email are required');
+  const kinds = new Set(['school', 'college', 'university', 'academy', 'training_institute', 'other']);
+  const kind = String(b.kind || 'school');
+  if (!kinds.has(kind)) fail(400, 'Choose a supported institution category');
+  const id = await createSchool(c.env, { name: String(b.name).trim(), kind, admin: { name: String(b.admin_name).trim(), email: normId(b.admin_email), phone: normId(b.admin_phone) } });
   return c.json({ id });
 });
 owner.post('/schools/:id', async (c) => {
   const b = await c.req.json<any>();
   const id = c.req.param('id');
-  const allowed = ['tier', 'price_override', 'extra_storage_gb', 'grace_days', 'status', 'renews_at', 'cycle', 'launch_price_until'];
-  for (const k of allowed) if (k in b) await c.env.DB.prepare(`UPDATE schools SET ${k}=? WHERE id=?`).bind(b[k] === '' ? null : b[k], id).run();
+  const existing = await c.env.DB.prepare('SELECT id FROM schools WHERE id=?').bind(id).first();
+  if (!existing) fail(404, 'Institution not found');
+  const allowed = ['name', 'kind', 'tier', 'price_override', 'extra_storage_gb', 'grace_days', 'status', 'renews_at', 'cycle', 'launch_price_until'];
+  const kinds = new Set(['school', 'college', 'university', 'academy', 'training_institute', 'other']);
+  if ('kind' in b && !kinds.has(String(b.kind))) fail(400, 'Choose a supported institution category');
+  if ('extra_storage_gb' in b) {
+    const gb = Number(b.extra_storage_gb);
+    if (!Number.isFinite(gb) || gb < 0 || gb > 500 || gb % 5 !== 0) fail(400, 'Extra storage must be allocated in 5 GB blocks (maximum 500 GB).');
+  }
+  if ('tier' in b && !await c.env.DB.prepare('SELECT 1 FROM plans WHERE tier=?').bind(b.tier).first()) fail(400, 'Unknown plan');
+  for (const k of allowed) if (k in b) {
+    const value = b[k] === '' ? null : (k === 'name' ? String(b[k]).trim() : b[k]);
+    await c.env.DB.prepare(`UPDATE schools SET ${k}=? WHERE id=?`).bind(value, id).run();
+  }
   return c.json({ ok: true });
 });
 owner.post('/announce', async (c) => {
