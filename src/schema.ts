@@ -26,6 +26,28 @@ CREATE TABLE IF NOT EXISTS class_teacher_assignments (
 CREATE TABLE IF NOT EXISTS class_subjects (
   id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, teacher_id TEXT
 );
+-- Historical subject ownership is retained when a teacher is replaced.
+CREATE TABLE IF NOT EXISTS class_subject_history (
+  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, teacher_id TEXT NOT NULL,
+  from_date TEXT NOT NULL, to_date TEXT, changed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS class_subject_history_class ON class_subject_history(class_id, subject, from_date);
+
+-- Weekly timetable is explicit, editable and conflict-checked by the school service.
+CREATE TABLE IF NOT EXISTS timetable_slots (
+  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, teacher_id TEXT,
+  day_of_week INTEGER NOT NULL, period INTEGER NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+  room TEXT, created_by TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS timetable_class_day ON timetable_slots(class_id, day_of_week, period);
+CREATE INDEX IF NOT EXISTS timetable_teacher_day ON timetable_slots(teacher_id, day_of_week, start_time, end_time);
+
+-- Syllabus documents belong to a class and subject, and remain private to authorized school users.
+CREATE TABLE IF NOT EXISTS syllabus_documents (
+  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, title TEXT NOT NULL,
+  file_key TEXT NOT NULL, file_name TEXT, uploaded_by TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS syllabus_class_subject ON syllabus_documents(class_id, subject, created_at);
 
 CREATE TABLE IF NOT EXISTS guardians (
   id TEXT PRIMARY KEY, public_id TEXT, phone TEXT, email TEXT, name TEXT, created_at TEXT NOT NULL
