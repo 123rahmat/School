@@ -168,7 +168,12 @@ function view(html) {
   $$('#side nav a').forEach((a) => a.addEventListener('click', () => $('#side').classList.remove('open')));
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
-    await api('/api/auth/logout', { body: {} }).catch(() => {});
+    if (!navigator.onLine) {
+      toast('Connect to the internet to sign out securely. Your queued attendance will remain saved on this device.');
+      return;
+    }
+    try { await api('/api/auth/logout', { body: {} }); }
+    catch { toast('Could not sign out from the server. Please try again.'); return; }
     clearPrivateOfflineData();
     ME = null; BILL = null; go('/login');
   };
@@ -461,6 +466,7 @@ route('/login', async () => {
           await refreshMe();
           if (!ME) throw new Error('Your session could not be created. Please retry sign-in.');
           go('/');
+          flushOutbox();
         } catch (error) { button.disabled = false; showAuthError(error, 'login'); }
       });
       return;
@@ -468,6 +474,7 @@ route('/login', async () => {
     await refreshMe();
     if (!ME) throw new Error('Google verified your account, but the School session was not created. Please retry.');
     go('/');
+    flushOutbox();
   }, 'signin_with', 'login');
 });
 
@@ -497,6 +504,7 @@ route('/signup', async () => {
     await refreshMe();
     if (!ME) throw new Error('Your institution was created, but the sign-in session was not established. Please sign in with the same Google account.');
     go('/setup');
+    flushOutbox();
   }, 'signup_with', 'signup');
 });
 
