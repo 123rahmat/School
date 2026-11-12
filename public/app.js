@@ -1692,6 +1692,7 @@ route('/owner', async () => {
   $('#bill').onclick = async () => { await act(() => api('/api/owner/run-billing', { body: {} }), 'Billing run complete'); render(); };
   $('#new').onclick = () => modal(`<h2>Add institution</h2><form id="nf" class="form"><div class="full"><label>Institution name</label><input name="name" required></div>
     <div><label>Institution category</label><select name="kind"><option value="school">School</option><option value="college">College</option><option value="university">University</option><option value="academy">Academy</option><option value="training_institute">Training institute</option><option value="other">Other education provider</option></select></div>
+     <div><label>Institution category</label><select name="kind"><option value="school">School</option><option value="college">College</option><option value="university">University</option><option value="academy">Academy</option><option value="training_institute">Training institute</option><option value="other">Other education provider</option></select></div>
      <div><label>Main administrator name</label><input name="admin_name" required></div><div><label>Administrator Google email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
     <div class="full row"><button class="btn primary">Create (starts on trial)</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#nf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/schools', { body: formData(e.target) }), 'Institution created'); closeModal(); render(); };
@@ -1703,7 +1704,9 @@ route('/owner', async () => {
   });
   $$('[data-ed]').forEach((b) => b.onclick = () => {
     const s = d.schools.find((x) => x.id === b.dataset.ed);
-    modal(`<h2>${esc(s.name)}</h2><form id="ef" class="form">
+    modal(`<h2>Manage ${esc(s.name)}</h2><form id="ef" class="form">
+       <div class="full"><label>Institution name</label><input name="name" value="${esc(s.name)}" required></div>
+       <div><label>Institution category</label><select name="kind">${Object.entries(INSTITUTION_LABELS).map(([k, v]) => `<option value="${k}" ${k === s.kind ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
       <div><label>Tier</label><select name="tier">${d.plans.map((p) => `<option ${p.tier === s.tier ? 'selected' : ''}>${p.tier}</option>`).join('')}</select></div>
       <div><label>Billing</label><select name="cycle"><option ${s.cycle === 'monthly' ? 'selected' : ''}>monthly</option><option ${s.cycle === 'yearly' ? 'selected' : ''}>yearly</option></select></div>
       <div><label>Fixed price (keeps launch price; empty = tier price)</label><input name="price_override" type="number" value="${s.price_override ?? ''}"></div>
