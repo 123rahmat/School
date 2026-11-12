@@ -4,15 +4,8 @@ export interface Env {
   FILES: R2Bucket;
   ASSETS: Fetcher;
   OWNER_EMAIL: string;
-  DEV_OTP: string;
   PAYMENT_ACCOUNTS: string;
-  // Optional providers. Set the keys with `wrangler secret put`.
-  RESEND_API_KEY?: string;      // email codes via Resend
-  EMAIL_FROM?: string;          // e.g. "School Manager <login@yourdomain.pk>"
-  TWILIO_ACCOUNT_SID?: string;  // SMS / WhatsApp codes via Twilio
-  TWILIO_AUTH_TOKEN?: string;
-  TWILIO_SMS_FROM?: string;     // e.g. +1xxxxxxxxxx or a Messaging Service SID (MG...)
-  TWILIO_WHATSAPP_FROM?: string; // e.g. +14155238886 (sends codes on WhatsApp instead of SMS)
+  GOOGLE_CLIENT_ID?: string;   // Google Identity Services Web client ID
   GOOGLE_CLIENT_ID?: string;    // Sign in with Google
 }
 
