@@ -1321,6 +1321,15 @@ export class SchoolDO extends DurableObject<Env> {
       return new Response(o!.body, { headers: { 'content-type': o!.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'private, max-age=300' } });
     });
 
+    app.get('/result-file/:id', async (c) => {
+      const a = c.get('actor');
+      const r = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!r) fail(404, 'Not found');
+      if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
+      if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
+      const o = await this.env.FILES.get(r!.file_key); if (!o) fail(404, 'File missing');
+      return new Response(o!.body, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${String(r!.file_name || 'result.pdf').replace(/[^\w.-]/g, '_')}"`, 'cache-control': 'private, max-age=300' } });
+    });
+
     // ----- notifications -----
     app.get('/notifications', (c) => c.json(this.q('SELECT * FROM notifications WHERE user_key=? ORDER BY created_at DESC LIMIT 100', c.get('actor').key)));
     app.post('/notifications/read', (c) => { this.run('UPDATE notifications SET read_at=? WHERE user_key=? AND read_at IS NULL', now(), c.get('actor').key); return c.json({ ok: true }); });
