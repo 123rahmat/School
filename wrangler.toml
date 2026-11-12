@@ -33,3 +33,7 @@ crons = ["5 * * * *"]
 [vars]
 OWNER_EMAIL = "owner@example.com"
 PAYMENT_ACCOUNTS = "Easypaisa 0300-0000000 / JazzCash 0300-0000000"
+
+[observability.logs]
+enabled = false
+invocation_logs = true
