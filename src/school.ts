@@ -165,7 +165,7 @@ export class SchoolDO extends DurableObject<Env> {
   async syncLogin(kind: 'staff' | 'guardian', refId: string, ids: string[], revoke = false) {
     const schoolId = this.schoolId();
     const stmts = [this.env.DB.prepare('DELETE FROM logins WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId)];
-    for (const i of [...new Set(ids.map(normId).filter(Boolean))])
+    for (const i of [...new Set(ids.map(normId).filter((value) => value.includes('@')))])
       stmts.push(this.env.DB.prepare('INSERT OR IGNORE INTO logins (identifier, school_id, kind, ref_id) VALUES (?,?,?,?)').bind(i, schoolId, kind, refId));
     if (revoke) stmts.push(this.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId));
     await this.env.DB.batch(stmts);
@@ -197,10 +197,12 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   guardianFor(phone: string, email: string | null, fatherName: string): string {
-    const p = normId(phone), e = email ? normId(email) : null;
-    const g = this.one('SELECT * FROM guardians WHERE phone=?', p) || (e ? this.one('SELECT * FROM guardians WHERE email=?', e) : null);
+    const p = normId(phone || '') || null;
+    const e = normId(email || '');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) fail(400, 'A valid parent email is required for Google sign-in');
+    const g = this.one('SELECT * FROM guardians WHERE email=?', e);
     if (g) {
-      if (e && !g.email) this.run('UPDATE guardians SET email=? WHERE id=?', e, g.id);
+      if (p && p !== g.phone) this.run('UPDATE guardians SET phone=? WHERE id=?', p, g.id);
       return g.id;
     }
     const id = 'g_' + rid(12);
@@ -210,7 +212,7 @@ export class SchoolDO extends DurableObject<Env> {
   async syncGuardian(gid: string) {
     const g = this.one('SELECT * FROM guardians WHERE id=?', gid);
     const active = this.one("SELECT COUNT(*) AS n FROM students WHERE guardian_id=? AND status='active'", gid)?.n;
-    await this.syncLogin('guardian', gid, active && g ? [g.phone, g.email] : [], !active);
+    await this.syncLogin('guardian', gid, active && g ? [g.email] : [], !active);
   }
 
   currentSession(): Row {
@@ -226,7 +228,7 @@ export class SchoolDO extends DurableObject<Env> {
 
   // ---------- students ----------
   createStudent(a: Actor, ctx: Ctx, b: Row): Row {
-    for (const f of ['name', 'father_name', 'class_id', 'parent_phone']) if (!String(b[f] ?? '').trim()) fail(400, `Missing ${f.replace('_', ' ')}`);
+    for (const f of ['name', 'father_name', 'class_id', 'parent_email']) if (!String(b[f] ?? '').trim()) fail(400, `Missing ${f.replace('_', ' ')}`);
     const cls = this.one('SELECT * FROM classes WHERE id=? AND active=1', b.class_id);
     if (!cls) fail(400, 'Unknown class');
     const byTeacher = !this.canManageStudents(a);
@@ -237,10 +239,12 @@ export class SchoolDO extends DurableObject<Env> {
     if (activeCount >= ctx.studentCap) fail(402, `Your plan allows ${ctx.studentCap} students. Upgrade under Billing.`);
     const reg = String(b.reg_no || '').trim() || this.nextRegNo();
     if (this.one('SELECT 1 FROM students WHERE reg_no=?', reg)) fail(409, `Registration number ${reg} already exists`);
-    const phone = normId(b.parent_phone);
-    if (!/^0\d{10}$/.test(phone)) fail(400, 'Parent phone should look like 03001234567');
+    const phone = normId(b.parent_phone || '');
+    if (phone && !/^0\d{10}$/.test(phone)) fail(400, 'Parent phone should look like 03001234567');
+    const email = normId(b.parent_email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid parent email for Google sign-in');
     const id = 'st_' + rid(12);
-    const gid = this.guardianFor(phone, b.parent_email || null, b.father_name);
+    const gid = this.guardianFor(phone, email, b.father_name);
     const status = byTeacher ? 'pending' : 'active';
     this.run(`INSERT INTO students (id, reg_no, name, father_name, guardian_id, class_id, parent_phone, parent_email, dob, gender, address, admission_date,
       status, added_by, confirmed_by, search_key, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -618,15 +622,16 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/staff', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
-      if (!b.name || (!b.email && !b.phone)) fail(400, 'Name and email or phone are required');
+      if (!b.name || !b.email) fail(400, 'Name and a Google sign-in email are required');
       const role = ['teacher', 'subadmin', 'admin'].includes(b.role) ? b.role : 'teacher';
       if (role !== 'teacher') this.requireMain(a);
-      const email = normId(b.email) || null, phone = normId(b.phone) || null;
-      if ((email && this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email)) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
+      const email = normId(b.email), phone = normId(b.phone) || null;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
+      if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
       const id = 'tch_' + rid(12);
       this.run('INSERT INTO staff (id, name, email, phone, role, subrole, subjects, search_key, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
         id, b.name.trim(), email, phone, role, role === 'subadmin' ? b.subrole || 'office' : null, b.subjects || null, skeleton(b.name), now());
-      await this.syncLogin('staff', id, [email!, phone!]);
+      await this.syncLogin('staff', id, [email]);
       this.audit(a, 'staff.add', 'staff', id, { name: b.name, role });
       return c.json(this.one('SELECT * FROM staff WHERE id=?', id));
     });
@@ -654,7 +659,12 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       const changes: Row = {};
       for (const k of ['name', 'email', 'phone', 'subjects', 'role', 'subrole']) if (k in b) {
-        let v = b[k]; if (k === 'email' || k === 'phone') v = normId(v) || null;
+        let v = b[k];
+        if (k === 'email') {
+          v = normId(v || '');
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) fail(400, 'A valid Google sign-in email is required');
+        }
+        if (k === 'phone') v = normId(v) || null;
         if ((k === 'role' || k === 'subrole') && !a.isMain) continue;
         if (s![k] !== v) { changes[k] = { old: s![k], new: v }; this.run(`UPDATE staff SET ${k}=? WHERE id=?`, v, id); }
       }
@@ -833,8 +843,14 @@ export class SchoolDO extends DurableObject<Env> {
       for (const k of ['name', 'father_name', 'reg_no', 'class_id', 'parent_phone', 'parent_email', 'dob', 'gender', 'address', 'admission_date']) {
         if (!(k in b)) continue;
         let v = b[k] === '' ? null : b[k];
-        if (k === 'parent_phone' || k === 'parent_email') v = v ? normId(v) : null;
-        if (k === 'parent_phone' && !v) fail(400, 'Parent phone is required');
+        if (k === 'parent_phone') {
+          v = normId(v || '');
+          if (v && !/^0\d{10}$/.test(v)) fail(400, 'Parent phone should look like 03001234567');
+        }
+        if (k === 'parent_email') {
+          v = normId(v || '');
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) fail(400, 'A valid parent email is required for Google sign-in');
+        }
         if (k === 'reg_no' && v !== s.reg_no && this.one('SELECT 1 FROM students WHERE reg_no=?', v)) fail(409, 'Registration number already used');
         if (s[k] !== v) changes[k] = { old: s[k], new: v };
       }
@@ -843,16 +859,13 @@ export class SchoolDO extends DurableObject<Env> {
       this.tx(() => {
         for (const [k, ch] of Object.entries(changes)) this.run(`UPDATE students SET ${k}=? WHERE id=?`, (ch as any).new, s.id);
         if (changes.class_id) this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, changes.class_id.new, this.currentSession().id, pkt().date);
-        if (changes.parent_phone || changes.parent_email) {
+        if (changes.parent_email) {
           const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
-          // Changing the contact changes who has parent access.
-          const gid = this.one('SELECT id FROM guardians WHERE phone=?', n.parent_phone)?.id ?? (() => {
-            const id = 'g_' + rid(12);
-            this.run('INSERT INTO guardians (id, phone, email, name, created_at) VALUES (?,?,?,?,?)', id, n.parent_phone, n.parent_email, n.father_name, now());
-            return id;
-          })();
-          if (n.parent_email) this.run('UPDATE guardians SET email=? WHERE id=?', n.parent_email, gid);
+          const gid = this.guardianFor(n.parent_phone, n.parent_email, n.father_name);
           this.run('UPDATE students SET guardian_id=? WHERE id=?', gid, s.id);
+        } else if (changes.parent_phone) {
+          const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
+          this.run('UPDATE guardians SET phone=? WHERE id=?', n.parent_phone || null, n.guardian_id);
         }
         this.run('UPDATE students SET search_key=? WHERE id=?', skeleton((b.name ?? s.name) + ' ' + (b.father_name ?? s.father_name)), s.id);
         this.audit(a, 'student.edit', 'student', s.id, { changes, reason: b.reason || null });
@@ -872,7 +885,7 @@ export class SchoolDO extends DurableObject<Env> {
       this.run("UPDATE students SET status='active', confirmed_by=? WHERE id=?", a.key, s.id);
       this.audit(a, 'student.confirm', 'student', s.id);
       await this.syncGuardian(s.guardian_id);
-      this.notifyParentOf(s.id, 'Welcome', `${this.one("SELECT value FROM meta WHERE key='school_name'")?.value} has added your child. Install the app and sign in with this phone number.`);
+      this.notifyParentOf(s.id, 'Welcome', `${this.one("SELECT value FROM meta WHERE key='school_name'")?.value} has added your child. Install the app and sign in with your Google account registered as the parent email.`);
       return c.json({ ok: true });
     });
     app.post('/students/:id/left', async (c) => {
