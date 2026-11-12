@@ -442,3 +442,20 @@ body:has(.auth-page){min-height:100vh;background:#071225;color:var(--text);overf
 .user-search-result code{width:fit-content;max-width:100%;overflow-wrap:anywhere;font-size:.68rem;color:#9fc4ff}
 @media(max-width:420px){.login-role-picker{gap:6px}.login-role-option{min-height:100px;padding:10px 4px}.login-role-option b{font-size:.75rem}.login-role-option small{font-size:.62rem}}
 @media(prefers-reduced-motion:reduce){.login-role-option{transition:none}}
+
+
+/* ---------- Global network state across landing, auth and every workspace view ---------- */
+.network-banner{position:fixed;z-index:10000;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:11px;width:min(94vw,720px);padding:12px 16px;border:1px solid;border-radius:13px;box-shadow:0 14px 44px rgba(0,0,0,.3);backdrop-filter:blur(14px);animation:network-banner-in .22s ease-out}
+.network-banner>div{display:grid;gap:3px;min-width:0}
+.network-banner b{font-size:.83rem;line-height:1.25}
+.network-banner span:not(.network-dot){font-size:.76rem;line-height:1.5}
+.network-banner .network-dot{flex:0 0 9px;width:9px;height:9px;border-radius:50%}
+.network-banner.offline{border-color:rgba(245,158,11,.45);background:rgba(67,43,13,.96);color:#fff1cf}
+.network-banner.offline .network-dot{background:#fbbf24;box-shadow:0 0 0 4px rgba(251,191,36,.15)}
+.network-banner.offline span:not(.network-dot){color:#f5dba7}
+.network-banner.restored{border-color:rgba(52,211,153,.42);background:rgba(7,54,43,.96);color:#dcfff2}
+.network-banner.restored .network-dot{background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+.network-banner.restored span:not(.network-dot){color:#b5f3dc}
+@keyframes network-banner-in{from{opacity:0;transform:translate(-50%,-7px)}to{opacity:1;transform:translate(-50%,0)}}
+@media(max-width:600px){.network-banner{top:7px;padding:10px 12px;gap:9px;border-radius:11px}.network-banner b{font-size:.78rem}.network-banner span:not(.network-dot){font-size:.7rem}}
+@media(prefers-reduced-motion:reduce){.network-banner{animation:none}}
