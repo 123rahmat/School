@@ -911,16 +911,16 @@ export class SchoolDO extends DurableObject<Env> {
       if (classId) this.classOf(a, classId);
       let where = '1=1', params: any[] = [];
       if (!this.isFullAdmin(a)) {
-        const allowedClasses = [...a.teaches];
+        const allowedClasses = a.role === 'subadmin' && this.canManageTimetable(a) ? this.scopedClassIds(a) : [...a.teaches];
         if (!allowedClasses.length) where = '0=1';
         else { where = 't.class_id IN (' + allowedClasses.map(() => '?').join(',') + ')'; params.push(...allowedClasses); }
       }
       if (classId) { where += ' AND t.class_id=?'; params.push(classId); }
       const slots = this.q('SELECT t.*, c.name AS class_name, st.name AS teacher_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id LEFT JOIN staff st ON st.id=t.teacher_id WHERE ' + where + ' ORDER BY t.day_of_week,t.start_time,c.grade,c.name,t.period', ...params);
-      return c.json({ slots, canManage: this.isFullAdmin(a) });
+      return c.json({ slots, canManage: this.canManageTimetable(a) });
     });
     app.post('/timetable', async (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
+      const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
       const b = await c.req.json<any>();
       const id = String(b.id || 'tt_' + rid(10));
       const classId = String(b.class_id || '');
@@ -973,7 +973,7 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json(this.one('SELECT * FROM timetable_slots WHERE id=?', id));
     });
     app.delete('/timetable/:id', (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
+      const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
       const id = c.req.param('id');
       const slot = this.one('SELECT * FROM timetable_slots WHERE id=?', id);
       if (!slot) fail(404, 'Timetable period not found');
@@ -987,7 +987,8 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       if (a.type !== 'staff') fail(403, 'Only institution staff can open the syllabus library');
       const rows = this.q("SELECT d.id,d.class_id,d.subject,d.title,d.file_key,d.file_name,d.uploaded_by,d.created_at,c.name AS class_name,st.name AS uploader FROM syllabus_documents d JOIN classes c ON c.id=d.class_id LEFT JOIN staff st ON st.id=substr(d.uploaded_by,3) WHERE d.deleted_at IS NULL ORDER BY c.grade,c.name,d.subject,d.created_at DESC");
-      return c.json(this.isFullAdmin(a) ? rows : rows.filter((r) => a.teaches.has(r.class_id)));
+      return c.json(this.isFullAdmin(a) ? rows : rows.filter((r) =>
+        (a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, r.class_id)) || a.teaches.has(r.class_id)));
     });
     app.post('/syllabus', async (c) => {
       const a = c.get('actor'); const ctx = c.get('ctx');
@@ -999,7 +1000,7 @@ export class SchoolDO extends DurableObject<Env> {
       const file = form.get('file');
       if (!classId || !subject || !title || !file || typeof file !== 'object' || !('stream' in file)) fail(400, 'Class, subject, title and a PDF file are required');
       this.classOf(a, classId);
-      if (!this.isFullAdmin(a) && !a.teaches.has(classId)) fail(403, 'You can only upload syllabus for an assigned class');
+      if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, classId)) && !a.teaches.has(classId)) fail(403, 'You can only upload syllabus for an assigned class');
       if ((file as File).type !== 'application/pdf' && !String((file as File).name || '').toLowerCase().endsWith('.pdf')) fail(400, 'Upload a PDF document');
       const key = await this.putFile(ctx, a, file as File, 'syllabus', 20);
       const id = 'sy_' + rid(10);
@@ -1009,9 +1010,10 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true, id });
     });
     app.delete('/syllabus/:id', (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
+      const a = c.get('actor'); this.requirePermission(a, 'syllabus.manage');
       const doc = this.one('SELECT * FROM syllabus_documents WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
       if (!doc) fail(404, 'Syllabus document not found');
+      if (!this.isFullAdmin(a) && !this.inClassScope(a, doc.class_id)) fail(403, 'This syllabus is outside your assigned class scope');
       this.run('UPDATE syllabus_documents SET deleted_at=? WHERE id=?', now(), doc.id);
       this.run('UPDATE files SET deleted_at=? WHERE key=?', now(), doc.file_key);
       this.audit(a, 'syllabus.delete', 'syllabus', doc.id, { title: doc.title });
@@ -1753,7 +1755,7 @@ export class SchoolDO extends DurableObject<Env> {
         if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
       } else if (kind === 'syllabus') {
         const doc = this.one('SELECT * FROM syllabus_documents WHERE file_key=? AND deleted_at IS NULL', key); if (!doc) fail(404, 'Not found');
-        if (!this.isFullAdmin(a) && !a.teaches.has(doc.class_id)) fail(403, 'You do not have access to this syllabus');
+        if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, doc.class_id)) && !a.teaches.has(doc.class_id)) fail(403, 'You do not have access to this syllabus');
         this.classOf(a, doc.class_id);
       } else fail(404, 'Not found');
       const o = await this.env.FILES.get(key); if (!o) fail(404, 'File missing');
