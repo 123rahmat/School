@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS cash_handovers (
 CREATE TABLE IF NOT EXISTS reminder_pauses (student_id TEXT PRIMARY KEY, reason TEXT NOT NULL, by TEXT NOT NULL, until TEXT);
 
 CREATE TABLE IF NOT EXISTS notices (
-  id TEXT PRIMARY KEY, audience TEXT NOT NULL, target_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL,
+  id TEXT PRIMARY KEY, audience TEXT NOT NULL, target_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL, subject TEXT,
   posted_by TEXT NOT NULL, poster_name TEXT, auto INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS notice_reads (notice_id TEXT NOT NULL, user_key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (notice_id, user_key));
