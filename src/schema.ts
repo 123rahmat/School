@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS class_substitutions (
   UNIQUE(class_id, date)
 );
 CREATE INDEX IF NOT EXISTS class_substitutions_teacher_date ON class_substitutions(substitute_teacher_id, date);
-CREATE INDEX IF NOT EXISTS class_substitutions_month ON class_substitutions(date, status, substitute_teacher_id);
+CREATE INDEX IF NOT EXISTS class_substitutions_month ON class_substitutions(date, substitute_teacher_id);
 
 -- Syllabus documents belong to a class and subject, and remain private to authorized school users.
 CREATE TABLE IF NOT EXISTS syllabus_documents (
