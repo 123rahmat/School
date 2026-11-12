@@ -152,11 +152,11 @@ async function render() {
   const path = currentPath();
   // Browser visitors see the public page; installed-app visitors go straight to sign-in.
   if (!ME && path === '/' && isInstalledApp()) return go('/login');
-  if (!ME && !['/', '/login', '/signup'].includes(path)) {
+  if (!ME && !['/', '/login', '/signup', '/admin'].includes(path)) {
     try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
     if (!ME) return go(isInstalledApp() ? '/login' : '/');
   }
-  if (ME && ['/login', '/signup'].includes(path)) return go('/');
+  if (ME && ['/login', '/signup', '/admin'].includes(path)) return go(ME.kind === 'owner' ? '/owner' : '/');
   if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -508,7 +508,7 @@ function landingPage() {
     <footer class="landing-footer" id="contact">
       <div><a class="landing-brand" href="/"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
       <div><b>Explore</b><a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a></div>
-      <div><b>Account</b><a href="/signup">Create account</a><a href="/login">Sign in</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
+      <div><b>Account</b><a href="/signup">Create account</a><a href="/login">Sign in</a><a href="/admin">Platform admin</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
       <div><b>Contact us</b><p class="small muted">For product enquiries, onboarding and support:</p><p id="landing-contact-email" class="small muted">Loading contact details…</p><p class="small muted">Contact details are published by the platform team.</p></div>
       <div class="landing-copyright">© <span id="landing-year"></span> Institution Manager. All rights reserved. <span>Use in browser · Install when supported</span></div>
     </footer>
@@ -531,6 +531,24 @@ function landingPage() {
   setupLandingInstall();
   loadLandingContact();
 }
+
+route('/admin', async () => {
+  if (ME) return go(ME.kind === 'owner' ? '/owner' : '/');
+  authPage(`
+    <h1>Platform administration</h1>
+    <p class="muted small auth-description">Authorized platform owner access only. Continue with the Google account configured for platform administration.</p>
+    <div class="auth-help"><b>Restricted access</b><p>This sign-in is separate from institution registration and Main Admin accounts. It does not create an institution.</p></div>
+    <div id="gbtn" class="google-button-slot"></div>
+    <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
+    <div id="authnext"></div>
+    <p class="small muted auth-switch"><a href="/login">Return to institution sign-in</a></p>`);
+  await mountGoogleButton($('#gbtn'), async (credential) => {
+    await api('/api/auth/google', { body: { credential, role: 'platform_owner' } });
+    await refreshMe();
+    if (!ME || ME.kind !== 'owner') throw new Error('This Google account is not authorized for platform administration.');
+    go('/owner');
+  }, 'signin_with', 'admin');
+});
 
 route('/login', async () => {
   let selectedRole = 'main_admin';
