@@ -1266,7 +1266,7 @@ route('/classes', async () => {
    <td>${ME.role === 'admin' ? `<button class="btn small" data-edit="${c.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No classes yet</td></tr>'}
   </tbody></table></div>`);
   const form = (c) => modal(`<h2>${c ? 'Edit class' : 'Add class'}</h2><form id="cf" class="form">
-    <div><label>Name *</label><input name="name" required placeholder="7-B" value="${esc(c?.name)}"></div>
+    <div><label>Class name *</label><input name="name" required placeholder="7-B" value="${esc(c?.name)}"><div class="small muted">Renaming changes the class label only. Students, teachers and their assignments stay in place.</div></div>
     <div><label>Grade (number, for promotion order)</label><input name="grade" type="number" value="${esc(c?.grade ?? '')}"></div>
     <div><label>Room</label><input name="room" value="${esc(c?.room)}"></div>
     <div><label>Class teacher</label><select name="class_teacher_id"><option value="">—</option>${staff.map((t) => `<option value="${t.id}" ${c?.class_teacher_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
@@ -1277,10 +1277,15 @@ route('/classes', async () => {
       e.preventDefault(); const b = formData(e.target);
       if (c) {
         const teacherChanged = String(b.class_teacher_id || '') !== String(c.class_teacher_id || '');
-        if (teacherChanged && !confirm('Change the permanent class teacher for ' + c.name + '? Current teacher assignments and future responsibilities will change.')) return;
+        const nameChanged = String(b.name || '').trim() !== String(c.name || '').trim();
+        if (nameChanged && !confirm('Rename the class from "' + c.name + '" to "' + b.name + '"? This changes the label only; it does not move students or change teacher assignments. Historical enrollment names will be preserved.')) return;
+        if (teacherChanged && !confirm('Change the permanent class teacher for ' + c.name + '? This changes only the class-teacher assignment, not subject or timetable assignments.')) return;
         b.confirm = true;
         await act(() => S('/classes/' + c.id, { method: 'PATCH', body: b }), 'Saved');
-      } else await act(() => S('/classes', { body: b }), 'Class added');
+      } else {
+        if (!confirm('Create the new class "' + b.name + '"? You can assign its students and teachers separately.')) return;
+        await act(() => S('/classes', { body: b }), 'Class added');
+      }
       closeModal(); render();
     };
     if (c) {
