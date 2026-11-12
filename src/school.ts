@@ -1187,6 +1187,7 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/students', async (c) => {
       const a = c.get('actor'); const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the student details and confirm before creating the profile');
       const warning = this.duplicateWarning(b);
       if (warning && !b.allow_duplicate) return c.json({ needsConfirm: true, message: warning }, 409);
       const s = this.createStudent(a, c.get('ctx'), b);
@@ -1195,7 +1196,8 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/students/import', async (c) => {
       const a = c.get('actor'); if (!this.canManageStudents(a)) fail(403, 'Only admins can import');
-      const { rows } = await c.req.json<any>();
+      const { rows, confirm } = await c.req.json<any>();
+      if (confirm !== true) fail(400, 'Review the import preview and confirm the batch');
       const classes = this.q('SELECT id, name FROM classes WHERE active=1');
       const byName = new Map(classes.map((x) => [String(x.name).toLowerCase().replace(/\s+/g, ''), x.id]));
       const out: any[] = []; const gids = new Set<string>();
@@ -1239,6 +1241,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       const s = this.student(a, c.req.param('id'), 'edit');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the student changes and confirm before saving');
       const changes: Row = {};
       for (const k of ['name', 'father_name', 'reg_no', 'class_id', 'parent_phone', 'parent_email', 'dob', 'gender', 'address', 'admission_date']) {
         if (!(k in b)) continue;
@@ -1286,6 +1289,8 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/students/:id/confirm', async (c) => {
       const a = c.get('actor');
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm that this student profile should become active');
       const s = this.student(a, c.req.param('id'), 'edit');
       if (s.status !== 'pending') fail(400, 'Student is not awaiting confirmation');
       this.run("UPDATE students SET status='active', confirmed_by=? WHERE id=?", a.key, s.id);
@@ -1298,6 +1303,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       const s = this.student(a, c.req.param('id'), 'edit');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the student leaving status and date before saving');
       const reasons = ['transferred', 'left without notice', 'expelled', 'passed out', 'other'];
       if (!reasons.includes(b.reason)) fail(400, 'Choose a leaving reason');
       this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", b.date || pkt().date, b.reason + (b.note ? `: ${b.note}` : ''), s.id);
@@ -1309,6 +1315,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       const s = this.student(a, c.req.param('id'), 'edit');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm that this former student should be restored');
       const classId = b.class_id || s.class_id;
       this.run("UPDATE students SET status='active', left_date=NULL, left_reason=NULL, class_id=? WHERE id=?", classId, s.id);
       this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, classId, this.currentSession().id, pkt().date);
@@ -1318,6 +1325,7 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.delete('/students/:id', async (c) => {
       const a = c.get('actor'); this.requireMain(a);
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm permanent deletion of this student profile');
       const s = this.student(a, c.req.param('id'), 'edit');
       if (this.one('SELECT 1 FROM attendance_records WHERE student_id=? LIMIT 1', s.id) || this.one('SELECT 1 FROM vouchers WHERE student_id=? LIMIT 1', s.id))
         fail(400, 'This student has attendance or fee records. Use Mark as left instead.');
@@ -1519,6 +1527,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); const s = this.student(a, c.req.param('id'), 'fees');
       if (!this.canSetFees(a, s.class_id)) fail(403, 'You cannot change fees for this student');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the individual student fee change before saving');
       for (const l of b.heads || []) {
         if (l.amount === null || l.amount === '' || l.amount === undefined) this.run('DELETE FROM student_fee_overrides WHERE student_id=? AND head_id=?', s.id, l.head_id);
         else this.run('INSERT OR REPLACE INTO student_fee_overrides VALUES (?,?,?)', s.id, l.head_id, Math.max(0, Math.round(Number(l.amount))));
@@ -1533,6 +1542,7 @@ export class SchoolDO extends DurableObject<Env> {
       this.student(a, v!.student_id, 'fees');
       if (!['unpaid', 'partial'].includes(v!.status)) fail(400, 'Only an unpaid voucher can be changed');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the voucher fine change before saving');
       if (b.auto) { this.run('UPDATE vouchers SET fine_locked=0 WHERE id=?', v!.id); this.run('UPDATE vouchers SET fine=? WHERE id=?', this.autoFine({ ...v!, fine_locked: 0 }, pkt().date), v!.id); }
       else {
         const amt = Math.max(0, Math.round(Number(b.amount) || 0));
@@ -1549,6 +1559,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/payment-accounts', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the institution payment account changes before saving');
       const list = (Array.isArray(b.accounts) ? b.accounts : []).slice(0, 10).map((x: any) => ({
         company: String(x.company || '').trim().slice(0, 60),   // Easypaisa, JazzCash, Meezan Bank, UBL, SadaPay… any service
         title: String(x.title || '').trim().slice(0, 80),       // account holder name
@@ -1562,6 +1573,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/fees/generate', async (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm generating fee vouchers for the selected month');
       const classIds = this.isFullAdmin(a) ? undefined : this.scopedClassIds(a).filter((id) => this.canSetFees(a, id));
       if (!this.isFullAdmin(a) && !classIds?.length) fail(403, 'No fee-manageable classes are assigned to this account');
       return c.json(this.generateVouchers(a, b.month || pkt().month, undefined, classIds));
@@ -1721,7 +1733,8 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/payments/:id/cancel', async (c) => {
       const a = c.get('actor'); this.requireMain(a);
-      const { reason } = await c.req.json<any>(); if (!reason) fail(400, 'A reason is required');
+      const { reason, confirm } = await c.req.json<any>(); if (!reason) fail(400, 'A reason is required');
+      if (confirm !== true) fail(400, 'Confirm cancellation of this verified receipt');
       const p = this.one("SELECT * FROM payments WHERE id=? AND status='verified'", c.req.param('id')); if (!p) fail(404, 'Not found');
       this.tx(() => {
         const v = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id)!;
