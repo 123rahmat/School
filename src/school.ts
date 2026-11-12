@@ -693,7 +693,8 @@ export class SchoolDO extends DurableObject<Env> {
       for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = this.setting(k);
       return c.json({ id: a.id, userId: a.publicId || null, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), isFullAdmin: this.isFullAdmin(a),
         permissions: [...a.permissions], scopeAll: a.scopeAll, scopeClasses: [...a.scopeClasses],
-        canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
+        canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canViewStudents: this.isFullAdmin(a) || this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage'),
+        canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
         outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
@@ -720,7 +721,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       if (a.type === 'guardian') fail(403, 'No access');
       const active = c.req.query('active') !== '0' ? 1 : 0;
-      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view')) fail(403, 'Staff directory access has not been granted to this account');
+      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.canManageTimetable(a)) fail(403, 'Staff directory access has not been granted to this account');
       const cols = this.isFullAdmin(a) ? '*' : 'id, name, role, subjects, active';
       const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
       return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
