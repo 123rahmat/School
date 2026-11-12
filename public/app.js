@@ -1164,6 +1164,15 @@ route('/staff/:id', async ({ id }) => {
   ${t.left_at ? `<div class="banner warn">Left on ${fmtDate(t.left_at)} — ${esc(t.left_reason || '')}</div>` : ''}
   <h2>Subjects</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)} — <a href="/class/${s.class_id}">${esc(s.class_name)}</a>`).join('<br>') || '<span class="muted">None</span>'}</div>
   <h2>Attendance submissions</h2><div class="table-wrap"><table><tbody>${d.submissions.map((s) => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.class_name)}</td><td>${fmtTime(s.submitted_at)}</td></tr>`).join('') || '<tr><td class="muted">None</td></tr>'}</tbody></table></div>
+  <h2>Substitution bonus</h2><div class="grid" style="margin-top:10px">
+    <div class="stat"><div class="l">Completed substitute days</div><b>${d.substitutionBonus?.completed_days || 0}</b></div>
+    <div class="stat"><div class="l">Bonus earned</div><b>${money(d.substitutionBonus?.earned || 0)}</b></div>
+    <div class="stat"><div class="l">Marked paid</div><b>${money(d.substitutionBonus?.paid || 0)}</b></div>
+    <div class="stat"><div class="l">Balance to review</div><b>${money(Math.max(0,Number(d.substitutionBonus?.earned || 0)-Number(d.substitutionBonus?.paid || 0)))}</b></div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Class</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>
+    ${d.substitutions.map((x) => `<tr><td>${fmtDate(x.date)}</td><td>${esc(x.class_name)}</td><td>${esc(x.reason)}</td><td>${money(x.rate_amount || 0)}</td><td>${x.bonus_paid_at ? badge('bonus paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No substitute assignments recorded.</td></tr>'}
+  </tbody></table></div>
   <h2>Notices posted</h2><div class="card">${d.notices.map((n) => `<div>${esc(n.title)} <span class="muted small">${fmtTime(n.created_at)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
   ${d.history.length ? `<h2>Change history</h2><div class="table-wrap"><table><tbody>${d.history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
   const on = (i, f) => { const b = $('#' + i); if (b) b.onclick = f; };
