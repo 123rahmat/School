@@ -615,9 +615,13 @@ export class SchoolDO extends DurableObject<Env> {
 
   dashboard(a: Actor) {
     const t = pkt();
-    const classes = this.q('SELECT id, name, class_teacher_id FROM classes WHERE active=1 ORDER BY grade, name');
-    const days = new Map(this.q('SELECT class_id, status FROM attendance_days WHERE date=?', t.date).map((r) => [r.class_id, r.status]));
-    const counts = this.q("SELECT class_id, status, COUNT(*) AS n FROM attendance_records WHERE date=? GROUP BY class_id, status", t.date);
+    const allClasses = this.q('SELECT id, name, class_teacher_id FROM classes WHERE active=1 ORDER BY grade, name');
+    const allowed = this.isFullAdmin(a) ? null : new Set(this.scopedClassIds(a));
+    const classes = allowed ? allClasses.filter((c) => allowed.has(c.id)) : allClasses;
+    const classIds = classes.map((c) => c.id);
+    const inScope = (row: Row) => !allowed || allowed.has(row.class_id);
+    const days = new Map(this.q('SELECT class_id, status FROM attendance_days WHERE date=?', t.date).filter(inScope).map((r) => [r.class_id, r.status]));
+    const counts = this.q('SELECT class_id, status, COUNT(*) AS n FROM attendance_records WHERE date=? GROUP BY class_id, status', t.date).filter(inScope);
     const perClass = classes.map((c) => {
       const cs = counts.filter((x) => x.class_id === c.id);
       const total = cs.reduce((s, x) => s + x.n, 0), present = cs.filter((x) => x.status === 'P' || x.status === 'L').reduce((s, x) => s + x.n, 0);
@@ -626,18 +630,34 @@ export class SchoolDO extends DurableObject<Env> {
     const sub = perClass.filter((c) => c.status === 'submitted');
     const tot = sub.reduce((s, c) => s + c.total, 0), pres = sub.reduce((s, c) => s + c.present, 0);
     const startUtc = new Date(Date.parse(t.date + 'T00:00:00Z') - 5 * 3600e3).toISOString();
+    const paymentsToday = this.q("SELECT class_id, amount FROM payments WHERE status='verified' AND verified_at>=?", startUtc).filter(inScope);
+    const slipsWaiting = this.q("SELECT class_id FROM payments WHERE status='submitted' AND method!='cash_teacher'").filter(inScope).length;
+    const cashRows = this.q("SELECT class_id, amount FROM payments WHERE method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')").filter(inScope);
+    const lateVouchers = this.q("SELECT DISTINCT s.id,s.class_id FROM vouchers v JOIN students s ON s.id=v.student_id WHERE v.status IN ('unpaid','partial') AND v.due_date<?", t.date).filter(inScope);
+    const students = this.q("SELECT class_id,status,COUNT(*) AS n FROM students WHERE status IN ('active','pending') GROUP BY class_id").filter(inScope);
+    const activeStudents = students.filter((r) => r.status === 'active').reduce((n, r) => n + r.n, 0);
+    const pendingStudents = students.filter((r) => r.status === 'pending').reduce((n, r) => n + r.n, 0);
+    const changeRequests = this.hasPermission(a, 'attendance.manage') || this.hasPermission(a, 'students.manage')
+      ? this.q("SELECT * FROM change_requests WHERE status='open'").filter((r) => {
+          const detail = (() => { try { return JSON.parse(r.detail); } catch { return {}; } })();
+          const sid = detail.student_id || (r.kind === 'student' ? r.ref : null);
+          if (!sid) return this.isFullAdmin(a);
+          const student = this.one('SELECT class_id FROM students WHERE id=?', sid);
+          return !!student && (!allowed || allowed.has(student.class_id));
+        }).length
+      : 0;
     return {
       date: t.date,
       attendance: { classes: classes.length, submitted: sub.length, percent: tot ? Math.round((pres / tot) * 100) : 0, perClass, notSubmitted: perClass.filter((c) => c.status !== 'submitted').map((c) => c.name) },
       fees: {
-        collectedToday: Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE status='verified' AND verified_at>=?", startUtc)!.n),
-        slipsWaiting: Number(this.one("SELECT COUNT(*) AS n FROM payments WHERE status='submitted' AND method!='cash_teacher'")!.n),
-        cashWithTeachers: Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')")!.n),
-        defaulters: Number(this.one("SELECT COUNT(DISTINCT student_id) AS n FROM vouchers WHERE status IN ('unpaid','partial') AND due_date<?", t.date)!.n),
+        collectedToday: paymentsToday.reduce((n, p) => n + p.amount, 0),
+        slipsWaiting,
+        cashWithTeachers: cashRows.reduce((n, p) => n + p.amount, 0),
+        defaulters: lateVouchers.length,
       },
-      students: { active: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status='active'")!.n), pending: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status='pending'")!.n) },
-      changeRequests: Number(this.one("SELECT COUNT(*) AS n FROM change_requests WHERE status='open'")!.n),
-      notices: this.q('SELECT id, title, poster_name, created_at FROM notices WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 5'),
+      students: { active: activeStudents, pending: pendingStudents },
+      changeRequests,
+      notices: this.noticesFor(a).slice(0, 5).map((n) => ({ id: n.id, title: n.title, poster_name: n.poster_name, created_at: n.created_at })),
     };
   }
 
