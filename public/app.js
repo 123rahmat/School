@@ -306,7 +306,7 @@ async function mountGoogleButton(target, onCredential, buttonText = 'signin_with
 }
 
 function showInstallHelp() {
-  const isApple = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isApple = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const isAndroid = /android/i.test(navigator.userAgent);
   const steps = isApple
     ? 'Open this page in Safari, tap Share, then choose Add to Home Screen.'
@@ -367,7 +367,7 @@ function landingPage() {
           <div class="preview-footer"><span>Student records</span><span>Fees</span><span>Results</span><span>Notices</span></div>
         </div>
       </section>
-      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Works in the browser</span><span>Installable on supported devices</span></section>
+      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Browser or installable app</span><span>Attendance drafts queue offline</span></section>
       <section class="landing-section" id="institutions">
         <div class="landing-section-heading"><div class="landing-eyebrow">WHO IT SERVES</div><h2>Made for the people who keep an education institution moving.</h2><p>Give each institution its own workspace, then give each person the tools and access appropriate to their role.</p></div>
         <div class="landing-card-grid three">
@@ -388,6 +388,7 @@ function landingPage() {
           <article class="landing-card"><div class="landing-card-icon">G</div><h3>Notices and parent communication</h3><p>Share notices with the right audience, keep student-related message threads and track notification reads.</p></article>
           <article class="landing-card"><div class="landing-card-icon">H</div><h3>Results and documents</h3><p>Upload result documents for individual students or groups, control publication and keep files access-protected.</p></article>
           <article class="landing-card"><div class="landing-card-icon">I</div><h3>Reports, history and backups</h3><p>Review dashboards, audit important actions, monitor storage and export institution data for backup.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">J</div><h3>Offline attendance queue</h3><p>After opening the relevant class and date online, attendance drafts and submissions can be saved on the device and queued until the connection returns. Other changes still need a live connection.</p></article>
         </div>
       </section>
       <section class="landing-section landing-workflow" id="how-it-works">
