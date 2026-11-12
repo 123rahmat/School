@@ -16,7 +16,9 @@ const [wrangler, util, worker, app, sw, school, schema, css, html] = await Promi
 
 assert.match(wrangler, /^name = "school"$/m, 'Wrangler deploy target must match the Cloudflare Worker named school');
 assert.match(wrangler, /^GOOGLE_CLIENT_ID = ".+apps\.googleusercontent\.com"$/m, 'Google Web Client ID must be configured');
-assert.match(wrangler, /^binding = "DB"$/m, 'D1 binding must exist');
+assert.match(wrangler, /^name = "PLATFORM"$/m, 'Platform SQLite Durable Object binding must exist');
+assert.doesNotMatch(wrangler, /d1_databases|binding = "DB"/, 'D1 must be removed');
+assert.match(wrangler, /new_sqlite_classes = \["PlatformDO"\]/, 'Platform SQLite migration must exist');
 assert.match(wrangler, /^binding = "FILES"$/m, 'R2 binding must exist');
 assert.match(wrangler, /^invocation_logs = true$/m, 'Wrangler observability config must be present');
 
