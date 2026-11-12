@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { DurableObjectState, SqlStorage } from '@cloudflare/workers-types';
 import type { Env } from './util';
 
 type Statement = { sql: string; values: unknown[] };
