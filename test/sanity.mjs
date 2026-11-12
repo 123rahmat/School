@@ -40,15 +40,17 @@ assert.match(school, /publicId: s!\.public_id/, 'Staff accounts must expose thei
 assert.match(school, /publicId: g!\.public_id/, 'Parent accounts must expose their assigned account ID');
 assert.match(school, /lower\(hex\(randomblob\(16\)\)\)/, 'Account IDs must be generated as opaque hexadecimal values');
 assert.match(school, /userId: u\.public_id/, 'Administrator search must return account IDs for lookup');
-assert.match(app, /This Google account is not linked to an institution yet/, 'Unknown Google emails must be directed to signup or their institution admin');
+assert.match(worker, /No main administrator profile is registered/, 'Unregistered main-admin accounts must be directed to institution registration');
+assert.match(app, /Teachers and parents do not create their own accounts/, 'Teacher and parent profiles must be provisioned by the institution');
 assert.match(app, /att-outbox-v2:/, 'Offline attendance queue must be identity-scoped');
-assert.match(app, /CLEAR_PRIVATE_CACHES/, 'Private API caches must be purged when the account changes');
+assert.match(app, /credentials: 'same-origin'/, 'API requests must use same-origin session cookies');
+assert.match(app, /cache: 'no-store'/, 'API requests must not be served from a browser cache');
 assert.match(app, /attendance drafts and submissions are saved on the device/i, 'Offline capability must be described accurately');
 
 assert.match(sw, /const VERSION = 'v7'/, 'PWA shell/cache version must be updated');
-assert.match(sw, /beforeinstallprompt|CLEAR_PRIVATE_CACHES/, 'Service worker must support private cache clearing');
-assert.match(sw, /caches\.open\('api-' \+ VERSION\)/, 'Previously opened API reads should be cached for offline use');
+assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
+assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
 assert.match(school, /day\.submitted_by === a\.key/, 'Attendance submit retry must be idempotent for the same submitter');
 
-console.log('School platform sanity checks passed: Google-only auth, Worker bindings, public landing page, PWA cache and offline attendance safeguards.');
+console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
