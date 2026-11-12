@@ -1214,6 +1214,63 @@ route('/class/:id', async ({ id }) => {
   });
 });
 
+// ---------- timetable: weekly class schedule and printable teacher view ----------
+route('/timetable', async () => {
+  const [d, classes, staff] = await Promise.all([S('/timetable'), S('/classes'), ME.role === 'admin' ? S('/staff') : []]);
+  const days = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
+  view(`<div class="row between"><div><h1>Weekly timetable</h1><p class="muted small">Official weekly teaching periods. Teacher, class and room overlaps are checked before a change is saved.</p></div><div class="row"><button class="btn" id="ttprint">Print</button><button class="btn" id="ttcsv">Download CSV</button>${d.canManage ? '<button class="btn primary" id="ttadd">Add period</button>' : ''}</div></div>
+  <div class="table-wrap"><table><thead><tr><th>Day</th><th>Period</th><th>Time</th><th>Class</th><th>Subject</th><th>Teacher</th><th>Room</th>${d.canManage ? '<th></th>' : ''}</tr></thead><tbody>
+  ${d.slots.map((x) => `<tr><td>${days[x.day_of_week] || '–'}</td><td>${x.period}</td><td>${esc(x.start_time)}–${esc(x.end_time)}</td><td>${esc(x.class_name)}</td><td>${esc(x.subject)}</td><td>${esc(x.teacher_name || 'Unassigned')}</td><td>${esc(x.room || '–')}</td>${d.canManage ? `<td class="row"><button class="btn small" data-ttedit="${x.id}">Edit</button><button class="btn small danger" data-ttdel="${x.id}">Delete</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="${d.canManage ? 8 : 7}" class="muted">No timetable periods have been added.</td></tr>`}
+  </tbody></table></div><p class="small muted">Times use the institution's local Pakistan time. Changes take effect immediately; past attendance and teacher history are not altered.</p>`);
+  const form = (slot = null) => modal(`<h2>${slot ? 'Edit timetable period' : 'Add timetable period'}</h2>
+    <form id="ttf" class="form">
+      <div><label>Class *</label><select name="class_id" required>${classes.map((c) => `<option value="${c.id}" ${slot?.class_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label>Subject *</label><input name="subject" required value="${esc(slot?.subject)}" placeholder="Mathematics"></div>
+      <div><label>Teacher</label><select name="teacher_id"><option value="">Unassigned</option>${staff.filter((t) => t.role === 'teacher').map((t) => `<option value="${t.id}" ${slot?.teacher_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
+      <div><label>Day *</label><select name="day_of_week">${Object.entries(days).map(([k,v]) => `<option value="${k}" ${Number(slot?.day_of_week || 1) === Number(k) ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div><label>Period number *</label><input type="number" name="period" min="1" max="16" required value="${esc(slot?.period || 1)}"></div>
+      <div><label>Start time *</label><input type="time" name="start_time" required value="${esc(slot?.start_time || '08:00')}"></div>
+      <div><label>End time *</label><input type="time" name="end_time" required value="${esc(slot?.end_time || '08:40')}"></div>
+      <div><label>Room (optional)</label><input name="room" value="${esc(slot?.room)}" placeholder="Room 4"></div>
+      <div class="full" id="tt-errors" aria-live="polite"></div>
+      <div class="full row"><button class="btn primary">${slot ? 'Save changes' : 'Add period'}</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (m) => {
+      $('#ttf', m).onsubmit = async (e) => {
+        e.preventDefault(); const b = formData(e.target); if (slot) b.id = slot.id;
+        const errors = $('#tt-errors', m); errors.innerHTML = '';
+        try { await S('/timetable', { body: b }); closeModal(); toast('Timetable saved'); render(); }
+        catch (error) {
+          if (error.data?.conflicts?.length) errors.innerHTML = `<div class="banner warn"><b>Timetable conflict — not saved</b><ul>${error.data.conflicts.map((x) => `<li>${esc(x.message)}</li>`).join('')}</ul></div>`;
+          else toast(error.message);
+        }
+      };
+    });
+  if ($('#ttadd')) $('#ttadd').onclick = () => form();
+  $('[data-ttedit]').forEach((b) => b.onclick = () => form(d.slots.find((x) => x.id === b.dataset.ttedit)));
+  $('[data-ttdel]').forEach((b) => b.onclick = async () => { if (!confirm('Delete this timetable period?')) return; await act(() => S('/timetable/' + b.dataset.ttdel, { method: 'DELETE' }), 'Period deleted'); render(); });
+  $('#ttprint').onclick = () => window.print();
+  $('#ttcsv').onclick = () => download('weekly-timetable.csv', csv([['day','period','start','end','class','subject','teacher','room'], ...d.slots.map((x) => [days[x.day_of_week],x.period,x.start_time,x.end_time,x.class_name,x.subject,x.teacher_name,x.room])]));
+});
+
+// ---------- syllabus: private class and subject PDF library ----------
+route('/syllabus', async () => {
+  const [rows, classes] = await Promise.all([S('/syllabus'), S('/classes')]);
+  view(`<div class="row between"><div><h1>Syllabus library</h1><p class="muted small">Download the official syllabus for each assigned class and subject. PDF files stay inside the institution workspace.</p></div></div>
+    ${ME.isAdmin || ME.kind === 'staff' ? `<form id="syllabusForm" class="card form" enctype="multipart/form-data"><div><label>Class *</label><select name="class_id" required>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label>Subject *</label><input name="subject" required placeholder="Mathematics"></div><div class="full"><label>Document title *</label><input name="title" required placeholder="Grade 7 — Term 1 syllabus"></div>
+      <div class="full"><label>PDF document *</label><input name="file" type="file" accept="application/pdf,.pdf" required></div>
+      <div class="full row"><button class="btn primary">Upload syllabus PDF</button></div></form>` : ''}
+    <div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Document</th><th>Uploaded by</th><th>Date</th><th></th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(r.class_name)}</td><td>${esc(r.subject)}</td><td>${esc(r.title)}<div class="small muted">${esc(r.file_name || '')}</div></td><td>${esc(r.uploader || 'Staff')}</td><td>${fmtDate(String(r.created_at || '').slice(0,10))}</td><td class="row"><a class="btn small" target="_blank" href="/files/syllabus/${encodeURIComponent(String(r.file_key).split('/').slice(2).join('/'))}">Download PDF</a>${ME.role === 'admin' ? `<button class="btn small danger" data-sydel="${r.id}">Remove</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No syllabus documents uploaded yet.</td></tr>'}
+    </tbody></table></div>`);
+  const form = $('#syllabusForm');
+  if (form) form.onsubmit = async (e) => {
+    e.preventDefault(); const fd = new FormData(form);
+    try { await S('/syllabus', { method: 'POST', form: fd }); toast('Syllabus uploaded'); render(); }
+    catch (error) { toast(error.message); }
+  };
+  $('[data-sydel]').forEach((b) => b.onclick = async () => { if (!confirm('Remove this syllabus document?')) return; await act(() => S('/syllabus/' + b.dataset.sydel, { method: 'DELETE' }), 'Syllabus removed'); render(); });
+});
 // ---------- attendance ----------
 route('/attendance', async () => {
   const classes = await S('/classes');
