@@ -31,6 +31,13 @@ const isInstalledApp = () => {
   try { return !!(window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true); }
   catch { return navigator.standalone === true; }
 };
+const SESSION_HINT_KEY = 'institution.session-present';
+const setSessionHint = (active) => {
+  try {
+    if (active) localStorage.setItem(SESSION_HINT_KEY, '1');
+    else localStorage.removeItem(SESSION_HINT_KEY);
+  } catch {}
+};
 
 // Payment accounts the admin has added (any company: Easypaisa, JazzCash, any bank…)
 let ACCOUNTS = null;
@@ -47,7 +54,7 @@ async function api(path, opts = {}) {
   const r = await fetch(path, init);
   let data = null;
   try { data = await r.json(); } catch { data = null; }
-  if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null; if (!opts.quiet) go('/login'); throw new Error('Please sign in'); }
+  if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null; setSessionHint(false); if (!opts.quiet) go(isInstalledApp() ? '/login' : '/'); throw new Error('Please sign in'); }
   if (!r.ok) {
     const err = new Error((data && data.error) || (data && data.message) || 'Request failed');
     err.status = r.status; err.data = data; throw err;
@@ -207,7 +214,7 @@ function view(html) {
     }
     try { await api('/api/auth/logout', { body: {} }); }
     catch { toast('Could not sign out from the server. Please try again.'); return; }
-      ME = null; BILL = null;
+      ME = null; BILL = null; setSessionHint(false);
       go(isInstalledApp() ? '/login' : '/');
   };
   setupSearch();
@@ -276,6 +283,7 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 async function refreshMe() {
   const w = await api('/api/whoami', { quiet: true });
   ME = w.signedIn ? w : null;
+  setSessionHint(!!ME);
   if (ME && ME.isMainAdmin) BILL = await api('/api/billing').catch(() => null);
 }
 
@@ -1773,14 +1781,17 @@ route('/owner', async () => {
 // ---------- start ----------
 (async () => {
   const initialPath = currentPath();
-  if (initialPath === '/' && !isInstalledApp()) {
-    // Public browser visitors see the landing page immediately; existing sessions are checked quietly.
+  let sessionHint = false;
+  try { sessionHint = localStorage.getItem(SESSION_HINT_KEY) === '1'; } catch {}
+  if (initialPath === '/' && !isInstalledApp() && !sessionHint) {
+    // First-time browser visitors see the landing page immediately; discover new sessions quietly.
     render();
     refreshMe().then(() => {
       if (ME) render();
     }).catch(() => {});
   } else {
-    // Verify device sessions before showing login/signup or the installed-app home screen.
+    // A prior session hint is only a UI hint: always verify the cookie with the server.
+    // This avoids flashing the public page for returning users without trusting local storage.
     try { await refreshMe(); } catch {}
     render();
   }
