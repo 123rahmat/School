@@ -734,9 +734,21 @@ export class SchoolDO extends DurableObject<Env> {
       const email = normId(b.email), phone = normId(b.phone) || null;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
+      const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage']);
+      let permissionsJson: string | null = null, scopeRaw: string | null = null;
+      if (role === 'subadmin') {
+        const permissions = [...new Set(Array.isArray(b.permissions) ? b.permissions.filter((p: any) => typeof p === 'string') : [])];
+        if (!permissions.length || permissions.some((p) => !allowedPermissions.has(p))) fail(400, 'Choose at least one valid Mini Admin permission');
+        if (permissions.some((p) => ['fees.manage','attendance.manage','timetable.manage','syllabus.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
+        const scopeAll = b.scope_all !== false;
+        const scopeIds = [...new Set(Array.isArray(b.scope_classes) ? b.scope_classes.map(String) : [])];
+        if (!scopeAll && (!scopeIds.length || scopeIds.some((cid) => !this.one('SELECT 1 FROM classes WHERE id=? AND active=1', cid)))) fail(400, 'Choose one or more active classes for this Mini Admin');
+        permissionsJson = JSON.stringify(permissions);
+        scopeRaw = scopeAll ? '*' : JSON.stringify(scopeIds);
+      }
       const id = 'tch_' + rid(12);
-      this.run('INSERT INTO staff (id, public_id, name, email, phone, role, subrole, subjects, search_key, created_at) VALUES (?, lower(hex(randomblob(16))), ?,?,?,?,?,?,?,?)',
-        id, b.name.trim(), email, phone, role, role === 'subadmin' ? b.subrole || 'office' : null, b.subjects || null, skeleton(b.name), now());
+      this.run('INSERT INTO staff (id, public_id, name, email, phone, role, subrole, subjects, permissions, scope_classes, search_key, created_at) VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, b.name.trim(), email, phone, role, role === 'subadmin' ? b.subrole || 'office' : null, b.subjects || null, permissionsJson, scopeRaw, skeleton(b.name), now());
       await this.syncLogin('staff', id, [email]);
       this.audit(a, 'staff.add', 'staff', id, { name: b.name, role });
       return c.json(this.one('SELECT * FROM staff WHERE id=?', id));
