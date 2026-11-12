@@ -58,12 +58,6 @@ export class SchoolDO extends DurableObject<Env> {
         'ALTER TABLE staff ADD COLUMN public_id TEXT',
         'ALTER TABLE staff ADD COLUMN permissions TEXT',
         'ALTER TABLE staff ADD COLUMN scope_classes TEXT',
-        'ALTER TABLE class_substitutions ADD COLUMN rate_amount INTEGER NOT NULL DEFAULT 0',
-        "ALTER TABLE class_substitutions ADD COLUMN status TEXT NOT NULL DEFAULT 'assigned'",
-        'ALTER TABLE class_substitutions ADD COLUMN completed_at TEXT',
-        'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_at TEXT',
-        'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_by TEXT',
-        'ALTER TABLE class_substitutions ADD COLUMN bonus_note TEXT',
         'ALTER TABLE enrollments ADD COLUMN to_date TEXT',
         'ALTER TABLE enrollments ADD COLUMN class_name_snapshot TEXT',
         'ALTER TABLE notices ADD COLUMN subject TEXT',
@@ -100,8 +94,8 @@ export class SchoolDO extends DurableObject<Env> {
       else if (s!.role === 'subadmin') {
         // One-time compatibility defaults for sub-admins created before granular permissions existed.
         permissions = s!.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
-          : s!.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
-          : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+          : s!.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','notices.manage','dashboard.view']
+          : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','notices.manage','dashboard.view'];
       }
       let scopeAll = !s!.scope_classes || s!.scope_classes === '*';
       let scopeClasses: string[] = [];
@@ -110,7 +104,6 @@ export class SchoolDO extends DurableObject<Env> {
         permissions: new Set(permissions), scopeClasses: new Set(scopeClasses), scopeAll };
       for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
       for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
-      for (const r of this.q('SELECT class_id FROM class_substitutions WHERE substitute_teacher_id=? AND date=?', s!.id, pkt().date)) a.teaches.add(r.class_id);
       return a;
     }
     const g = this.one('SELECT * FROM guardians WHERE id=?', ctx.refId);
@@ -131,8 +124,6 @@ export class SchoolDO extends DurableObject<Env> {
   }
   canFeesAll(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'fees.manage')); }
   canManageStudents(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'students.manage')); }
-  canManageTimetable(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'timetable.manage')); }
-  canManageSyllabus(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'syllabus.manage')); }
   requireAdmin(a: Actor) { if (!this.isAdmin(a)) fail(403, 'Only administrators can do this'); }
   requirePermission(a: Actor, permission: string) { if (!this.hasPermission(a, permission)) fail(403, 'Your account has not been granted the ' + permission.replace('.', ' ') + ' permission'); }
   requireFullAdmin(a: Actor) { if (!this.isFullAdmin(a)) fail(403, 'Only a full administrator can do this'); }
@@ -166,20 +157,16 @@ export class SchoolDO extends DurableObject<Env> {
     return st;
   }
 
-  isSubstitute(a: Actor, classId: string, date = pkt().date) {
-    return a.type === 'staff' && !!this.one('SELECT 1 FROM class_substitutions WHERE class_id=? AND substitute_teacher_id=? AND date=?', classId, a.id, date);
-  }
-  classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view', date = pkt().date): Row {
+  classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view'): Row {
     const c = this.one('SELECT * FROM classes WHERE id=?', id);
     if (!c) fail(404, 'Class not found');
     if (this.isFullAdmin(a)) return c!;
     if (a.classTeacherOf.has(id)) return c!;
-    if (need === 'teacher' && this.isSubstitute(a, id, date)) return c!;
     if (need === 'view' && a.teaches.has(id)) return c!;
     if (a.role === 'subadmin') {
       if (!this.inClassScope(a, id)) fail(403, 'This class is outside your assigned scope');
       if (need === 'teacher' && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Attendance management permission is required');
-      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage'].some((p) => this.hasPermission(a, p));
+      const allowed = ['students.view','students.manage','fees.manage','attendance.manage','classes.view','notices.manage','results.manage'].some((p) => this.hasPermission(a, p));
       if (allowed) return c!;
       fail(403, 'Your account has no access to this class');
     }
@@ -398,12 +385,6 @@ export class SchoolDO extends DurableObject<Env> {
         classId, date, submit ? 'submitted' : 'draft', submit ? a.key : null, submit ? t : null);
     });
     if (submit) {
-      const substitute = this.one("SELECT * FROM class_substitutions WHERE class_id=? AND date=? AND substitute_teacher_id=? AND status='assigned'", classId, date, a.id);
-      if (substitute) {
-        this.run("UPDATE class_substitutions SET status='completed', completed_at=? WHERE id=? AND status='assigned'", t, substitute.id);
-        this.audit(a, 'teacher.substitute.complete', 'class', classId, { date, substitution_id:substitute.id, rate_amount:substitute.rate_amount });
-        this.notify('s:' + a.id, 'Substitution recorded', 'Your ' + money(Number(substitute.rate_amount || 0)) + ' substitution amount for ' + date + ' has been added to the month-end bonus statement. Payment is subject to administrator approval.');
-      }
       this.audit(a, 'attendance.submit', 'class', classId, { date });
       if (this.setting('absence_alerts') === '1') {
         for (const r of this.q("SELECT student_id, status FROM attendance_records WHERE class_id=? AND date=? AND status IN ('A','L')", classId, date))
@@ -728,7 +709,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/me', (c) => {
       const a = c.get('actor');
       const classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name').filter((x) =>
-        this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, x.id) && ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view'].some((p) => this.hasPermission(a, p))) || a.teaches.has(x.id));
+        this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, x.id) && ['students.view','students.manage','fees.manage','attendance.manage','classes.view'].some((p) => this.hasPermission(a, p))) || a.teaches.has(x.id));
       const children = a.type === 'guardian' ? this.q("SELECT s.id, s.name, s.reg_no, c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id WHERE s.guardian_id=? AND s.status='active'", a.id) : [];
       const settings: Row = {};
       for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = this.setting(k);
@@ -737,8 +718,7 @@ export class SchoolDO extends DurableObject<Env> {
         canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canViewStudents: this.isFullAdmin(a) || this.hasPermission(a, 'students.view') || this.canManageStudents(a) || this.canFeesAll(a) || this.hasPermission(a, 'attendance.manage'),
         canManageAttendance: this.isFullAdmin(a) || this.hasPermission(a, 'attendance.manage'), canManageNotices: this.isFullAdmin(a) || this.hasPermission(a, 'notices.manage'),
         canDecideRequests: this.isFullAdmin(a) || this.hasPermission(a, 'attendance.manage') || this.canManageStudents(a),
-        canViewStaff: this.isFullAdmin(a) || this.hasPermission(a, 'staff.view') || this.canManageTimetable(a),
-        canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
+        canViewStaff: this.isFullAdmin(a) || this.hasPermission(a, 'staff.view'),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], teaches: [...a.teaches], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
         outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
@@ -765,7 +745,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       if (a.type === 'guardian') fail(403, 'No access');
       const active = c.req.query('active') !== '0' ? 1 : 0;
-      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.canManageTimetable(a) && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Staff directory access has not been granted to this account');
+      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Staff directory access has not been granted to this account');
       const cols = this.isFullAdmin(a) ? '*' : 'id, name, role, subjects, active';
       const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
       return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
@@ -780,12 +760,12 @@ export class SchoolDO extends DurableObject<Env> {
       const email = normId(b.email), phone = normId(b.phone) || null;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
-      const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage']);
+      const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','classes.view','notices.manage','results.manage']);
       let permissionsJson: string | null = null, scopeRaw: string | null = null;
       if (role === 'subadmin') {
         const permissions = [...new Set(Array.isArray(b.permissions) ? b.permissions.filter((p: any) => typeof p === 'string') : [])];
         if (!permissions.length || permissions.some((p) => !allowedPermissions.has(p))) fail(400, 'Choose at least one valid Mini Admin permission');
-        if (permissions.some((p) => ['fees.manage','attendance.manage','timetable.manage','syllabus.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
+        if (permissions.some((p) => ['fees.manage','attendance.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
         const scopeAll = b.scope_all !== false;
         const scopeIds = [...new Set(Array.isArray(b.scope_classes) ? b.scope_classes.map(String) : [])];
         if (!scopeAll && (!scopeIds.length || scopeIds.some((cid) => !this.one('SELECT 1 FROM classes WHERE id=? AND active=1', cid)))) fail(400, 'Choose one or more active classes for this Mini Admin');
@@ -809,9 +789,6 @@ export class SchoolDO extends DurableObject<Env> {
         staff: s,
         classTeacherOf: this.q('SELECT id, name FROM classes WHERE class_teacher_id=? AND active=1 ORDER BY grade,name', id),
         subjects: this.q('SELECT cs.id,cs.subject,c.name AS class_name,c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=? ORDER BY c.grade,c.name,cs.subject', id),
-        timetable: this.q('SELECT t.id,t.class_id,t.subject,t.day_of_week,t.period,t.start_time,t.end_time,t.room,c.name AS class_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? ORDER BY t.day_of_week,t.start_time', id),
-        substitutions: this.q('SELECT x.*,c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? ORDER BY x.date DESC LIMIT 100',id),
-        substitutionBonus: this.one("SELECT COUNT(*) AS completed_days,COALESCE(SUM(rate_amount),0) AS earned,COALESCE(SUM(CASE WHEN bonus_paid_at IS NOT NULL THEN rate_amount ELSE 0 END),0) AS paid FROM class_substitutions WHERE substitute_teacher_id=? AND status='completed'",id),
         submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
         notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
         cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
@@ -843,15 +820,15 @@ export class SchoolDO extends DurableObject<Env> {
         const current = this.one('SELECT * FROM staff WHERE id=?', id)!;
         const nextRole = String(current.role || 'teacher');
         if (nextRole === 'subadmin') {
-          const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view','notices.manage','results.manage']);
+          const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','classes.view','notices.manage','results.manage']);
           let permissions: string[] = [];
           if (Array.isArray(b.permissions)) permissions = [...new Set(b.permissions.filter((p: any) => typeof p === 'string'))];
           else if (current.permissions) { try { const parsed = JSON.parse(current.permissions); if (Array.isArray(parsed)) permissions = parsed; } catch {} }
           else permissions = current.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
-            : current.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
-            : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+            : current.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','notices.manage','dashboard.view']
+            : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','notices.manage','dashboard.view'];
           if (!permissions.length || permissions.some((p) => !allowedPermissions.has(p))) fail(400, 'Choose at least one valid Mini Admin permission');
-          if (permissions.some((p) => ['fees.manage','attendance.manage','timetable.manage','syllabus.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
+          if (permissions.some((p) => ['fees.manage','attendance.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
           const previousScope: string[] = (() => { try { const v = JSON.parse(current.scope_classes || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } })();
           const scopeAll = b.scope_all !== undefined ? !!b.scope_all : ('scope_classes' in b ? false : (!current.scope_classes || current.scope_classes === '*'));
           const scopeIds = [...new Set(Array.isArray(b.scope_classes) ? b.scope_classes.map(String) : previousScope)];
@@ -924,17 +901,15 @@ export class SchoolDO extends DurableObject<Env> {
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
       const classIds = [...new Set(Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids.map(String) : [])];
       const subjectIds = [...new Set(Array.isArray(b.transfer_subject_ids) ? b.transfer_subject_ids.map(String) : [])];
-      const timetableIds = [...new Set(Array.isArray(b.transfer_timetable_ids) ? b.transfer_timetable_ids.map(String) : [])];
       const validClasses = new Set(this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', oldId).map((r) => r.id));
       const validSubjects = new Set(this.q('SELECT id FROM class_subjects WHERE teacher_id=?', oldId).map((r) => r.id));
-      const validPeriods = new Set(this.q('SELECT id FROM timetable_slots WHERE teacher_id=?', oldId).map((r) => r.id));
-      if (classIds.some((id) => !validClasses.has(id)) || subjectIds.some((id) => !validSubjects.has(id)) || timetableIds.some((id) => !validPeriods.has(id))) fail(400, 'One or more selected teaching assignments no longer belong to this teacher. Refresh and review again.');
+      if (classIds.some((id) => !validClasses.has(id)) || subjectIds.some((id) => !validSubjects.has(id))) fail(400, 'One or more selected teaching assignments no longer belong to this teacher. Refresh and review again.');
       const newId = this.replaceTeacherProfile(a, old, { name, email, phone, subjects: b.subjects || null }, effective, {
-        classIds, subjectIds, timetableIds,
+        classIds, subjectIds,
       });
       await this.syncLogin('staff', oldId, [], true);
       await this.syncLogin('staff', newId, [email]);
-      this.audit(a, 'staff.replace', 'staff', oldId, { replacement_id: newId, effective, cash, transfer_class_ids: classIds, transfer_subject_ids: subjectIds, transfer_timetable_ids: timetableIds });
+      this.audit(a, 'staff.replace', 'staff', oldId, { replacement_id: newId, effective, cash, transfer_class_ids: classIds, transfer_subject_ids: subjectIds });
       return c.json({ ok: true, old_id: oldId, new_id: newId, old_name: old.name, new_name: name, cash });
     });
 
@@ -944,7 +919,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (a.type === 'guardian') fail(403, 'No access');
       const rows = this.q(`SELECT c.*, t.name AS class_teacher_name, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id AND s.status='active') AS students
         FROM classes c LEFT JOIN staff t ON t.id=c.class_teacher_id WHERE c.active=1 ORDER BY c.grade, c.name`);
-      return c.json(rows.filter((r) => this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, r.id) && ['classes.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage'].some((p) => this.hasPermission(a, p))) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
+      return c.json(rows.filter((r) => this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, r.id) && ['classes.view','students.view','students.manage','fees.manage','attendance.manage'].some((p) => this.hasPermission(a, p))) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
     });
     app.post('/classes', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -1022,253 +997,8 @@ export class SchoolDO extends DurableObject<Env> {
         class: { ...cl, class_teacher_name: this.one('SELECT name FROM staff WHERE id=?', cl.class_teacher_id)?.name },
         subjects: this.q('SELECT cs.subject, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', cl.id),
         students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
-        substitution: this.one('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? AND x.date=?', cl.id, pkt().date),
-        substitutionHistory: this.q('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? ORDER BY x.date DESC LIMIT 50', cl.id),
-        canManageSubstitution: this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, cl.id)),
-        substitutionRate: Number(this.one('SELECT amount_per_day FROM class_substitution_rates WHERE class_id=?', cl.id)?.amount_per_day || 0),
-        canEditSubstitutionRate: this.isFullAdmin(a),
         history: this.q('SELECT a.from_date, a.to_date, t.name FROM class_teacher_assignments a JOIN staff t ON t.id=a.teacher_id WHERE a.class_id=? ORDER BY a.from_date DESC', cl.id),
       });
-    });
-
-    // ----- dated teacher substitutions (a substitute can mark attendance only for the assigned class/date) -----
-    app.get('/substitutions', (c) => {
-      const a = c.get('actor');
-      if (a.type !== 'staff') fail(403, 'Only staff can view substitutions');
-      const date = c.req.query('date') || pkt().date;
-      let rows = this.q('SELECT x.*, c.name AS class_name, o.name AS original_teacher_name, t.name AS substitute_teacher_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id LEFT JOIN staff o ON o.id=x.original_teacher_id JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.date=? ORDER BY c.grade,c.name', date);
-      if (!this.isFullAdmin(a)) {
-        if (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage')) rows = rows.filter((x) => this.inClassScope(a, x.class_id));
-        else rows = rows.filter((x) => x.substitute_teacher_id === a.id || x.original_teacher_id === a.id || a.teaches.has(x.class_id));
-      }
-      return c.json(rows);
-    });
-    app.post('/substitutions', async (c) => {
-      const a = c.get('actor'); const b = await c.req.json<any>();
-      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, String(b.class_id || ''))))) fail(403, 'Only the Main Admin or a scoped attendance manager can assign substitutes');
-      if (b.confirm !== true) fail(400, 'Review the class, date and substitute teacher, then confirm');
-      const classId = String(b.class_id || ''), teacherId = String(b.substitute_teacher_id || '');
-      const date = String(b.date || pkt().date), reason = String(b.reason || '').trim();
-      const cl = this.one('SELECT * FROM classes WHERE id=? AND active=1', classId);
-      if (!cl) fail(404, 'Active class not found');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < pkt().date) fail(400, 'Choose today or a future date');
-      if (!reason) fail(400, 'Enter why a substitute is needed');
-      const teacher = this.one("SELECT * FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId);
-      if (!teacher) fail(400, 'Choose an active teacher or Mini Admin account');
-      if (teacherId === cl!.class_teacher_id) fail(400, 'The assigned class teacher cannot be their own substitute');
-      const dayNumber = new Date(date + 'T00:00:00Z').getUTCDay();
-      if (!dayNumber) fail(400, 'Sunday does not have a scheduled timetable day');
-      const existingAssignment = this.one('SELECT id,status,bonus_paid_at FROM class_substitutions WHERE class_id=? AND date=?', classId, date);
-      if (existingAssignment) fail(409, existingAssignment.status === 'completed' || existingAssignment.bonus_paid_at ? 'This class substitution is completed and is part of the bonus history.' : 'A substitute is already assigned to this class on this date. Remove that assignment before replacing it.');
-      const alreadySubstituting = this.one('SELECT c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? AND x.date=? LIMIT 1', teacherId, date);
-      if (alreadySubstituting) fail(409, teacher.name + ' is already assigned to cover ' + alreadySubstituting.class_name + ' on ' + date);
-      const periods = this.q('SELECT * FROM timetable_slots WHERE class_id=? AND day_of_week=? ORDER BY start_time', classId, dayNumber);
-      const conflicts: string[] = [];
-      for (const period of periods) {
-        const existing = this.one('SELECT t.id,c.name AS class_name,t.subject,t.start_time,t.end_time FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? AND t.day_of_week=? AND t.class_id<>? AND t.start_time<? AND t.end_time>? LIMIT 1',
-          teacherId, dayNumber, classId, period.end_time, period.start_time);
-        if (existing) conflicts.push(teacher.name + ' already teaches ' + existing.class_name + ' (' + existing.subject + ') from ' + existing.start_time + ' to ' + existing.end_time);
-      }
-      if (conflicts.length) return c.json({ error: 'Substitute teacher timetable conflict. Choose another teacher or resolve the schedule first.', conflicts: [...new Set(conflicts)] }, 409);
-      const id = 'sub_' + rid(10);
-      const rate = Number(this.one('SELECT amount_per_day FROM class_substitution_rates WHERE class_id=?', classId)?.amount_per_day || 0);
-      this.run('INSERT OR REPLACE INTO class_substitutions (id,class_id,original_teacher_id,substitute_teacher_id,date,reason,created_by,created_at,rate_amount,status) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        id, classId, cl!.class_teacher_id || null, teacherId, date, reason, a.key, now(), rate, 'assigned');
-      this.audit(a, 'teacher.substitute.assign', 'class', classId, { date, original_teacher_id: cl!.class_teacher_id, substitute_teacher_id: teacherId, reason });
-      if (cl!.class_teacher_id) this.notify('s:' + cl!.class_teacher_id, 'Class substitute assigned', teacher.name + ' will cover ' + cl!.name + ' on ' + date + '.');
-      this.notify('s:' + teacherId, 'Substitute class assigned', 'You are assigned to ' + cl!.name + ' on ' + date + '. Open Attendance to take the register.');
-      return c.json({ ok: true, id, class_id: classId, substitute_teacher_id: teacherId, date });
-    });
-    app.delete('/substitutions/:id', async (c) => {
-      const a = c.get('actor');
-      const b = await c.req.json<any>().catch(() => ({}));
-      if (b.confirm !== true) fail(400, 'Confirm that you want to remove this substitute assignment');
-      const row = this.one('SELECT * FROM class_substitutions WHERE id=?', c.req.param('id'));
-      if (!row) fail(404, 'Substitute assignment not found');
-      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, row.class_id)))) fail(403, 'Only the administrator or scoped attendance manager can remove this assignment');
-      if (row.status === 'completed' || row.bonus_paid_at) fail(409, 'A completed substitution cannot be removed; keep it in the payroll history');
-      this.run('DELETE FROM class_substitutions WHERE id=?', row.id);
-      this.audit(a, 'teacher.substitute.remove', 'class', row.class_id, { date: row.date, substitute_teacher_id: row.substitute_teacher_id });
-      return c.json({ ok: true });
-    });
-
-    // ----- institution-controlled substitute rates and monthly bonus ledger -----
-    app.get('/substitution-rates', (c) => {
-      const a = c.get('actor');
-      if (a.type !== 'staff') fail(403, 'Staff access required');
-      let rows = this.q('SELECT r.class_id,r.amount_per_day,r.updated_at,c.name AS class_name FROM class_substitution_rates r JOIN classes c ON c.id=r.class_id ORDER BY c.grade,c.name');
-      if (!this.isFullAdmin(a)) rows = rows.filter((r) => a.scopeAll || this.inClassScope(a, r.class_id) || a.teaches.has(r.class_id));
-      return c.json({ rates: rows, editable: this.isFullAdmin(a), defaultRate: 0 });
-    });
-    app.post('/substitution-rates', async (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
-      const b = await c.req.json<any>();
-      if (b.confirm !== true) fail(400, 'Confirm the per-class substitution rate before saving');
-      const classId = String(b.class_id || ''), amount = Number(b.amount_per_day);
-      if (!this.one('SELECT 1 FROM classes WHERE id=? AND active=1', classId)) fail(404, 'Active class not found');
-      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 1000000) fail(400, 'Enter a valid daily rate in whole rupees (0 to 1,000,000)');
-      this.run('INSERT OR REPLACE INTO class_substitution_rates (class_id,amount_per_day,updated_by,updated_at) VALUES (?,?,?,?)', classId, amount, a.key, now());
-      this.audit(a, 'substitution.rate.update', 'class', classId, { amount_per_day: amount });
-      return c.json({ ok: true, class_id: classId, amount_per_day: amount });
-    });
-    app.get('/substitution-bonuses', (c) => {
-      const a = c.get('actor');
-      if (a.type !== 'staff') fail(403, 'Staff access required');
-      const month = c.req.query('month') || pkt().month;
-      if (!/^\d{4}-\d{2}$/.test(month)) fail(400, 'Month must be YYYY-MM');
-      let rows = this.q("SELECT x.*,c.name AS class_name,t.name AS teacher_name,t.phone AS teacher_phone FROM class_substitutions x JOIN classes c ON c.id=x.class_id JOIN staff t ON t.id=x.substitute_teacher_id WHERE substr(x.date,1,7)=? ORDER BY t.name,x.date,c.name", month);
-      if (!this.isFullAdmin(a)) {
-        if (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage')) rows = rows.filter((x) => this.inClassScope(a, x.class_id));
-        else rows = rows.filter((x) => x.substitute_teacher_id === a.id);
-      }
-      const grouped: Record<string, any> = {};
-      for (const r of rows) {
-        const key = r.substitute_teacher_id;
-        if (!grouped[key]) grouped[key] = { teacher_id:key,teacher_name:r.teacher_name,phone:r.teacher_phone,days:0,completed:0,pending:0,bonus_total:0,paid_total:0,unpaid_total:0,substitutions:[] };
-        const g = grouped[key]; g.days++;
-        if (r.status === 'completed') g.completed++; else if (r.status === 'assigned') g.pending++;
-        if (r.status === 'completed') g.bonus_total += Number(r.rate_amount || 0);
-        if (r.bonus_paid_at) g.paid_total += Number(r.rate_amount || 0);
-        else if (r.status === 'completed') g.unpaid_total += Number(r.rate_amount || 0);
-        g.substitutions.push({ id:r.id,class_id:r.class_id,class_name:r.class_name,date:r.date,reason:r.reason,status:r.status,rate_amount:r.rate_amount,completed_at:r.completed_at,bonus_paid_at:r.bonus_paid_at,bonus_note:r.bonus_note });
-      }
-      return c.json({ month, teachers:Object.values(grouped), totals:{ days:rows.length,completed:rows.filter((r)=>r.status==='completed').length,
-        bonus_total:rows.filter((r)=>r.status==='completed').reduce((n,r)=>n+Number(r.rate_amount||0),0),
-        paid_total:rows.filter((r)=>!!r.bonus_paid_at).reduce((n,r)=>n+Number(r.rate_amount||0),0),
-        unpaid_total:rows.filter((r)=>r.status==='completed'&&!r.bonus_paid_at).reduce((n,r)=>n+Number(r.rate_amount||0),0) } });
-    });
-    app.post('/substitution-bonuses/mark-paid', async (c) => {
-      const a = c.get('actor'); this.requireFullAdmin(a);
-      const b = await c.req.json<any>();
-      if (b.confirm !== true) fail(400, 'Confirm the selected substitution bonus payment batch');
-      const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].slice(0,500);
-      if (!ids.length) fail(400, 'Select at least one completed substitution');
-      const rows = this.q("SELECT * FROM class_substitutions WHERE status='completed' AND bonus_paid_at IS NULL AND id IN (" + ids.map(()=>'?').join(',') + ")", ...ids);
-      if (rows.length !== ids.length) fail(409, 'Some selected substitutions are not completed, are already paid, or no longer exist. Refresh the month view.');
-      const when = now(), note = String(b.note || '').trim() || null;
-      this.tx(() => { for (const r of rows) this.run('UPDATE class_substitutions SET bonus_paid_at=?,bonus_paid_by=?,bonus_note=? WHERE id=? AND bonus_paid_at IS NULL', when, a.key, note, r.id); });
-      const amount = rows.reduce((n,r)=>n+Number(r.rate_amount||0),0);
-      this.audit(a, 'substitution.bonus.pay', null, null, { ids, count:rows.length, amount, note });
-      return c.json({ ok:true,count:rows.length,amount });
-    });
-
-    // ----- timetable: weekly periods with server-side teacher, class and room conflict checks -----
-    app.get('/timetable', (c) => {
-      const a = c.get('actor');
-      if (a.type !== 'staff') fail(403, 'Only institution staff can open the timetable');
-      const classId = c.req.query('class_id');
-      if (classId) this.classOf(a, classId);
-      let where = '1=1', params: any[] = [];
-      if (!this.isFullAdmin(a)) {
-        const allowedClasses = a.role === 'subadmin' && this.canManageTimetable(a) ? this.scopedClassIds(a) : [...a.teaches];
-        if (!allowedClasses.length) where = '0=1';
-        else { where = 't.class_id IN (' + allowedClasses.map(() => '?').join(',') + ')'; params.push(...allowedClasses); }
-      }
-      if (classId) { where += ' AND t.class_id=?'; params.push(classId); }
-      const slots = this.q('SELECT t.*, c.name AS class_name, st.name AS teacher_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id LEFT JOIN staff st ON st.id=t.teacher_id WHERE ' + where + ' ORDER BY t.day_of_week,t.start_time,c.grade,c.name,t.period', ...params);
-      return c.json({ slots, canManage: this.canManageTimetable(a) });
-    });
-    app.post('/timetable', async (c) => {
-      const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
-      const b = await c.req.json<any>();
-      if (b.confirm !== true) fail(400, 'Review the timetable period and confirm before saving');
-      const id = String(b.id || 'tt_' + rid(10));
-      const classId = String(b.class_id || '');
-      const subject = String(b.subject || '').trim();
-      const teacherId = String(b.teacher_id || '') || null;
-      const day = Number(b.day_of_week), period = Number(b.period);
-      const start = String(b.start_time || ''), end = String(b.end_time || '');
-      const room = String(b.room || '').trim() || null;
-      if (!classId || !subject) fail(400, 'Choose a class and enter a subject');
-      this.classOf(a, classId);
-      if (!Number.isInteger(day) || day < 1 || day > 6) fail(400, 'Choose a weekday from Monday to Saturday');
-      if (!Number.isInteger(period) || period < 1 || period > 16) fail(400, 'Period number must be between 1 and 16');
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(end) || end <= start) fail(400, 'Enter a valid time range; the end must be after the start');
-      if (teacherId && !this.one("SELECT 1 FROM staff WHERE id=? AND role='teacher' AND active=1", teacherId)) fail(400, 'Choose an active teacher account');
-      const conflicts = this.q("SELECT t.id,t.class_id,t.subject,t.teacher_id,t.day_of_week,t.period,t.start_time,t.end_time,t.room,c.name AS class_name,st.name AS teacher_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id LEFT JOIN staff st ON st.id=t.teacher_id WHERE t.day_of_week=? AND t.id<>? AND t.start_time<? AND t.end_time>? AND (t.class_id=? OR (? IS NOT NULL AND t.teacher_id=?) OR (? IS NOT NULL AND t.room=?))",
-        day, id, end, start, classId, teacherId, teacherId, room, room);
-      if (conflicts.length) {
-        const warnings = conflicts.map((x) => ({
-          type: x.class_id === classId ? 'class' : x.teacher_id && teacherId && x.teacher_id === teacherId ? 'teacher' : 'room',
-          message: x.class_id === classId
-            ? 'This class already has ' + x.subject + ' scheduled from ' + x.start_time + ' to ' + x.end_time
-            : x.teacher_id && teacherId && x.teacher_id === teacherId
-              ? (x.teacher_name || 'This teacher') + ' is already teaching ' + x.class_name + ' from ' + x.start_time + ' to ' + x.end_time
-              : 'Room ' + room + ' is already booked for ' + x.class_name + ' from ' + x.start_time + ' to ' + x.end_time,
-          conflicting_slot_id: x.id,
-        }));
-        return c.json({ error: 'Timetable conflict: resolve the highlighted overlap before saving.', conflicts: warnings }, 409);
-      }
-      const exists = this.one('SELECT id FROM timetable_slots WHERE id=?', id);
-      if (exists) {
-        this.run('UPDATE timetable_slots SET class_id=?,subject=?,teacher_id=?,day_of_week=?,period=?,start_time=?,end_time=?,room=?,updated_at=? WHERE id=?',
-          classId, subject, teacherId, day, period, start, end, room, now(), id);
-      } else {
-        this.run('INSERT INTO timetable_slots (id,class_id,subject,teacher_id,day_of_week,period,start_time,end_time,room,created_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-          id, classId, subject, teacherId, day, period, start, end, room, a.key, now());
-      }
-      const current = this.one('SELECT * FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?) LIMIT 1', classId, subject);
-      if (current && current.teacher_id !== teacherId) {
-        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-          pkt().date, classId, subject, current.teacher_id);
-        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, current.id);
-        if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-          rid(10), classId, subject, teacherId, pkt().date, a.key);
-      } else if (!current) {
-        this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', 'cs_' + rid(10), classId, subject, teacherId);
-        if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-          rid(10), classId, subject, teacherId, pkt().date, a.key);
-      }
-      this.audit(a, exists ? 'timetable.edit' : 'timetable.add', 'timetable', id, { classId, subject, teacherId, day, period, start, end, room });
-      return c.json(this.one('SELECT * FROM timetable_slots WHERE id=?', id));
-    });
-    app.delete('/timetable/:id', (c) => {
-      const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
-      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this timetable period');
-      const id = c.req.param('id');
-      const slot = this.one('SELECT * FROM timetable_slots WHERE id=?', id);
-      if (!slot) fail(404, 'Timetable period not found');
-      this.run('DELETE FROM timetable_slots WHERE id=?', id);
-      this.audit(a, 'timetable.delete', 'timetable', id, slot);
-      return c.json({ ok: true });
-    });
-
-    // ----- syllabus documents: private PDFs associated with a class and subject -----
-    app.get('/syllabus', (c) => {
-      const a = c.get('actor');
-      if (a.type !== 'staff') fail(403, 'Only institution staff can open the syllabus library');
-      const rows = this.q("SELECT d.id,d.class_id,d.subject,d.title,d.file_key,d.file_name,d.uploaded_by,d.created_at,c.name AS class_name,st.name AS uploader FROM syllabus_documents d JOIN classes c ON c.id=d.class_id LEFT JOIN staff st ON st.id=substr(d.uploaded_by,3) WHERE d.deleted_at IS NULL ORDER BY c.grade,c.name,d.subject,d.created_at DESC");
-      return c.json(this.isFullAdmin(a) ? rows : rows.filter((r) =>
-        (a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, r.class_id)) || a.teaches.has(r.class_id)));
-    });
-    app.post('/syllabus', async (c) => {
-      const a = c.get('actor'); const ctx = c.get('ctx');
-      if (a.type !== 'staff') fail(403, 'Only institution staff can upload syllabus documents');
-      const form = await c.req.formData();
-      const classId = String(form.get('class_id') || '');
-      const subject = String(form.get('subject') || '').trim();
-      const title = String(form.get('title') || '').trim();
-      const file = form.get('file');
-      if (!classId || !subject || !title || !file || typeof file !== 'object' || !('stream' in file)) fail(400, 'Class, subject, title and a PDF file are required');
-      this.classOf(a, classId);
-      if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, classId)) && !a.teaches.has(classId)) fail(403, 'You can only upload syllabus for an assigned class');
-      if ((file as File).type !== 'application/pdf' && !String((file as File).name || '').toLowerCase().endsWith('.pdf')) fail(400, 'Upload a PDF document');
-      const key = await this.putFile(ctx, a, file as File, 'syllabus', 20);
-      const id = 'sy_' + rid(10);
-      this.run('INSERT INTO syllabus_documents (id,class_id,subject,title,file_key,file_name,uploaded_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
-        id, classId, subject, title, key, (file as File).name, a.key, now());
-      this.audit(a, 'syllabus.upload', 'syllabus', id, { classId, subject, title });
-      return c.json({ ok: true, id });
-    });
-    app.delete('/syllabus/:id', (c) => {
-      const a = c.get('actor'); this.requirePermission(a, 'syllabus.manage');
-      const doc = this.one('SELECT * FROM syllabus_documents WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
-      if (!doc) fail(404, 'Syllabus document not found');
-      if (!this.isFullAdmin(a) && !this.inClassScope(a, doc.class_id)) fail(403, 'This syllabus is outside your assigned class scope');
-      this.run('UPDATE syllabus_documents SET deleted_at=? WHERE id=?', now(), doc.id);
-      this.run('UPDATE files SET deleted_at=? WHERE key=?', now(), doc.file_key);
-      this.audit(a, 'syllabus.delete', 'syllabus', doc.id, { title: doc.title });
-      return c.json({ ok: true });
     });
 
     // ----- students -----
@@ -2147,10 +1877,6 @@ export class SchoolDO extends DurableObject<Env> {
         const r = this.one('SELECT * FROM results WHERE file_key=? AND deleted_at IS NULL', key); if (!r) fail(404, 'Not found');
         if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
         if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
-      } else if (kind === 'syllabus') {
-        const doc = this.one('SELECT * FROM syllabus_documents WHERE file_key=? AND deleted_at IS NULL', key); if (!doc) fail(404, 'Not found');
-        if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.canManageSyllabus(a) && this.inClassScope(a, doc.class_id)) && !a.teaches.has(doc.class_id)) fail(403, 'You do not have access to this syllabus');
-        this.classOf(a, doc.class_id);
       } else fail(404, 'Not found');
       const o = await this.env.FILES.get(key); if (!o) fail(404, 'File missing');
       this.audit(a, 'file.download', kind, key);
@@ -2309,13 +2035,12 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   replaceTeacherProfile(a: Actor, old: Row, next: { name: string; email: string; phone: string | null; subjects: string | null }, effective: string,
-    move: { classIds: string[]; subjectIds: string[]; timetableIds: string[] }): string {
+    move: { classIds: string[]; subjectIds: string[] }): string {
     this.requireMain(a);
     const newId = 'tch_' + rid(12);
     const endDate = addDays(effective, -1);
     const classIds = new Set(move.classIds);
     const subjectIds = new Set(move.subjectIds);
-    const timetableIds = new Set(move.timetableIds);
     this.tx(() => {
       this.run(`INSERT INTO staff (id, public_id, name, email, phone, role, subjects, search_key, created_at)
         VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'teacher', ?, ?, ?)`,
@@ -2345,12 +2070,6 @@ export class SchoolDO extends DurableObject<Env> {
         }
       }
 
-      const periods = this.q('SELECT id FROM timetable_slots WHERE teacher_id=?', old.id);
-      for (const period of periods) {
-        this.run('UPDATE timetable_slots SET teacher_id=?, updated_at=? WHERE id=?',
-          timetableIds.has(period.id) ? newId : null, now(), period.id);
-      }
-
       this.run('UPDATE staff SET active=0, left_at=?, left_reason=? WHERE id=?',
         effective, 'Replaced by ' + next.name, old.id);
     });
@@ -2366,14 +2085,6 @@ export class SchoolDO extends DurableObject<Env> {
     const oldTeacherId = cl!.class_teacher_id;
     const movedSubjects = subjectsToo && oldTeacherId && teacherId
       ? this.q('SELECT id, subject FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, oldTeacherId) : [];
-    if (movedSubjects.length) {
-      const periods = this.q('SELECT * FROM timetable_slots WHERE class_id=? AND teacher_id=?', classId, oldTeacherId);
-      for (const period of periods) {
-        const conflict = this.one('SELECT t.id,c.name AS class_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? AND t.day_of_week=? AND t.id<>? AND t.start_time<? AND t.end_time>? LIMIT 1',
-          teacherId, period.day_of_week, period.id, period.end_time, period.start_time);
-        if (conflict) fail(409, 'Timetable conflict: the replacement teacher is already assigned to ' + conflict.class_name + ' during ' + period.start_time + '–' + period.end_time);
-      }
-    }
     this.tx(() => {
       this.run('UPDATE class_teacher_assignments SET to_date=? WHERE class_id=? AND to_date IS NULL', addDays(from, -1), classId);
       if (teacherId) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), classId, teacherId, from);
@@ -2384,11 +2095,9 @@ export class SchoolDO extends DurableObject<Env> {
         this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
           rid(10), classId, sub.subject, teacherId, from, a.key);
       }
-      if (movedSubjects.length) this.run('UPDATE timetable_slots SET teacher_id=?, updated_at=? WHERE class_id=? AND teacher_id=?',
-        teacherId, now(), classId, oldTeacherId);
       this.run('UPDATE classes SET class_teacher_id=? WHERE id=?', teacherId, classId);
     });
-    this.audit(a, 'class.replace_teacher', 'class', classId, { old: oldTeacherId, new: teacherId, from, subjectsToo, timetablePeriodsTransferred: movedSubjects.length });
+    this.audit(a, 'class.replace_teacher', 'class', classId, { old: oldTeacherId, new: teacherId, from, subjectsToo, subjectAssignmentsTransferred: movedSubjects.length });
     if (teacherId) this.notify('s:' + teacherId, 'Class assigned', 'You are now the class teacher of ' + cl!.name + ' from ' + from + '.');
   }
 }
