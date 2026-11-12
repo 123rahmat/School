@@ -818,7 +818,10 @@ export class SchoolDO extends DurableObject<Env> {
       const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','classes.view','notices.manage','results.manage']);
       let permissionsJson: string | null = null, scopeRaw: string | null = null;
       if (role === 'subadmin') {
-        const permissions = [...new Set(Array.isArray(b.permissions) ? b.permissions.filter((p: any) => typeof p === 'string') : [])];
+        const requestedPermissions: string[] = Array.isArray(b.permissions)
+          ? b.permissions.filter((p: unknown): p is string => typeof p === 'string')
+          : [];
+        const permissions = [...new Set<string>(requestedPermissions)];
         if (!permissions.length || permissions.some((p) => !allowedPermissions.has(p))) fail(400, 'Choose at least one valid Mini Admin permission');
         if (permissions.some((p) => ['fees.manage','attendance.manage'].includes(p)) && !permissions.includes('students.view')) permissions.push('students.view');
         const scopeAll = b.scope_all !== false;
@@ -877,7 +880,7 @@ export class SchoolDO extends DurableObject<Env> {
         if (nextRole === 'subadmin') {
           const allowedPermissions = new Set(['dashboard.view','staff.view','students.view','students.manage','fees.manage','attendance.manage','classes.view','notices.manage','results.manage']);
           let permissions: string[] = [];
-          if (Array.isArray(b.permissions)) permissions = [...new Set(b.permissions.filter((p: any) => typeof p === 'string'))];
+          if (Array.isArray(b.permissions)) permissions = [...new Set<string>(b.permissions.filter((p: unknown): p is string => typeof p === 'string'))];
           else if (current.permissions) { try { const parsed = JSON.parse(current.permissions); if (Array.isArray(parsed)) permissions = parsed; } catch {} }
           else permissions = current.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
             : current.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','notices.manage','dashboard.view']
@@ -940,7 +943,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); this.requireMain(a);
       const oldId = c.req.param('id');
       const old = this.one("SELECT * FROM staff WHERE id=? AND role='teacher' AND active=1", oldId);
-      if (!old) fail(404, 'Active teacher not found');
+      if (!old) return fail(404, 'Active teacher not found');
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Review the replacement teacher details and confirm the handover');
       const name = String(b.name || '').trim();
@@ -1195,7 +1198,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (s.status !== 'active' && s.status !== 'pending') fail(400, 'Only active or pending students can be moved. Restore a former student first.');
       const currentClass = this.one('SELECT * FROM classes WHERE id=? AND active=1', s.class_id);
       const destination = this.one('SELECT * FROM classes WHERE id=? AND active=1', destinationId);
-      if (!currentClass || !destination) fail(404, 'Current or destination class is no longer active');
+      if (!currentClass || !destination) return fail(404, 'Current or destination class is no longer active');
       if (currentClass.id === destination.id) fail(400, 'The student is already in this class');
       if (!this.inClassScope(a, currentClass.id) || !this.inClassScope(a, destination.id)) fail(403, 'Both the current and destination classes must be within your assigned Mini Admin scope');
       const currentSession = this.currentSession();
@@ -1353,7 +1356,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       const b = await c.req.json<any>();
       const target = this.one('SELECT class_id FROM students WHERE id=?', b.student_id);
-      if (!target) fail(404, 'Student not found');
+      if (!target) return fail(404, 'Student not found');
       if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, target.class_id)))) fail(403, 'Attendance correction permission is required for this class');
       if (b.confirm !== true) fail(400, 'Review the attendance correction and confirm before saving');
       this.correctAttendance(a, b.student_id, b.date, b.status, b.reason);
@@ -1887,7 +1890,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/results/:id/assign', async (c) => {
       const a = c.get('actor');
       const result = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
-      if (!result || result.student_id) fail(404, 'Unassigned result not found');
+      if (!result || result.student_id) return fail(404, 'Unassigned result not found');
       const { student_id, confirm } = await c.req.json<any>();
       const student = this.student(a, student_id);
       if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, student.class_id)))) fail(403, 'Results management is not assigned for this class');
