@@ -980,8 +980,67 @@ export class SchoolDO extends DurableObject<Env> {
         class: { ...cl, class_teacher_name: this.one('SELECT name FROM staff WHERE id=?', cl.class_teacher_id)?.name },
         subjects: this.q('SELECT cs.subject, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', cl.id),
         students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
+        substitution: this.one('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? AND x.date=?', cl.id, pkt().date),
+        canManageSubstitution: this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, cl.id)),
         history: this.q('SELECT a.from_date, a.to_date, t.name FROM class_teacher_assignments a JOIN staff t ON t.id=a.teacher_id WHERE a.class_id=? ORDER BY a.from_date DESC', cl.id),
       });
+    });
+
+    // ----- dated teacher substitutions (a substitute can mark attendance only for the assigned class/date) -----
+    app.get('/substitutions', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Only staff can view substitutions');
+      const date = c.req.query('date') || pkt().date;
+      let rows = this.q('SELECT x.*, c.name AS class_name, o.name AS original_teacher_name, t.name AS substitute_teacher_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id LEFT JOIN staff o ON o.id=x.original_teacher_id JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.date=? ORDER BY c.grade,c.name', date);
+      if (!this.isFullAdmin(a)) {
+        if (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage')) rows = rows.filter((x) => this.inClassScope(a, x.class_id));
+        else rows = rows.filter((x) => x.substitute_teacher_id === a.id || x.original_teacher_id === a.id || a.teaches.has(x.class_id));
+      }
+      return c.json(rows);
+    });
+    app.post('/substitutions', async (c) => {
+      const a = c.get('actor'); const b = await c.req.json<any>();
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, String(b.class_id || ''))))) fail(403, 'Only the Main Admin or a scoped attendance manager can assign substitutes');
+      if (b.confirm !== true) fail(400, 'Review the class, date and substitute teacher, then confirm');
+      const classId = String(b.class_id || ''), teacherId = String(b.substitute_teacher_id || '');
+      const date = String(b.date || pkt().date), reason = String(b.reason || '').trim();
+      const cl = this.one('SELECT * FROM classes WHERE id=? AND active=1', classId);
+      if (!cl) fail(404, 'Active class not found');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < pkt().date) fail(400, 'Choose today or a future date');
+      if (!reason) fail(400, 'Enter why a substitute is needed');
+      const teacher = this.one("SELECT * FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId);
+      if (!teacher) fail(400, 'Choose an active teacher or Mini Admin account');
+      if (teacherId === cl!.class_teacher_id) fail(400, 'The assigned class teacher cannot be their own substitute');
+      const dayNumber = new Date(date + 'T00:00:00Z').getUTCDay();
+      if (!dayNumber) fail(400, 'Sunday does not have a scheduled timetable day');
+      const periods = this.q('SELECT * FROM timetable_slots WHERE class_id=? AND day_of_week=? ORDER BY start_time', classId, dayNumber);
+      const conflicts: string[] = [];
+      for (const period of periods) {
+        const existing = this.one('SELECT t.id,c.name AS class_name,t.subject,t.start_time,t.end_time FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? AND t.day_of_week=? AND t.class_id<>? AND t.start_time<? AND t.end_time>? LIMIT 1',
+          teacherId, dayNumber, classId, period.end_time, period.start_time);
+        if (existing) conflicts.push(teacher.name + ' already teaches ' + existing.class_name + ' (' + existing.subject + ') from ' + existing.start_time + ' to ' + existing.end_time);
+        const substitution = this.one('SELECT c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? AND x.date=? AND x.class_id<>? LIMIT 1', teacherId, date, classId);
+        if (substitution) conflicts.push(teacher.name + ' is already assigned as a substitute for ' + substitution.class_name + ' on ' + date);
+      }
+      if (conflicts.length) return c.json({ error: 'Substitute teacher timetable conflict. Choose another teacher or resolve the schedule first.', conflicts: [...new Set(conflicts)] }, 409);
+      const id = 'sub_' + rid(10);
+      this.run('INSERT OR REPLACE INTO class_substitutions (id,class_id,original_teacher_id,substitute_teacher_id,date,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
+        id, classId, cl!.class_teacher_id || null, teacherId, date, reason, a.key, now());
+      this.audit(a, 'teacher.substitute.assign', 'class', classId, { date, original_teacher_id: cl!.class_teacher_id, substitute_teacher_id: teacherId, reason });
+      if (cl!.class_teacher_id) this.notify('s:' + cl!.class_teacher_id, 'Class substitute assigned', teacher.name + ' will cover ' + cl!.name + ' on ' + date + '.');
+      this.notify('s:' + teacherId, 'Substitute class assigned', 'You are assigned to ' + cl!.name + ' on ' + date + '. Open Attendance to take the register.');
+      return c.json({ ok: true, id, class_id: classId, substitute_teacher_id: teacherId, date });
+    });
+    app.delete('/substitutions/:id', async (c) => {
+      const a = c.get('actor');
+      const b = await c.req.json<any>().catch(() => ({}));
+      if (b.confirm !== true) fail(400, 'Confirm that you want to remove this substitute assignment');
+      const row = this.one('SELECT * FROM class_substitutions WHERE id=?', c.req.param('id'));
+      if (!row) fail(404, 'Substitute assignment not found');
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, row.class_id)))) fail(403, 'Only the administrator or scoped attendance manager can remove this assignment');
+      this.run('DELETE FROM class_substitutions WHERE id=?', row.id);
+      this.audit(a, 'teacher.substitute.remove', 'class', row.class_id, { date: row.date, substitute_teacher_id: row.substitute_teacher_id });
+      return c.json({ ok: true });
     });
 
     // ----- timetable: weekly periods with server-side teacher, class and room conflict checks -----
