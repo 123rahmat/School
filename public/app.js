@@ -1590,6 +1590,44 @@ route('/billing', async () => {
   <h2>Payment history</h2><div class="table-wrap"><table><tbody>${(b.slips || []).map((s) => `<tr><td>${fmtTime(s.created_at)}</td><td>${esc(s.txn_id)}</td><td class="num">${money(s.amount)}</td><td>${badge(s.status, s.status === 'verified' ? 'ok' : s.status === 'rejected' ? 'bad' : 'warn')} ${esc(s.reason || '')}</td></tr>`).join('') || '<tr><td class="muted">None yet</td></tr>'}</tbody></table></div>
   <h2>Support access</h2><div class="card"><p class="small">The platform owner cannot see your institution's records. To let them help with a problem, grant temporary access; everything they do is logged.</p>
   <div class="row">${b.support ? `<span>Access granted until ${fmtTime(b.support.granted_until)}</span><button class="btn" id="rev">Revoke</button>` : `<select id="hrs"><option value="2">2 hours</option><option value="8">8 hours</option><option value="24">24 hours</option></select><button class="btn" id="grant">Grant access</button>`}</div></div>`);
+  if (ME?.isMainAdmin) {
+    const usage = await S('/storage').catch(() => null);
+    const used = Number(usage?.used ?? b.storage_bytes ?? 0);
+    const limit = Number(usage?.limit ?? b.storage_limit_bytes ?? 0);
+    const pct = limit > 0 ? Math.min(100, Math.round(used / limit * 100)) : 0;
+    const baseGb = Number(b.plan?.storage_gb || 0);
+    const extraGb = Math.max(0, limit / 1024 ** 3 - baseGb);
+    const requests = b.storage_requests || [];
+    const card = document.createElement('section');
+    card.className = 'card stack';
+    card.innerHTML = '<div><h2>Storage for your institution</h2><p class="small muted">Your plan includes ' + baseGb.toFixed(1) + ' GB. Approved extra storage: ' + extraGb.toFixed(1) + ' GB.</p></div>' +
+      '<div class="row between"><b>' + mb(used) + ' of ' + mb(limit) + ' used</b><b>' + pct + '%</b></div>' +
+      '<div class="storage-meter"><span style="width:' + pct + '%"></span></div>' +
+      '<div class="small muted">' + mb(usage?.active || 0) + ' active files · ' + mb(usage?.trash || 0) + ' in recycle bin · ' + mb(usage?.pending || 0) + ' in-progress uploads</div>' +
+      (pct >= 98 ? '<div class="banner bad">Critical: only about 2% storage remains. Request additional space now to avoid interrupted uploads.</div>' : pct >= 95 ? '<div class="banner warn">Storage is above 95%. Plan additional capacity soon.</div>' : pct >= 80 ? '<div class="banner warn">Storage is above 80%. Monitor usage and plan ahead.</div>' : '') +
+      '<form id="storage-request-form" class="stack"><div><label for="storage-blocks">Additional capacity</label><select id="storage-blocks" name="blocks">' +
+      [1,2,3,4,5,6,8,10].map((n) => '<option value="' + n + '">' + (n * 5) + ' GB (' + n + ' × 5 GB block' + (n > 1 ? 's' : '') + ')</option>').join('') +
+      '</select></div><div><label for="storage-note">Why do you need more space? (optional)</label><input id="storage-note" name="note" maxlength="500" placeholder="For example: more learner documents and results"></div><button class="btn primary">Request extra storage</button></form>' +
+      '<div><h3>Your requests</h3>' + (requests.length ? requests.slice(0, 8).map((r) => '<div class="row between storage-request-row"><span><b>' + (Number(r.blocks) * 5) + ' GB</b> · ' + esc(r.status) + '<small class="muted">' + fmtTime(r.created_at) + (r.decision_note ? ' · ' + esc(r.decision_note) : '') + '</small></span>' + badge(r.status, r.status === 'approved' ? 'ok' : r.status === 'rejected' ? 'bad' : 'warn') + '</div>').join('') : '<p class="small muted">No extra-storage requests yet.</p>') + '</div>' +
+      '<p class="small muted">Each approved block adds 5 GB. Extra storage is billed at Rs 200 per block/month or Rs 2,000 per block/year. Only the platform owner can approve requests.</p>';
+    $('.content').append(card);
+    const requestForm = $('#storage-request-form', card);
+    requestForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const values = formData(requestForm);
+      const submit = $('button', requestForm);
+      if (submit) submit.disabled = true;
+      try {
+        await api('/api/billing/storage-request', { body: { blocks: Number(values.blocks), note: values.note } });
+        toast('Your storage request was sent to the platform owner.');
+        render();
+      } catch (error) {
+        toast(error.message);
+        if (submit) submit.disabled = false;
+      }
+    };
+  }
+
   const bf = $('#bf'); if (bf) bf.onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/billing/slip', { form: new FormData(e.target) }), 'Slip uploaded — you will be told when it is confirmed'); render(); };
   $('#inv').onclick = async () => { await act(() => api('/api/billing/invoice', { body: { cycle: $('#cy').value } }), 'Invoice created'); render(); };
   const g = $('#grant'); if (g) g.onclick = async () => { await act(() => api('/api/billing/support-access', { body: { hours: Number($('#hrs').value) } }), 'Access granted'); render(); };
