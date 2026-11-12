@@ -1343,7 +1343,7 @@ export class SchoolDO extends DurableObject<Env> {
         results: hold ? [] : this.q(`SELECT id, session, title, file_name, published_at, created_at FROM results WHERE student_id=? AND deleted_at IS NULL ${a.type === 'guardian' ? 'AND published_at IS NOT NULL' : ''} ORDER BY created_at DESC`, s.id),
         resultsHeld: hold,
         notices: this.noticesFor(a, s.id).slice(0, 20),
-        classHistory: this.q('SELECT e.*, c.name AS class_name, ss.name AS session_name FROM enrollments e JOIN classes c ON c.id=e.class_id LEFT JOIN academic_sessions ss ON ss.id=e.session_id WHERE e.student_id=? ORDER BY e.from_date DESC', s.id),
+        classHistory: this.q('SELECT e.*, COALESCE(e.class_name_snapshot,c.name) AS class_name, ss.name AS session_name FROM enrollments e JOIN classes c ON c.id=e.class_id LEFT JOIN academic_sessions ss ON ss.id=e.session_id WHERE e.student_id=? ORDER BY e.from_date DESC', s.id),
         history: fullAdmin ? this.q("SELECT * FROM audit_log WHERE entity='student' AND entity_id=? ORDER BY created_at DESC LIMIT 100", s.id) : [],
         reminderPause: feeAccess ? this.one('SELECT * FROM reminder_pauses WHERE student_id=?', s.id) : null,
       });
@@ -1354,7 +1354,8 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Review the student changes and confirm before saving');
       const changes: Row = {};
-      for (const k of ['name', 'father_name', 'reg_no', 'class_id', 'parent_phone', 'parent_email', 'dob', 'gender', 'address', 'admission_date']) {
+      if ('class_id' in b) fail(400, 'Use the dedicated Move to another class action so the old class history is preserved');
+      for (const k of ['name', 'father_name', 'reg_no', 'parent_phone', 'parent_email', 'dob', 'gender', 'address', 'admission_date']) {
         if (!(k in b)) continue;
         let v = b[k] === '' ? null : b[k];
         if (k === 'parent_phone') {
@@ -1372,7 +1373,6 @@ export class SchoolDO extends DurableObject<Env> {
       const oldGid = s.guardian_id;
       this.tx(() => {
         for (const [k, ch] of Object.entries(changes)) this.run(`UPDATE students SET ${k}=? WHERE id=?`, (ch as any).new, s.id);
-        if (changes.class_id) this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, changes.class_id.new, this.currentSession().id, pkt().date);
         if (changes.parent_email) {
           const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
           const duplicate = this.one('SELECT id FROM guardians WHERE email=? AND id<>? LIMIT 1', n.parent_email, n.guardian_id);
@@ -1398,6 +1398,42 @@ export class SchoolDO extends DurableObject<Env> {
       }
       return c.json(n);
     });
+    app.post('/students/:id/move-class', async (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'), 'edit');
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'students.manage')))) fail(403, 'Student management permission is required to move this student');
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the student, current class, destination and effective date, then confirm');
+      const destinationId = String(b.class_id || '');
+      const effective = String(b.effective_date || pkt().date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Class transfers take effect today so attendance and fee records cannot be changed retroactively');
+      if (s.status !== 'active' && s.status !== 'pending') fail(400, 'Only active or pending students can be moved. Restore a former student first.');
+      const currentClass = this.one('SELECT * FROM classes WHERE id=? AND active=1', s.class_id);
+      const destination = this.one('SELECT * FROM classes WHERE id=? AND active=1', destinationId);
+      if (!currentClass || !destination) fail(404, 'Current or destination class is no longer active');
+      if (currentClass.id === destination.id) fail(400, 'The student is already in this class');
+      if (!this.inClassScope(a, currentClass.id) || !this.inClassScope(a, destination.id)) fail(403, 'Both the current and destination classes must be within your assigned Mini Admin scope');
+      const currentSession = this.currentSession();
+      const currentEnrollment = this.one('SELECT * FROM enrollments WHERE student_id=? AND session_id=? AND to_date IS NULL ORDER BY from_date DESC LIMIT 1', s.id, currentSession.id);
+      this.tx(() => {
+        if (currentEnrollment) {
+          this.run('UPDATE enrollments SET to_date=?,outcome=?,class_name_snapshot=COALESCE(class_name_snapshot,?) WHERE id=?',
+            addDays(effective, -1), 'transferred', currentClass.name, currentEnrollment.id);
+        } else {
+          this.run('INSERT INTO enrollments (id,student_id,class_id,session_id,from_date,outcome,to_date,class_name_snapshot) VALUES (?,?,?,?,?,?,?,?)',
+            rid(12), s.id, currentClass.id, currentSession.id, s.admission_date || effective, 'transferred', addDays(effective, -1), currentClass.name);
+        }
+        this.run('UPDATE students SET class_id=? WHERE id=?', destination.id, s.id);
+        this.run('INSERT INTO enrollments (id,student_id,class_id,session_id,from_date,class_name_snapshot) VALUES (?,?,?,?,?,?)',
+          rid(12), s.id, destination.id, currentSession.id, effective, destination.name);
+      });
+      const detail = { student_id:s.id, student_name:s.name, reg_no:s.reg_no, from_class_id:currentClass.id, from_class:currentClass.name, to_class_id:destination.id, to_class:destination.name, effective_date:effective, reason:String(b.reason || '').trim() || null };
+      this.audit(a, 'student.class.transfer', 'student', s.id, detail);
+      this.notify('g:' + s.guardian_id, 'Class changed', s.name + ' has been moved from ' + currentClass.name + ' to ' + destination.name + ' from ' + effective + '.');
+      for (const tid of [currentClass.class_teacher_id, destination.class_teacher_id]) if (tid) this.notify('s:' + tid, 'Student class transfer', s.name + ' (' + s.reg_no + ') moved from ' + currentClass.name + ' to ' + destination.name + '.');
+      return c.json({ ok:true, student_id:s.id, from_class:currentClass.name, to_class:destination.name, effective_date:effective });
+    });
+    
     app.post('/students/:id/confirm', async (c) => {
       const a = c.get('actor');
       const b = await c.req.json<any>();
