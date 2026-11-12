@@ -35,6 +35,11 @@ assert.match(app, /data-login-role="main_admin"/, 'Main administrator sign-in ch
 assert.match(app, /data-login-role="teacher"/, 'Teacher sign-in choice must exist');
 assert.match(app, /data-login-role="parent"/, 'Parent sign-in choice must exist');
 assert.match(app, /isInstalledApp\(\)/, 'Installed-app entry routing must be device aware');
+assert.match(app, /No internet connection\. Connect to the internet to verify your Google account/, 'Google sign-in must require an internet connection');
+assert.match(app, /function connectionBannerHtml\(\)/, 'Global offline and restored connection banner must exist');
+assert.match(app, /Connection restored/, 'The app must show a connection-restored banner');
+assert.match(app, /window\.addEventListener\('online', async/, 'Reconnect must revalidate the server session and sync queued attendance');
+assert.match(app, /window\.addEventListener\('offline'/, 'The app must show offline state when connectivity is lost');
 assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
 assert.match(school, /publicId: s!\.public_id/, 'Staff accounts must expose their assigned account ID');
 assert.match(school, /publicId: g!\.public_id/, 'Parent accounts must expose their assigned account ID');
@@ -47,10 +52,12 @@ assert.match(app, /credentials: 'same-origin'/, 'API requests must use same-orig
 assert.match(app, /cache: 'no-store'/, 'API requests must not be served from a browser cache');
 assert.match(app, /attendance drafts and submissions are saved on the device/i, 'Offline capability must be described accurately');
 
-assert.match(sw, /const VERSION = 'v8'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v9'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
 assert.match(school, /day\.submitted_by === a\.key/, 'Attendance submit retry must be idempotent for the same submitter');
+assert.match(school, /async runCron\(ctx: Ctx\)/, 'Cron cleanup that awaits R2 deletions must be asynchronous');
+assert.match(school, /app\.post\('\/internal\/cron', async \(c\) => c\.json\(await this\.runCron/, 'The internal cron route must await asynchronous cleanup');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
