@@ -103,5 +103,8 @@ assert.ok(css.includes('@media (min-width: 601px) and (max-width: 860px)'), 'Tab
 assert.ok(css.includes('@media (max-width: 600px)'), 'Phone layout must use phone-appropriate spacing and form columns');
 assert.ok(css.includes('minmax(0, 1fr)'), 'Workspace columns must shrink without forcing viewport overflow');
 assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
+assert.doesNotMatch(app, /(?<!\\$)\\$\\([^;\\n]*?\\)\\.forEach\\s*\\(/, 'Collection event binding must use the all-matches selector helper, never the single-element selector');
+assert.match(app, /layout\\.classList\\.toggle\\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
+assert.match(app, /\\$\\$\\('#side nav a'\\)/, 'Navigation link binding must safely select all sidebar links');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
