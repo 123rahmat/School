@@ -131,6 +131,11 @@ async function finishLogin(c: any, rows: any[], pick: any) {
   if (!r) fail(403, 'This Google email is not linked to an active institution account. Ask your institution administrator to add it.');
   const ctx = await ctxFor(c.env, r.school_id, r.kind, r.ref_id);
   const me = await callSchoolJson(c.env, ctx, '/me');
+  // Resolve the Google email to a real institution profile and validate its permanent ID
+  // before issuing a session cookie to this device.
+  if (typeof me.userId !== 'string' || !/^[a-f0-9]{32}$/.test(me.userId)) {
+    fail(503, 'This account profile is missing its secure account ID. Ask the institution administrator to refresh the profile before signing in.');
+  }
   await createSession(c, r.school_id, r.kind, r.ref_id, me.name);
   return c.json({ ok: true, kind: r.kind });
 }
