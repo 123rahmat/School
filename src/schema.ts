@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS students_guardian ON students(guardian_id);
 
 CREATE TABLE IF NOT EXISTS enrollments (
   id TEXT PRIMARY KEY, student_id TEXT NOT NULL, class_id TEXT NOT NULL, session_id TEXT NOT NULL,
-  from_date TEXT NOT NULL, outcome TEXT
+  from_date TEXT NOT NULL, outcome TEXT, to_date TEXT, class_name_snapshot TEXT
 );
 
 CREATE TABLE IF NOT EXISTS holidays (date TEXT PRIMARY KEY, name TEXT NOT NULL);
