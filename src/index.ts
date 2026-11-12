@@ -46,7 +46,7 @@ async function ctxFor(env: Env, schoolId: string, kind: 'staff' | 'guardian', re
   if (!s) fail(401, 'School not found');
   const p = await planFor(env, s);
   return {
-    schoolId, kind, refId, schoolStatus: s.status,
+    schoolId, kind, refId, institutionType: s.kind, schoolStatus: s.status,
     studentCap: Number(p?.max_students || 50),
     storageLimitBytes: Math.round((p.storage_gb + s.extra_storage_gb) * 1024 ** 3),
   };
@@ -74,7 +74,6 @@ async function createSession(c: any, schoolId: string, kind: string, refId: stri
   await c.env.DB.prepare('INSERT INTO sessions (token_hash, school_id, kind, ref_id, device, label, created_at, last_seen, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .bind(await sha256(token), schoolId, kind, refId, device, label, t, t, exp).run();
   setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: SESSION_DAYS * 86400 });
-  deleteCookie(c, SESSION_COOKIE, { path: '/' });
   deleteCookie(c, 'sid', { path: '/' });
   if (!seen && kind !== 'owner') {
     const ctx = await systemCtx(c.env, schoolId);
@@ -142,7 +141,6 @@ app.get('/api/config', (c) => c.json({
 }));
 
 app.post('/api/auth/logout', async (c) => {
-  const auth = c.req.header('authorization');
   const token = getCookie(c, SESSION_COOKIE);
   if (token) {
     await c.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE token_hash=?').bind(await sha256(token)).run();
@@ -163,7 +161,7 @@ app.post('/api/auth/google', async (c) => {
   }
 
   const rows = await loginRows(c.env, identity.email);
-  if (!rows.length) fail(403, 'This Google email is not registered with a school. Ask the school admin to add this exact email address.');
+  if (!rows.length) fail(403, 'This Google email is not linked to an institution. Create an institution account or ask your institution administrator to register this exact email.');
   if (rows.length > 1 && (pick === undefined || pick === null)) {
     return c.json({ choose: rows.map((r, i) => ({
       pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : 'Staff'}`,
@@ -175,7 +173,7 @@ app.post('/api/auth/google', async (c) => {
 app.post('/api/signup/google', async (c) => {
   const { credential, school_name, admin_name, kind, phone } = await c.req.json<any>();
   const identity = await verifyGoogleIdentity(c.env, credential);
-  if (identity.email === normId(c.env.OWNER_EMAIL)) fail(403, 'The platform owner account cannot register a school.');
+  if (identity.email === normId(c.env.OWNER_EMAIL)) fail(403, 'The platform owner account cannot register an institution.');
   const name = String(school_name || '').trim();
   const adminName = String(admin_name || identity.name || '').trim();
   const allowedKinds = new Set(['school', 'college', 'university', 'academy', 'training_institute', 'other']);
