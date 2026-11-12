@@ -185,6 +185,7 @@ function nav() {
     items.push(`<div class="group">People</div>`, link('/students', 'Students'));
     if (ME.isAdmin) items.push(link('/staff', 'Teachers & staff'));
     items.push(link('/classes', 'Classes'));
+    items.push(`<div class="group">Teaching</div>`, link('/timetable', 'Timetable'), link('/syllabus', 'Syllabus'));
     items.push(`<div class="group">Daily work</div>`, link('/attendance', 'Attendance'));
     if (ME.canFees || ME.classTeacherOf.length) items.push(link('/fees', 'Fees'));
     items.push(link('/cash', 'Cash held'));
