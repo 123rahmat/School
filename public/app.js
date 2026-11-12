@@ -1754,14 +1754,15 @@ route('/results', async () => {
       $$('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
     };
   });
-  $$('[data-pub]').forEach((b) => b.onclick = async () => { const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title } })); toast(`Published ${r.published}; parents notified`); render(); });
-  $$('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Delete this result? It goes to the recycle bin for 30 days.')) return; await act(() => S('/results/' + a.dataset.del, { method: 'DELETE' }), 'Deleted'); render(); });
+  $('[data-pub]').forEach((b) => b.onclick = async () => { if (!confirm('Publish this result to parents in the selected class? It will become visible in parent accounts.')) return; const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title, confirm:true } })); toast(`Published ${r.published}; parents notified`); render(); });
+  $('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this result PDF? It goes to the recycle bin for 30 days and may disappear from student view.')) return; await act(() => S('/results/' + a.dataset.del + '?confirm=1', { method: 'DELETE' }), 'Deleted'); render(); });
   $$('[data-assign]').forEach((b) => b.onclick = async () => {
     const q = prompt('Registration number of the student?'); if (!q) return;
     const r = await S('/search?q=' + encodeURIComponent(q)); const s = r.students.find((x) => x.reg_no === q) || r.students[0];
     if (!s) return toast('No student found');
     if (!confirm(`Assign to ${s.name} (${s.reg_no}, ${s.class_name})?`)) return;
-    await act(() => S(`/results/${b.dataset.assign}/assign`, { body: { student_id: s.id } }), 'Assigned'); render();
+    if (!confirm(`Assign this result to ${s.name} (${s.reg_no})? The student and parent will see it after publication.`)) return;
+    await act(() => S(`/results/${b.dataset.assign}/assign`, { body: { student_id: s.id, confirm:true } }), 'Assigned'); render();
   });
 });
 
@@ -1772,10 +1773,10 @@ route('/requests', async () => {
   ${rows.map((r) => `<tr><td>${fmtTime(r.created_at)}</td><td>${esc(r.requested_by_name || '')}</td><td><a href="/student/${r.ref}">${esc(r.student_name || '')}</a></td>
   <td>${r.kind === 'attendance' ? `Attendance ${esc(r.detail.date)} → <b>${STATUS[r.detail.status]}</b><br>` : ''}<span class="small">${esc(r.reason)}</span></td>
   <td>${badge(r.status, r.status === 'approved' ? 'ok' : r.status === 'declined' ? 'bad' : 'warn')}</td>
-  <td class="row">${ME.isAdmin && r.status === 'open' ? `<button class="btn small primary" data-a="${r.id}">Approve</button><button class="btn small" data-d="${r.id}">Decline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No requests</td></tr>'}
+  <td class="row">${ME.canDecideRequests && r.status === 'open' ? `<button class="btn small primary" data-a="${r.id}">Approve</button><button class="btn small" data-d="${r.id}">Decline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No requests</td></tr>'}
   </tbody></table></div>${ME.isAdmin ? '<p class="small muted">Student detail requests: open the student and edit the record, then approve.</p>' : ''}`);
-  $$('[data-a]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true } }), 'Approved'); render(); });
-  $$('[data-d]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false } }), 'Declined'); render(); });
+  $('[data-a]').forEach((b) => b.onclick = async () => { if (!confirm('Approve this request and apply the requested record correction?')) return; await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true, confirm: true } }), 'Approved'); render(); });
+  $('[data-d]').forEach((b) => b.onclick = async () => { if (!confirm('Decline this request?')) return; await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false, confirm: true } }), 'Declined'); render(); });
 });
 
 // ---------- WhatsApp / SMS from the admin's own phone ----------
