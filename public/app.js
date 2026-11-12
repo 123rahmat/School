@@ -123,9 +123,10 @@ document.addEventListener('click', (event) => {
 
 async function render() {
   const path = currentPath();
-  if (!ME && !['/login', '/signup'].includes(path)) {
+  // Public entry routes render immediately; private routes still verify the session first.
+  if (!ME && !['/', '/login', '/signup'].includes(path)) {
     try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
-    if (!ME && !['/', '/login', '/signup'].includes(path)) return go('/');
+    if (!ME) return go('/');
   }
   if (ME && ['/login', '/signup'].includes(path)) return go('/');
   if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
@@ -1740,7 +1741,17 @@ route('/owner', async () => {
 
 // ---------- start ----------
 (async () => {
-  try { await refreshMe(); } catch {}
-  render();
+  const initialPath = currentPath();
+  const isPublicEntry = ['/', '/login', '/signup'].includes(initialPath);
+  if (isPublicEntry) {
+    // Show the landing/auth screen immediately; session discovery must not block first paint.
+    render();
+    refreshMe().then(() => {
+      if (ME) render();
+    }).catch(() => {});
+  } else {
+    try { await refreshMe(); } catch {}
+    render();
+  }
   flushOutbox();
 })();
