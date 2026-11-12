@@ -957,8 +957,8 @@ export class SchoolDO extends DurableObject<Env> {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Teacher replacement takes effect today. Future-dated handovers are not activated automatically yet.');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + oldId)?.n || 0);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
-      const classIds = [...new Set(Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids.map(String) : [])];
-      const subjectIds = [...new Set(Array.isArray(b.transfer_subject_ids) ? b.transfer_subject_ids.map(String) : [])];
+      const classIds: string[] = [...new Set<string>((Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids : []).map((id: unknown): string => String(id)))];
+      const subjectIds: string[] = [...new Set<string>((Array.isArray(b.transfer_subject_ids) ? b.transfer_subject_ids : []).map((id: unknown): string => String(id)))];
       const validClasses = new Set(this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', oldId).map((r) => r.id));
       const validSubjects = new Set(this.q('SELECT id FROM class_subjects WHERE teacher_id=?', oldId).map((r) => r.id));
       if (classIds.some((id) => !validClasses.has(id)) || subjectIds.some((id) => !validSubjects.has(id))) fail(400, 'One or more selected teaching assignments no longer belong to this teacher. Refresh and review again.');
