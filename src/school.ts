@@ -58,6 +58,12 @@ export class SchoolDO extends DurableObject<Env> {
         'ALTER TABLE staff ADD COLUMN public_id TEXT',
         'ALTER TABLE staff ADD COLUMN permissions TEXT',
         'ALTER TABLE staff ADD COLUMN scope_classes TEXT',
+        'ALTER TABLE class_substitutions ADD COLUMN rate_amount INTEGER NOT NULL DEFAULT 0',
+        "ALTER TABLE class_substitutions ADD COLUMN status TEXT NOT NULL DEFAULT 'assigned'",
+        'ALTER TABLE class_substitutions ADD COLUMN completed_at TEXT',
+        'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_at TEXT',
+        'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_by TEXT',
+        'ALTER TABLE class_substitutions ADD COLUMN bonus_note TEXT',
         'ALTER TABLE guardians ADD COLUMN public_id TEXT',
       ]) { try { this.sql.exec(alter); } catch { /* already there */ } }
       // Give existing accounts a stable 128-bit hexadecimal public ID; these IDs are safe to share for lookup.
