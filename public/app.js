@@ -54,6 +54,9 @@ async function api(path, opts = {}) {
   const submissionId = opts.submissionId || (isSchoolApi && isWrite ? newSubmissionId() : null);
   const submissionLabel = opts.submissionLabel || (isSchoolApi && isWrite ? submissionLabelFor(path, method) : '');
   const init = { method, headers: {}, credentials: 'same-origin', cache: 'no-store' };
+  if (isSchoolApi && ME && ME.id) {
+    init.headers['x-expected-actor'] = (ME.kind === 'guardian' ? 'g:' : 's:') + ME.id;
+  }
   if (submissionId) {
     init.headers['x-submission-id'] = submissionId;
     init.headers['x-submission-label'] = submissionLabel;
@@ -94,7 +97,7 @@ async function api(path, opts = {}) {
   catch (error) { return queueOrThrow(error); }
   let data = null;
   try { data = await r.json(); } catch { data = null; }
-  if ([502, 503, 504].includes(r.status) && isSchoolApi && isWrite && !!ME && !opts.noQueue) {
+  if ([500, 502, 503, 504].includes(r.status) && isSchoolApi && isWrite && !!ME && !opts.noQueue) {
     return queueOrThrow(new Error('The school server connection was interrupted.'));
   }
   if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null; setSessionHint(false); if (!opts.quiet) go(isInstalledApp() ? '/login' : '/'); throw new Error('Please sign in'); }
@@ -228,7 +231,7 @@ async function flushOfflineSubmissions() {
         changed = true;
         toast(item.label + ': received and saved by the school server.');
       } catch (error) {
-        const processingConflict = error.status === 409 && /still being processed/i.test(error.message);
+        const processingConflict = error.status === 409 && /(still being processed|different signed-in account)/i.test(error.message);
         const next = { ...item, attempts: (item.attempts || 0) + 1, lastTriedAt: new Date().toISOString(),
           lastError: error.message || 'The school server could not confirm this submission.',
           state: error.status && error.status >= 400 && error.status < 500 && error.status !== 401 && !processingConflict ? 'needs_review' : 'waiting' };
@@ -396,6 +399,7 @@ function view(html) {
   $('#app').innerHTML = `
   <div id="connection-notice-slot">${connectionBannerHtml()}</div>
   <div class="layout">
+    <button type="button" class="nav-scrim" id="nav-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <aside class="side" id="side">
       <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
       <nav>${nav()}</nav>
@@ -406,15 +410,23 @@ function view(html) {
     </aside>
     <div class="main">
       <div class="top">
-        <button class="btn menu" id="menu" aria-label="Menu">☰</button>
+        <button class="btn menu" id="menu" aria-label="Open navigation" aria-controls="side" aria-expanded="false">☰</button>
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
         <button class="btn small hidden" id="install">Install app</button>
       </div>
       <div class="content">${billingBanner()}${syncStatusHtml()}${html}</div>
     </div>
   </div>`;
-  $('#menu').onclick = () => $('#side').classList.toggle('open');
-  $$('#side nav a').forEach((a) => a.addEventListener('click', () => $('#side').classList.remove('open')));
+  const side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
+  const setNavOpen = (open) => {
+    side.classList.toggle('open', open);
+    scrim.classList.toggle('open', open);
+    menu.setAttribute('aria-expanded', String(open));
+    menu.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  };
+  menu.onclick = () => setNavOpen(!side.classList.contains('open'));
+  scrim.onclick = () => setNavOpen(false);
+  $('#side nav a').forEach((a) => a.addEventListener('click', () => setNavOpen(false)));
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
