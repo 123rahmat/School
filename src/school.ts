@@ -757,6 +757,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/staff', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the new staff account and confirm before creating it');
       if (!b.name || !b.email) fail(400, 'Name and a Google sign-in email are required');
       const role = ['teacher', 'subadmin', 'admin'].includes(b.role) ? b.role : 'teacher';
       if (role !== 'teacher') this.requireMain(a);
