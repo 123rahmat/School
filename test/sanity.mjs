@@ -2,13 +2,16 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
 const read = (path) => readFile(new URL('../' + path, import.meta.url), 'utf8');
-const [wrangler, util, worker, app, sw, school] = await Promise.all([
+const [wrangler, util, worker, app, sw, school, schema, css, html] = await Promise.all([
   read('wrangler.toml'),
   read('src/util.ts'),
   read('src/index.ts'),
   read('public/app.js'),
   read('public/sw.js'),
   read('src/school.ts'),
+  read('src/schema.ts'),
+  read('public/app.css'),
+  read('public/index.html'),
 ]);
 
 assert.match(wrangler, /^name = "school"$/m, 'Wrangler deploy target must match the Cloudflare Worker named school');
@@ -45,8 +48,8 @@ assert.match(app, /isInstalledApp\(\)/, 'Installed-app entry routing must be dev
 assert.match(app, /No internet connection\. Connect to the internet to verify your Google account/, 'Google sign-in must require an internet connection');
 assert.match(app, /function connectionBannerHtml\(\)/, 'Global offline and restored connection banner must exist');
 assert.match(app, /Connection restored/, 'The app must show a connection-restored banner');
-assert.match(app, /Attendance drafts can be saved on this device/, 'Offline attendance drafts must remain local');
-assert.match(app, /attendance item\\(s\\) are waiting on this device/, 'Offline banner must show queued attendance count');
+assert.match(app, /Your unsent work stays on this device/, 'Offline banner must explain that unsent work remains local');
+assert.match(app, /submission\\(s\\) are waiting to reach the school server/, 'Offline banner must show pending submission count');
 assert.match(app, /window\.addEventListener\('online', async/, 'Reconnect must revalidate the server session and sync queued attendance');
 assert.match(app, /window\.addEventListener\('offline'/, 'The app must show offline state when connectivity is lost');
 assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
@@ -63,14 +66,29 @@ assert.match(app, /Teachers and parents do not create their own accounts/, 'Teac
 assert.match(app, /att-outbox-v2:/, 'Offline attendance queue must be identity-scoped');
 assert.match(app, /credentials: 'same-origin'/, 'API requests must use same-origin session cookies');
 assert.match(app, /cache: 'no-store'/, 'API requests must not be served from a browser cache');
-assert.match(app, /attendance drafts and submissions are saved on the device/i, 'Offline capability must be described accurately');
+assert.match(app, /school-offline-submissions/, 'All school forms must share a durable IndexedDB queue');
+assert.match(app, /flushOfflineSubmissions\\(\\)/, 'Queued forms must retry after connectivity returns');
+assert.match(app, /Saved on this device\\. Not yet received by the school server/, 'Local queue state must not be confused with server receipt');
+assert.match(app, /route\\('\\/submissions'/, 'Users must have a submission history screen');
+assert.match(school, /x-submission-id/, 'School API must use stable submission IDs for retry safety');
+assert.match(school, /app\\.get\\('\\/submissions'/, 'Server-confirmed submission history must be role-scoped');
+assert.match(schema, /CREATE TABLE IF NOT EXISTS api_submissions/, 'School database must retain server submission receipts');
 
-assert.match(sw, /const VERSION = 'v10'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v11'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
 assert.match(school, /day\.submitted_by === a\.key/, 'Attendance submit retry must be idempotent for the same submitter');
 assert.match(school, /async runCron\(ctx: Ctx\)/, 'Cron cleanup that awaits R2 deletions must be asynchronous');
 assert.match(school, /app\.post\('\/internal\/cron', async \(c\) => c\.json\(await this\.runCron/, 'The internal cron route must await asynchronous cleanup');
+
+assert.doesNotMatch(app, /route\\('\\/timetable'|route\\('\\/syllabus'|substitution-bonuses/, 'Focused school UI must not expose removed teaching modules');
+assert.doesNotMatch(school, /app\\.(?:get|post|delete)\\('\\/(?:timetable|syllabus|substitutions)/, 'Focused school API must not expose removed teaching workflows');
+assert.doesNotMatch(schema, /CREATE TABLE IF NOT EXISTS (?:timetable_slots|class_substitutions|syllabus_documents)/, 'New school databases must not create removed feature tables');
+assert.match(css, /@media \\(max-width: 860px\\)/, 'Workspace must adapt navigation for phone and tablet widths');
+assert.match(css, /@media \\(min-width: 601px\\) and \\(max-width: 860px\\)/, 'Tablet layout must use tablet-appropriate forms and cards');
+assert.match(css, /@media \\(max-width: 600px\\)/, 'Phone layout must use phone-appropriate spacing and form columns');
+assert.match(css, /minmax\\(0, 1fr\\)/, 'Workspace columns must shrink without forcing viewport overflow');
+assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
