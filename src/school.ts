@@ -2128,8 +2128,8 @@ export class SchoolDO extends DurableObject<Env> {
     const subjectIds = new Set(move.subjectIds);
     const timetableIds = new Set(move.timetableIds);
     this.tx(() => {
-      this.run(\`INSERT INTO staff (id, public_id, name, email, phone, role, subjects, search_key, created_at)
-        VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'teacher', ?, ?, ?)\`,
+      this.run(`INSERT INTO staff (id, public_id, name, email, phone, role, subjects, search_key, created_at)
+        VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'teacher', ?, ?, ?)`,
         newId, next.name, next.email, next.phone, next.subjects, skeleton(next.name), now());
 
       const classes = this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', old.id);
