@@ -115,10 +115,10 @@ function query() {
   return Object.fromEntries(new URLSearchParams(search));
 }
 document.addEventListener('click', (event) => {
-  const anchor = event.target instanceof Element ? event.target.closest('a[href^="#/"]') : null;
+  const anchor = event.target instanceof Element ? event.target.closest('a[href^="/"]') : null;
   if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || anchor.target === '_blank') return;
   event.preventDefault();
-  go(anchor.getAttribute('href').slice(1));
+  go(anchor.getAttribute('href'));
 });
 
 async function render() {
@@ -146,7 +146,7 @@ window.addEventListener('popstate', render);
 function nav() {
   if (!ME) return '';
   const p = currentPath();
-  const link = (href, label, extra = '') => `<a href="#${href}" class="${(href === '/' ? p === '/' : p.startsWith(href)) ? 'active' : ''}">${label}${extra}</a>`;
+  const link = (href, label, extra = '') => `<a href="${href}" class="${(href === '/' ? p === '/' : p.startsWith(href)) ? 'active' : ''}">${label}${extra}</a>`;
   const items = [];
   if (ME.kind === 'owner') items.push(link('/owner', 'Owner panel'));
   else if (ME.kind === 'guardian') {
@@ -207,12 +207,12 @@ function view(html) {
 function billingBanner() {
   if (!ME || ME.kind === 'owner') return '';
   const st = ME.schoolStatus;
-  if (st === 'paused') return `<div class="banner bad">The school is paused for non-payment. You can view and export data, but cannot add or change anything.${ME.isMainAdmin ? ' <a href="#/billing">Upload payment slip</a>' : ''}</div>`;
+  if (st === 'paused') return `<div class="banner bad">The school is paused for non-payment. You can view and export data, but cannot add or change anything.${ME.isMainAdmin ? ' <a href="/billing">Upload payment slip</a>' : ''}</div>`;
   if (!ME.isMainAdmin || !BILL) return '';
-  if (st === 'grace') return `<div class="banner bad">Payment overdue. The school will pause on ${fmtDate(BILL.grace_until)}. <a href="#/billing">Pay now</a></div>`;
+  if (st === 'grace') return `<div class="banner bad">Payment overdue. The school will pause on ${fmtDate(BILL.grace_until)}. <a href="/billing">Pay now</a></div>`;
   const days = Math.round((new Date(BILL.renews_at) - new Date(today())) / 864e5);
-  if (st === 'trial') return `<div class="banner info">Free trial: ${Math.max(0, days)} day(s) left (up to 50 students). <a href="#/billing">Choose a plan</a></div>`;
-  if (days <= 5) return `<div class="banner warn">Your plan renews on ${fmtDate(BILL.renews_at)}. <a href="#/billing">Upload payment slip</a></div>`;
+  if (st === 'trial') return `<div class="banner info">Free trial: ${Math.max(0, days)} day(s) left (up to 50 students). <a href="/billing">Choose a plan</a></div>`;
+  if (days <= 5) return `<div class="banner warn">Your plan renews on ${fmtDate(BILL.renews_at)}. <a href="/billing">Upload payment slip</a></div>`;
   return '';
 }
 
@@ -223,7 +223,7 @@ function setupSearch() {
   const recent = () => { try { return JSON.parse(localStorage.getItem(recentKey()) || '[]'); } catch { return []; } };
   const showRecent = () => {
     const r = recent(); if (!r.length) return box.classList.add('hidden');
-    box.innerHTML = '<div class="muted small" style="padding:6px 12px">Recently opened</div>' + r.map((x) => `<a href="#${esc(x.href)}">${esc(x.label)}</a>`).join('');
+    box.innerHTML = '<div class="muted small" style="padding:6px 12px">Recently opened</div>' + r.map((x) => `<a href="/${esc(x.href)}">${esc(x.label)}</a>`).join('');
     box.classList.remove('hidden');
   };
   q.onfocus = () => { if (!q.value) showRecent(); };
@@ -232,8 +232,8 @@ function setupSearch() {
     if (q.value.trim().length < 2) return showRecent();
     t = setTimeout(async () => {
       const r = await S('/search?q=' + encodeURIComponent(q.value.trim())).catch(() => ({ students: [], staff: [] }));
-      box.innerHTML = r.students.map((s) => `<a href="#/student/${s.id}" data-label="${esc(s.name)} (${esc(s.reg_no)})"><b>${esc(s.name)}</b> s/o ${esc(s.father_name)} <span class="muted small">· ${esc(s.class_name)} · ${esc(s.reg_no)}${s.status !== 'active' ? ' · ' + esc(s.status) : ''}</span></a>`).join('')
-        + r.staff.map((s) => `<a href="#/staff/${s.id}" data-label="${esc(s.name)} (teacher)"><b>${esc(s.name)}</b> <span class="muted small">· teacher${s.subjects ? ' · ' + esc(s.subjects) : ''}${s.active ? '' : ' · former'}</span></a>`).join('')
+      box.innerHTML = r.students.map((s) => `<a href="/student/${s.id}" data-label="${esc(s.name)} (${esc(s.reg_no)})"><b>${esc(s.name)}</b> s/o ${esc(s.father_name)} <span class="muted small">· ${esc(s.class_name)} · ${esc(s.reg_no)}${s.status !== 'active' ? ' · ' + esc(s.status) : ''}</span></a>`).join('')
+        + r.staff.map((s) => `<a href="/staff/${s.id}" data-label="${esc(s.name)} (teacher)"><b>${esc(s.name)}</b> <span class="muted small">· teacher${s.subjects ? ' · ' + esc(s.subjects) : ''}${s.active ? '' : ' · former'}</span></a>`).join('')
         || '<div class="muted" style="padding:10px 12px">No matches</div>';
       box.classList.remove('hidden');
       $$('a', box).forEach((a) => a.onclick = () => {
@@ -270,7 +270,7 @@ async function refreshMe() {
 
 // ---------- sign in / sign up ----------
 function authPage(inner) {
-  $('#app').innerHTML = `<div class="auth"><a class="auth-home" href="#/" aria-label="Back to home">← Institution Manager</a><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div></div>`;
+  $('#app').innerHTML = `<div class="auth-shell"><aside class="auth-story"><a class="auth-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><div class="auth-story-copy"><div class="landing-eyebrow">ONE WORKSPACE. CLEARER OPERATIONS.</div><h2>Make room for better learning.</h2><p>Bring student records, staff, attendance, fees, communication and results together in one private institution workspace.</p><ul><li>One secure Google sign-in</li><li>Personal access for every role</li><li>Works in browser or as an installed app</li></ul></div><div class="auth-story-foot">Private institution workspaces · Built for education teams</div></aside><main class="auth"><a class="auth-home" href="/" aria-label="Back to home">← Back to home</a><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div><p class="auth-assurance">Your account is verified with Google. Your password is never shared with this platform.</p></main></div>`;
 }
 function showAuthError(error, mode = 'login') {
   const message = $('#authmsg');
@@ -280,11 +280,11 @@ function showAuthError(error, mode = 'login') {
   if (!next) return;
   next.innerHTML = '';
   if (mode === 'login' && /not registered|not linked|not found/i.test(raw)) {
-    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution workspace with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
+    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution workspace with this Google account.</p><a class="btn primary" href="/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
   } else if (/not configured/i.test(raw)) {
     next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
   } else if (mode === 'signup') {
-    next.innerHTML = '<div class="auth-help"><p>Already have an institution account? <a href="#/login">Sign in instead</a>.</p></div>';
+    next.innerHTML = '<div class="auth-help"><p>Already have an institution account? <a href="/login">Sign in instead</a>.</p></div>';
   } else {
     next.innerHTML = '<div class="auth-help"><p>Use the Google account connected to your institution profile. If the problem continues, ask the institution administrator to check your account email.</p></div>';
   }
@@ -342,7 +342,7 @@ function showInstallHelp() {
     : isAndroid
       ? 'Open your browser menu and choose Install app or Add to Home screen.'
       : 'In Chrome or Edge, use the install icon in the address bar or the browser menu and choose Install Institution Manager.';
-  modal(`<h2>Install Institution Manager</h2><p class="muted">You can use Institution Manager in your browser without installing anything.</p><div class="card"><b>To install on this device</b><p>${esc(steps)}</p></div><div class="row"><a class="btn primary" href="#/login" data-close>Use in browser</a><button class="btn" data-close>Close</button></div>`);
+  modal(`<h2>Install Institution Manager</h2><p class="muted">You can use Institution Manager in your browser without installing anything.</p><div class="card"><b>To install on this device</b><p>${esc(steps)}</p></div><div class="row"><a class="btn primary" href="/login" data-close>Use in browser</a><button class="btn" data-close>Close</button></div>`);
 }
 function setupLandingInstall() {
   const b = $('#landing-install');
@@ -373,11 +373,11 @@ function landingPage() {
   $('#app').innerHTML = `
   <div class="landing-shell">
     <header class="landing-nav">
-      <a class="landing-brand" href="#/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
+      <a class="landing-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
       <nav aria-label="Main navigation">
         <a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a><a href="#" data-scroll="contact">Contact</a>
       </nav>
-      <div class="landing-nav-actions"><a class="btn" href="#/login">Sign in</a><a class="btn primary" href="#/signup">Create account</a></div>
+      <div class="landing-nav-actions"><a class="btn" href="/login">Sign in</a><a class="btn primary" href="/signup">Create account</a></div>
     </header>
     <main>
       <section class="landing-hero">
@@ -385,8 +385,8 @@ function landingPage() {
           <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
           <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
           <p class="landing-lead">Institution Manager brings everyday institution operations into one organised workspace: student records, staff, classes, attendance, fees, parent communication, results and reports.</p>
-          <div class="landing-actions landing-entry-actions"><a class="btn primary" href="#/login">Use in browser</a><button class="btn" id="landing-install" type="button">Install app</button></div>
-          <div class="landing-secondary-actions"><a href="#/signup">New institution? Create an account</a><span>Use the browser or install on a supported phone, tablet or desktop.</span></div>
+          <div class="landing-actions landing-entry-actions"><a class="btn primary" href="/login">Use in browser</a><button class="btn" id="landing-install" type="button">Install app</button></div>
+          <div class="landing-secondary-actions"><a href="/signup">New institution? Create an account</a><span>Use the browser or install on a supported phone, tablet or desktop.</span></div>
           <p class="landing-note">Start with a 14-day trial for up to 50 learners. No password, email code or phone login is used.</p>
         </div>
         <div class="landing-preview" aria-label="Illustration of an education management dashboard">
@@ -435,14 +435,14 @@ function landingPage() {
       </section>
       <section class="landing-cta">
         <div><div class="landing-eyebrow">READY TO GET ORGANISED?</div><h2>Start with your institution's workspace.</h2><p>Create your account and complete the guided setup. You can also sign in to an existing account.</p></div>
-        <div class="landing-actions landing-entry-actions"><a class="btn primary" href="#/login">Use in browser</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
-        <p class="small muted"><a href="#/signup">Create a new institution account</a></p>
+        <div class="landing-actions landing-entry-actions"><a class="btn primary" href="/login">Use in browser</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
+        <p class="small muted"><a href="/signup">Create a new institution account</a></p>
       </section>
     </main>
     <footer class="landing-footer" id="contact">
-      <div><a class="landing-brand" href="#/"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
+      <div><a class="landing-brand" href="/"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
       <div><b>Explore</b><a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a></div>
-      <div><b>Account</b><a href="#/signup">Create account</a><a href="#/login">Sign in</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
+      <div><b>Account</b><a href="/signup">Create account</a><a href="/login">Sign in</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
       <div><b>Contact us</b><p class="small muted">For product enquiries, onboarding and support:</p><p id="landing-contact-email" class="small muted">Loading contact details…</p><p class="small muted">Contact details are published by the platform team.</p></div>
       <div class="landing-copyright">© <span id="landing-year"></span> Institution Manager. All rights reserved. <span>Use in browser · Install when supported</span></div>
     </footer>
@@ -473,7 +473,7 @@ route('/login', async () => {
     <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
     <div id="authnext"></div>
-    <p class="small muted auth-switch">New here? <a href="#/signup">Create an institution account</a></p>`);
+    <p class="small muted auth-switch">New here? <a href="/signup">Create an institution account</a></p>`);
   await mountGoogleButton($('#gbtn'), async (credential) => {
     const r = await api('/api/auth/google', { body: { credential } });
     if (r.choose) {
@@ -526,7 +526,7 @@ route('/signup', async () => {
     <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
     <div id="authnext"></div>
-    <p class="small muted auth-switch">Already registered? <a href="#/login">Sign in instead</a></p>`);
+    <p class="small muted auth-switch">Already registered? <a href="/login">Sign in instead</a></p>`);
   const categoryLabels = { school: 'school', college: 'college', university: 'university', academy: 'academy', training_institute: 'training institute', other: 'education organisation' };
   const kindSelect = $('#signup-kind');
   const updateSignupCopy = () => {
@@ -552,14 +552,14 @@ route('/setup', async () => {
   <div class="card stack">
     <p>Do these in order — each takes a minute:</p>
     <ol class="stack">
-      <li><a href="#/staff">Add your teachers</a> and register the Google email each person will use to sign in.</li>
-      <li><a href="#/classes">Create classes</a> and pick a class teacher for each.</li>
-      <li><a href="#/students">Add students</a> one by one, or import a CSV file from Excel.</li>
-      <li><a href="#/fees/setup">Set the fee for each class</a>.</li>
-      <li><a href="#/settings?tab=payments">Add your payment accounts</a> (Easypaisa, JazzCash, bank…) so parents know where to pay.</li>
-      <li><a href="#/settings">Check settings</a>: fee due date, late fine, attendance deadline.</li>
+      <li><a href="/staff">Add your teachers</a> and register the Google email each person will use to sign in.</li>
+      <li><a href="/classes">Create classes</a> and pick a class teacher for each.</li>
+      <li><a href="/students">Add students</a> one by one, or import a CSV file from Excel.</li>
+      <li><a href="/fees/setup">Set the fee for each class</a>.</li>
+      <li><a href="/settings?tab=payments">Add your payment accounts</a> (Easypaisa, JazzCash, bank…) so parents know where to pay.</li>
+      <li><a href="/settings">Check settings</a>: fee due date, late fine, attendance deadline.</li>
     </ol>
-    <a class="btn primary" href="#/">Go to dashboard</a>
+    <a class="btn primary" href="/">Go to dashboard</a>
   </div>`);
 });
 
@@ -570,20 +570,20 @@ route('/', async () => {
   if (!ME.isAdmin) return teacherHome();
   const d = await S('/dashboard');
   view(`
-  <div class="row between"><h1>Today, ${fmtDate(d.date)}</h1><a class="btn" href="#/setup">Setup guide</a></div>
+  <div class="row between"><h1>Today, ${fmtDate(d.date)}</h1><a class="btn" href="/setup">Setup guide</a></div>
   <div class="grid">
-    <a class="stat" href="#/attendance"><div class="n">${d.attendance.percent}%</div><div class="l">Attendance (${d.attendance.submitted}/${d.attendance.classes} classes submitted)</div></a>
-    <a class="stat" href="#/fees/report"><div class="n">${money(d.fees.collectedToday)}</div><div class="l">Fees collected today</div></a>
-    <a class="stat" href="#/fees/slips"><div class="n">${d.fees.slipsWaiting}</div><div class="l">Slips waiting to verify</div></a>
-    <a class="stat" href="#/cash"><div class="n">${money(d.fees.cashWithTeachers)}</div><div class="l">Cash with teachers</div></a>
-    <a class="stat" href="#/fees/unpaid"><div class="n">${d.fees.defaulters}</div><div class="l">Students overdue</div></a>
-    <a class="stat" href="#/students"><div class="n">${d.students.active}</div><div class="l">Active students${d.students.pending ? ` · <b>${d.students.pending} awaiting confirmation</b>` : ''}</div></a>
-    <a class="stat" href="#/requests"><div class="n">${d.changeRequests}</div><div class="l">Open change requests</div></a>
+    <a class="stat" href="/attendance"><div class="n">${d.attendance.percent}%</div><div class="l">Attendance (${d.attendance.submitted}/${d.attendance.classes} classes submitted)</div></a>
+    <a class="stat" href="/fees/report"><div class="n">${money(d.fees.collectedToday)}</div><div class="l">Fees collected today</div></a>
+    <a class="stat" href="/fees/slips"><div class="n">${d.fees.slipsWaiting}</div><div class="l">Slips waiting to verify</div></a>
+    <a class="stat" href="/cash"><div class="n">${money(d.fees.cashWithTeachers)}</div><div class="l">Cash with teachers</div></a>
+    <a class="stat" href="/fees/unpaid"><div class="n">${d.fees.defaulters}</div><div class="l">Students overdue</div></a>
+    <a class="stat" href="/students"><div class="n">${d.students.active}</div><div class="l">Active students${d.students.pending ? ` · <b>${d.students.pending} awaiting confirmation</b>` : ''}</div></a>
+    <a class="stat" href="/requests"><div class="n">${d.changeRequests}</div><div class="l">Open change requests</div></a>
   </div>
   <h2>Attendance by class</h2>
   ${d.attendance.notSubmitted.length ? `<div class="banner warn">Not yet submitted: ${esc(d.attendance.notSubmitted.join(', '))}</div>` : ''}
   <div class="table-wrap"><table><thead><tr><th>Class</th><th>Status</th><th class="num">Present</th><th class="num">Total</th></tr></thead><tbody>
-  ${d.attendance.perClass.map((c) => `<tr><td><a href="#/attendance/${c.id}">${esc(c.name)}</a></td><td>${badge(c.status, c.status === 'submitted' ? 'ok' : c.status === 'draft' ? 'warn' : '')}</td><td class="num">${c.present}</td><td class="num">${c.total}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No classes yet. <a href="#/classes">Create classes</a></td></tr>'}
+  ${d.attendance.perClass.map((c) => `<tr><td><a href="/attendance/${c.id}">${esc(c.name)}</a></td><td>${badge(c.status, c.status === 'submitted' ? 'ok' : c.status === 'draft' ? 'warn' : '')}</td><td class="num">${c.present}</td><td class="num">${c.total}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No classes yet. <a href="/classes">Create classes</a></td></tr>'}
   </tbody></table></div>
   <h2>Latest notices</h2>
   <div class="card">${d.notices.map((n) => `<div class="list-item"><b>${esc(n.title)}</b> <span class="muted small">· ${esc(n.poster_name)} · ${fmtTime(n.created_at)}</span></div>`).join('') || '<span class="muted">No notices yet</span>'}</div>`);
@@ -595,7 +595,7 @@ async function teacherHome() {
   <h2>My classes</h2>
   <div class="grid">${classes.map((c) => `<div class="stat"><div class="n" style="font-size:1.2rem">${esc(c.name)}</div>
     <div class="l">${c.students} students${ME.classTeacherOf.includes(c.id) ? ' · <b>class teacher</b>' : ''}</div>
-    <div class="row" style="margin-top:8px">${ME.classTeacherOf.includes(c.id) ? `<a class="btn small primary" href="#/attendance/${c.id}">Mark attendance</a>` : ''}<a class="btn small" href="#/class/${c.id}">Open</a></div></div>`).join('') || '<p class="muted">You have no classes assigned yet.</p>'}</div>`);
+    <div class="row" style="margin-top:8px">${ME.classTeacherOf.includes(c.id) ? `<a class="btn small primary" href="/attendance/${c.id}">Mark attendance</a>` : ''}<a class="btn small" href="/class/${c.id}">Open</a></div></div>`).join('') || '<p class="muted">You have no classes assigned yet.</p>'}</div>`);
 }
 
 async function parentHome() {
@@ -604,7 +604,7 @@ async function parentHome() {
   view(`<h1>My children</h1>
   <div class="grid">${profiles.map((p) => {
     const v = (p.vouchers || []).find((x) => x.status !== 'carried');
-    return `<a class="stat" href="#/student/${p.student.id}"><div class="n" style="font-size:1.2rem">${esc(p.student.name)}</div>
+    return `<a class="stat" href="/student/${p.student.id}"><div class="n" style="font-size:1.2rem">${esc(p.student.name)}</div>
       <div class="l">${esc(p.student.class_name)} · ${esc(p.student.reg_no)}</div>
       <div style="margin-top:8px">Attendance this month: <b>${p.attendance.percent ?? '–'}%</b></div>
       <div>${v ? (v.balance > 0 ? `Fee due: <b>${money(v.balance)}</b> by ${fmtDate(v.due_date)}` : badge('Fees paid', 'ok')) : '<span class="muted">No voucher yet</span>'}</div></a>`;
@@ -636,7 +636,7 @@ route('/students', async () => {
     <button class="btn">Filter</button>
   </form>
   <div class="table-wrap"><table><thead><tr><th>Reg no</th><th>Name</th><th>Father's name</th><th>Class</th><th class="hide-sm">Parent phone</th><th>Status</th></tr></thead><tbody>
-  ${rows.map((s) => `<tr><td>${esc(s.reg_no)}</td><td><a href="#/student/${s.id}">${esc(s.name)}</a></td><td>${esc(s.father_name)}</td><td>${esc(s.class_name)}</td><td class="hide-sm">${esc(s.parent_phone)}</td>
+  ${rows.map((s) => `<tr><td>${esc(s.reg_no)}</td><td><a href="/student/${s.id}">${esc(s.name)}</a></td><td>${esc(s.father_name)}</td><td>${esc(s.class_name)}</td><td class="hide-sm">${esc(s.parent_phone)}</td>
     <td>${badge(s.status, s.status === 'active' ? 'ok' : s.status === 'pending' ? 'warn' : '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No students match</td></tr>'}
   </tbody></table></div><p class="muted small">${rows.length} student(s)</p>`);
   $('#filters').onsubmit = (e) => { e.preventDefault(); const b = formData(e.target); const p = new URLSearchParams(); for (const [k, v] of Object.entries(b)) if (v) p.set(k, v); go('/students?' + p); };
@@ -727,7 +727,7 @@ route('/student/:id', async ({ id }) => {
   view(`
   <div class="row between"><div><h1 style="margin:0">${esc(s.name)} ${s.status !== 'active' ? badge(s.status, 'warn') : ''}</h1><div class="muted">s/o ${esc(s.father_name)} · ${esc(s.class_name)} · ${esc(s.reg_no)}</div></div>
   <div class="row">${studentActions(s)}</div></div>
-  <div class="tabs" style="margin-top:14px">${tabs.map(([k, l]) => `<a href="#/student/${id}?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`).join('')}</div>
+  <div class="tabs" style="margin-top:14px">${tabs.map(([k, l]) => `<a href="/student/${id}?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`).join('')}</div>
   ${body}`);
   bindStudentActions(s, p);
 });
@@ -788,7 +788,7 @@ function attendanceCalendar(p, month, id) {
   const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7), next = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7);
   const counts = Object.values(recs).reduce((a, s) => ((a[s] = (a[s] || 0) + 1), a), {});
   return `<div class="card">
-    <div class="row between"><div class="row"><a class="btn small" href="#/student/${id}?tab=attendance&month=${prev}">‹</a><b>${new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' })}</b><a class="btn small" href="#/student/${id}?tab=attendance&month=${next}">›</a></div>
+    <div class="row between"><div class="row"><a class="btn small" href="/student/${id}?tab=attendance&month=${prev}">‹</a><b>${new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' })}</b><a class="btn small" href="/student/${id}?tab=attendance&month=${next}">›</a></div>
     <div class="row"><button class="btn small" id="att-csv">CSV</button><button class="btn small" id="att-print">PDF / Print</button></div></div>
     <p>Attendance: <b>${p.attendance.percent ?? '–'}%</b> · ${Object.entries(counts).map(([k, v]) => `${STATUS[k]} ${v}`).join(' · ')}</p>
     <div class="cal">${cells.join('')}</div>
@@ -835,12 +835,12 @@ function feesTab(p, s) {
   <div class="table-wrap"><table><thead><tr><th>Month</th><th>No.</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Fine</th><th class="num">Balance</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
   ${p.vouchers.map((v) => `<tr><td>${esc(v.month)}</td><td>${v.number}</td><td class="num">${money(v.total)}</td><td class="num">${money(v.paid)}</td>
     <td class="num">${money(v.fine)}${ME.canFees && ['unpaid', 'partial'].includes(v.status) ? ` <a href="#" data-fine="${v.id}" class="small">change</a>` : ''}</td>
-    <td class="num">${v.status === 'carried' ? '→ next' : v.status === 'settled' ? '–' : money(v.balance)}</td><td>${fmtDate(v.due_date)}</td><td>${badge(v.status, VOUCHER_STATUS[v.status])}</td><td><a href="#/voucher/${v.id}">Print</a></td></tr>`).join('') || '<tr><td colspan="9" class="muted">No vouchers yet</td></tr>'}
+    <td class="num">${v.status === 'carried' ? '→ next' : v.status === 'settled' ? '–' : money(v.balance)}</td><td>${fmtDate(v.due_date)}</td><td>${badge(v.status, VOUCHER_STATUS[v.status])}</td><td><a href="/voucher/${v.id}">Print</a></td></tr>`).join('') || '<tr><td colspan="9" class="muted">No vouchers yet</td></tr>'}
   </tbody></table></div>
   <h3>Payments</h3>
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Method</th><th class="num">Amount</th><th>Txn ID</th><th>Status</th><th></th></tr></thead><tbody>
   ${p.payments.map((x) => `<tr><td>${fmtTime(x.created_at)}</td><td>${esc(x.method.replace('_', ' '))}</td><td class="num">${money(x.amount)}</td><td>${esc(x.txn_id || '')}</td><td>${badge(x.status, PAY_STATUS[x.status])}${x.reason ? `<div class="small muted">${esc(x.reason)}</div>` : ''}</td>
-  <td class="row">${x.receipt_no && x.status === 'verified' ? `<a href="#/receipt/${x.id}">Receipt #${x.receipt_no}</a>` : ''}${x.slip_key ? ` <a target="_blank" href="/files/${esc(x.slip_key.split('/').slice(1).join('/'))}">Slip</a>` : ''}${ME.isMainAdmin && x.status === 'verified' ? ` <a href="#" data-cancel="${x.id}">Cancel</a>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>'}
+  <td class="row">${x.receipt_no && x.status === 'verified' ? `<a href="/receipt/${x.id}">Receipt #${x.receipt_no}</a>` : ''}${x.slip_key ? ` <a target="_blank" href="/files/${esc(x.slip_key.split('/').slice(1).join('/'))}">Slip</a>` : ''}${ME.isMainAdmin && x.status === 'verified' ? ` <a href="#" data-cancel="${x.id}">Cancel</a>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>'}
   </tbody></table></div>`;
 }
 
@@ -962,10 +962,10 @@ route('/staff', async () => {
   const showFormer = query().former === '1';
   const rows = await S('/staff?active=' + (showFormer ? '0' : '1'));
   view(`<div class="row between"><h1>${showFormer ? 'Former staff' : 'Teachers & staff'}</h1><div class="row">
-    <a class="btn" href="#/staff${showFormer ? '' : '?former=1'}">${showFormer ? 'Active staff' : 'Former staff'}</a>
+    <a class="btn" href="/staff${showFormer ? '' : '?former=1'}">${showFormer ? 'Active staff' : 'Former staff'}</a>
     ${ME.role === 'admin' ? '<button class="btn primary" id="add">Add teacher or staff</button>' : ''}</div></div>
   <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Class teacher of</th><th>Subjects</th><th class="hide-sm">Phone</th><th class="hide-sm">Email</th></tr></thead><tbody>
-  ${rows.map((t) => `<tr><td><a href="#/staff/${t.id}">${esc(t.name)}</a></td><td>${t.is_main ? badge('main admin', 'info') : badge(t.subrole || t.role)}</td><td>${esc(t.classes.join(', '))}</td>
+  ${rows.map((t) => `<tr><td><a href="/staff/${t.id}">${esc(t.name)}</a></td><td>${t.is_main ? badge('main admin', 'info') : badge(t.subrole || t.role)}</td><td>${esc(t.classes.join(', '))}</td>
    <td class="small">${esc(t.subject_classes.map((x) => `${x.subject} (${x.name})`).join(', ') || t.subjects || '')}</td><td class="hide-sm">${esc(t.phone || '')}</td><td class="hide-sm">${esc(t.email || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">None</td></tr>'}
   </tbody></table></div>`);
   if ($('#add')) $('#add').onclick = () => staffForm();
@@ -1003,7 +1003,7 @@ route('/staff/:id', async ({ id }) => {
     <div class="stat"><div class="l">Cash held</div><b>${money(cash)}</b></div>
   </div>
   ${t.left_at ? `<div class="banner warn">Left on ${fmtDate(t.left_at)} — ${esc(t.left_reason || '')}</div>` : ''}
-  <h2>Subjects</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)} — <a href="#/class/${s.class_id}">${esc(s.class_name)}</a>`).join('<br>') || '<span class="muted">None</span>'}</div>
+  <h2>Subjects</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)} — <a href="/class/${s.class_id}">${esc(s.class_name)}</a>`).join('<br>') || '<span class="muted">None</span>'}</div>
   <h2>Attendance submissions</h2><div class="table-wrap"><table><tbody>${d.submissions.map((s) => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.class_name)}</td><td>${fmtTime(s.submitted_at)}</td></tr>`).join('') || '<tr><td class="muted">None</td></tr>'}</tbody></table></div>
   <h2>Notices posted</h2><div class="card">${d.notices.map((n) => `<div>${esc(n.title)} <span class="muted small">${fmtTime(n.created_at)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
   ${d.history.length ? `<h2>Change history</h2><div class="table-wrap"><table><tbody>${d.history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
@@ -1027,7 +1027,7 @@ route('/classes', async () => {
   const [rows, staff] = await Promise.all([S('/classes'), ME.isAdmin ? S('/staff') : []]);
   view(`<div class="row between"><h1>Classes</h1>${ME.role === 'admin' ? '<button class="btn primary" id="add">Add class</button>' : ''}</div>
   <div class="table-wrap"><table><thead><tr><th>Class</th><th>Class teacher</th><th>Subject teachers</th><th class="num">Students</th><th></th></tr></thead><tbody>
-  ${rows.map((c) => `<tr><td><a href="#/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${s.teacher_name || '–'}`).join(', '))}</td><td class="num">${c.students}</td>
+  ${rows.map((c) => `<tr><td><a href="/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${s.teacher_name || '–'}`).join(', '))}</td><td class="num">${c.students}</td>
    <td>${ME.role === 'admin' ? `<button class="btn small" data-edit="${c.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No classes yet</td></tr>'}
   </tbody></table></div>`);
   const form = (c) => modal(`<h2>${c ? 'Edit class' : 'Add class'}</h2><form id="cf" class="form">
@@ -1056,12 +1056,12 @@ route('/class/:id', async ({ id }) => {
   const d = await S('/classes/' + id);
   const staff = ME.role === 'admin' ? await S('/staff') : [];
   view(`<div class="row between"><div><h1 style="margin:0">Class ${esc(d.class.name)}</h1><div class="muted">Class teacher: ${esc(d.class.class_teacher_name || '–')}${d.class.room ? ' · Room ' + esc(d.class.room) : ''}</div></div>
-  <div class="row"><a class="btn" href="#/attendance/${id}">Attendance</a><a class="btn" href="#/register/${id}/${thisMonth()}">Monthly register</a>${ME.role === 'admin' ? '<button class="btn" id="rep">Replace teacher</button>' : ''}</div></div>
+  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.role === 'admin' ? '<button class="btn" id="rep">Replace teacher</button>' : ''}</div></div>
   <h2>Subject teachers</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)}: ${esc(s.teacher_name || '–')}`).join(' · ') || '<span class="muted">None</span>'}</div>
   <h2>Today: ${badge(d.today.status, d.today.status === 'submitted' ? 'ok' : 'warn')}</h2>
   <div class="table-wrap"><table><thead><tr><th>Reg</th><th>Student</th><th>Today</th>${d.fees ? '<th class="num">Fee this month</th><th>Status</th>' : ''}</tr></thead><tbody>
   ${d.students.map((s) => { const t = d.today.students.find((x) => x.id === s.id); const f = d.fees?.find((x) => x.student_name === s.name);
-    return `<tr><td>${esc(s.reg_no)}</td><td><a href="#/student/${s.id}">${esc(s.name)}</a> ${s.status === 'pending' ? badge('pending', 'warn') : ''}</td><td>${d.today.status === 'new' ? '–' : STATUS[t?.status] || '–'}</td>
+    return `<tr><td>${esc(s.reg_no)}</td><td><a href="/student/${s.id}">${esc(s.name)}</a> ${s.status === 'pending' ? badge('pending', 'warn') : ''}</td><td>${d.today.status === 'new' ? '–' : STATUS[t?.status] || '–'}</td>
     ${d.fees ? `<td class="num">${f ? money(f.total) : '–'}</td><td>${f ? badge(f.status, VOUCHER_STATUS[f.status]) : ''}</td>` : ''}</tr>`; }).join('')}
   </tbody></table></div>
   <h2>Class teacher history</h2><div class="card small">${d.history.map((h) => `${esc(h.name)}: ${fmtDate(h.from_date)} – ${h.to_date ? fmtDate(h.to_date) : 'now'}`).join('<br>') || '–'}</div>`);
@@ -1081,8 +1081,8 @@ route('/attendance', async () => {
   const mine = ME.isAdmin ? classes : classes.filter((c) => ME.classTeacherOf.includes(c.id));
   if (mine.length === 1 && !ME.isAdmin) return go('/attendance/' + mine[0].id);
   view(`<h1>Attendance</h1><div class="grid">${classes.map((c) => `<div class="stat"><div class="n" style="font-size:1.2rem">${esc(c.name)}</div><div class="l">${c.students} students</div>
-  <div class="row" style="margin-top:8px">${ME.isAdmin || ME.classTeacherOf.includes(c.id) ? `<a class="btn small primary" href="#/attendance/${c.id}">Mark / view</a>` : ''}<a class="btn small" href="#/register/${c.id}/${thisMonth()}">Register</a></div></div>`).join('') || '<p class="muted">No classes</p>'}</div>
-  ${ME.role === 'admin' ? '<h2>Holidays</h2><p><a href="#/settings?tab=holidays">Manage holiday calendar</a></p>' : ''}`);
+  <div class="row" style="margin-top:8px">${ME.isAdmin || ME.classTeacherOf.includes(c.id) ? `<a class="btn small primary" href="/attendance/${c.id}">Mark / view</a>` : ''}<a class="btn small" href="/register/${c.id}/${thisMonth()}">Register</a></div></div>`).join('') || '<p class="muted">No classes</p>'}</div>
+  ${ME.role === 'admin' ? '<h2>Holidays</h2><p><a href="/settings?tab=holidays">Manage holiday calendar</a></p>' : ''}`);
 });
 
 // Offline attendance is queued per signed-in person and institution so one user's work
@@ -1096,7 +1096,7 @@ function syncStatusHtml() {
   if (!ME) return '';
   const items = outbox(), count = items.length;
   const blocked = items.filter(x => x.blocked);
-  const links = blocked.slice(0, 3).map(x => `<a href="#/attendance/${encodeURIComponent(x.classId)}?date=${encodeURIComponent(x.date)}">Review ${esc(x.date)}</a>`).join(' · ');
+  const links = blocked.slice(0, 3).map(x => `<a href="/attendance/${encodeURIComponent(x.classId)}?date=${encodeURIComponent(x.date)}">Review ${esc(x.date)}</a>`).join(' · ');
   if (!navigator.onLine) return `<div class="sync-status offline" role="status"><b>Offline mode</b><span>Previously opened records may be available. Attendance changes are saved on this device and queued until the connection returns.</span>${count ? `<strong>${count} attendance item(s) waiting</strong>` : ''}${links}</div>`;
   if (blocked.length) return `<div class="sync-status offline" role="status"><b>Attendance needs review</b><span>${blocked.length} queued item(s) were not accepted. Check the affected dates before trying again.</span>${links}</div>`;
   if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
@@ -1145,7 +1145,7 @@ route('/attendance/:id', async ({ id }) => {
   if (d.status !== 'submitted') { try { Object.assign(recs, JSON.parse(localStorage.getItem(draftKey) || '{}')); } catch {} }
   view(`<div class="row between"><div><h1 style="margin:0">Attendance — ${esc(d.class.name)}</h1>
   <div class="muted">${d.status === 'submitted' ? `Submitted ${fmtTime(d.submitted_at)}` : d.status === 'draft' ? 'Draft saved' : 'Everyone is present by default — tap only the exceptions.'}</div></div>
-  <div class="row"><input type="date" id="dt" value="${date}" max="${today()}"><a class="btn" href="#/register/${id}/${date.slice(0, 7)}">Register</a></div></div>
+  <div class="row"><input type="date" id="dt" value="${date}" max="${today()}"><a class="btn" href="/register/${id}/${date.slice(0, 7)}">Register</a></div></div>
   ${d.holiday ? `<div class="banner info" style="margin-top:12px">Holiday: ${esc(d.holiday)}</div>` : ''}
   ${locked ? '<div class="banner info" style="margin-top:12px">Submitted and final. To fix a mistake, tap a student to send a change request.</div>' : ''}
   ${d.status === 'submitted' && ME.isAdmin ? '<div class="banner info" style="margin-top:12px">Submitted. As admin, tap a status to correct it — a reason is recorded and the parent is told.</div>' : ''}
@@ -1200,9 +1200,9 @@ route('/register/:id/:month', async ({ id, month }) => {
   const [y, m] = month.split('-').map(Number);
   const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7), next = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7);
   view(`<div class="row between"><h1>Register — ${esc(d.class.name)} — ${esc(month)}</h1><div class="row no-print">
-  <a class="btn small" href="#/register/${id}/${prev}">‹ Prev</a><a class="btn small" href="#/register/${id}/${next}">Next ›</a><button class="btn small" id="csv">CSV / Excel</button><button class="btn small" onclick="print()">PDF / Print</button></div></div>
+  <a class="btn small" href="/register/${id}/${prev}">‹ Prev</a><a class="btn small" href="/register/${id}/${next}">Next ›</a><button class="btn small" id="csv">CSV / Excel</button><button class="btn small" onclick="print()">PDF / Print</button></div></div>
   <div class="table-wrap"><table><thead><tr><th>Student</th>${d.dates.map((x) => `<th>${Number(x.slice(8))}</th>`).join('')}<th class="num">%</th><th>Warning</th></tr></thead><tbody>
-  ${d.rows.map((r) => `<tr><td><a href="#/student/${r.id}">${esc(r.name)}</a></td>${d.dates.map((x) => `<td>${r.days[x] || ''}</td>`).join('')}<td class="num">${r.percent ?? '–'}</td><td>${r.warning ? badge(r.warning, 'bad') : ''}</td></tr>`).join('')}
+  ${d.rows.map((r) => `<tr><td><a href="/student/${r.id}">${esc(r.name)}</a></td>${d.dates.map((x) => `<td>${r.days[x] || ''}</td>`).join('')}<td class="num">${r.percent ?? '–'}</td><td>${r.warning ? badge(r.warning, 'bad') : ''}</td></tr>`).join('')}
   </tbody></table></div><p class="small muted">P present · A absent · L late · V leave</p>`);
   $('#csv').onclick = () => download(`register-${d.class.name}-${month}.csv`, csv([['reg_no', 'name', ...d.dates, 'percent'], ...d.rows.map((r) => [r.reg_no, r.name, ...d.dates.map((x) => r.days[x] || ''), r.percent ?? ''])]));
 });
@@ -1217,8 +1217,8 @@ route('/fees', async () => {
   view(`<h1>Fees</h1>${feeTabs('/fees')}
   <div class="grid">
     ${rep ? `<div class="stat"><div class="n">${money(rep.collected)}</div><div class="l">Collected in ${esc(rep.month)}</div></div><div class="stat"><div class="n">${money(rep.expected)}</div><div class="l">Expected this month</div></div>` : ''}
-    <a class="stat" href="#/fees/unpaid"><div class="n">${unpaid.length}</div><div class="l">Unpaid vouchers this month</div></a>
-    <a class="stat" href="#/fees/slips"><div class="n">${slips.filter((s) => s.method !== 'cash_teacher').length}</div><div class="l">Slips waiting</div></a>
+    <a class="stat" href="/fees/unpaid"><div class="n">${unpaid.length}</div><div class="l">Unpaid vouchers this month</div></a>
+    <a class="stat" href="/fees/slips"><div class="n">${slips.filter((s) => s.method !== 'cash_teacher').length}</div><div class="l">Slips waiting</div></a>
   </div>
   ${ME.canFees ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Generate vouchers</h3><p class="small muted">Vouchers are created automatically on day ${esc(ME.settings.voucher_day)} of each month. You can also create them now; students who already have one are skipped.</p>
   <div class="row"><input type="month" id="gm" value="${thisMonth()}"><button class="btn primary" id="gen">Generate</button></div></div>` : ''}`);
@@ -1234,7 +1234,7 @@ route('/fees/unpaid', async () => {
   <div class="row card"><input type="month" id="m" value="${month}"><select id="c"><option value="">All classes</option>${classes.map((c) => `<option value="${c.id}" ${cls === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
   <button class="btn" id="csv">Download CSV</button><button class="btn" onclick="print()">PDF / Print</button><button class="btn primary" id="remall">Remind everyone on this list</button></div>
   <div class="table-wrap"><table><thead><tr><th>Student</th><th>Reg</th><th>Class</th><th class="hide-sm">Parent phone</th><th class="num">Due</th><th class="num">Paid</th><th class="num">Balance</th><th class="num">Days late</th><th>Last reminder</th><th></th></tr></thead><tbody>
-  ${rows.map((r) => `<tr><td><a href="#/student/${r.student_id}?tab=fees">${esc(r.name)}</a> ${r.student_status === 'left' ? badge('left with dues', 'warn') : ''}</td><td>${esc(r.reg_no)}</td><td>${esc(r.class_name)}</td><td class="hide-sm">${esc(r.parent_phone)}</td>
+  ${rows.map((r) => `<tr><td><a href="/student/${r.student_id}?tab=fees">${esc(r.name)}</a> ${r.student_status === 'left' ? badge('left with dues', 'warn') : ''}</td><td>${esc(r.reg_no)}</td><td>${esc(r.class_name)}</td><td class="hide-sm">${esc(r.parent_phone)}</td>
   <td class="num">${money(r.due)}</td><td class="num">${money(r.paid)}</td><td class="num"><b>${r.status === 'carried' ? 'carried' : money(r.balance)}</b></td><td class="num">${r.days_overdue}</td><td>${fmtTime(r.last_reminder) || '–'}</td>
   <td><button class="btn small" data-rem="${r.id}">Remind</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">Nothing unpaid 🎉</td></tr>'}
   </tbody></table></div><p class="small muted">Total balance: <b>${money(rows.filter((r) => r.status !== 'carried').reduce((t, r) => t + r.balance, 0))}</b></p>`);
@@ -1249,11 +1249,11 @@ route('/fees/slips', async () => {
   const status = query().status || 'submitted';
   const rows = (await S('/payments?status=' + status)).filter((r) => status !== 'submitted' || r.method !== 'cash_teacher');
   view(`<h1>Payment slips</h1>${feeTabs('/fees/slips')}
-  <div class="row" style="margin-bottom:10px">${['submitted', 'verified', 'rejected', 'cancelled'].map((s) => `<a class="btn small ${s === status ? 'primary' : ''}" href="#/fees/slips?status=${s}">${s}</a>`).join('')}</div>
+  <div class="row" style="margin-bottom:10px">${['submitted', 'verified', 'rejected', 'cancelled'].map((s) => `<a class="btn small ${s === status ? 'primary' : ''}" href="/fees/slips?status=${s}">${s}</a>`).join('')}</div>
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Student</th><th>Class</th><th>Method</th><th class="num">Amount</th><th>Txn ID</th><th>Slip</th><th></th></tr></thead><tbody>
-  ${rows.map((p) => `<tr><td>${fmtTime(p.created_at)}</td><td><a href="#/student/${p.student_id}?tab=fees">${esc(p.student_name)}</a></td><td>${esc(p.class_name)}</td><td>${esc(p.method.replace('_', ' '))}</td><td class="num">${money(p.amount)}</td>
+  ${rows.map((p) => `<tr><td>${fmtTime(p.created_at)}</td><td><a href="/student/${p.student_id}?tab=fees">${esc(p.student_name)}</a></td><td>${esc(p.class_name)}</td><td>${esc(p.method.replace('_', ' '))}</td><td class="num">${money(p.amount)}</td>
   <td>${esc(p.txn_id || '')}</td><td>${p.slip_key ? `<a target="_blank" href="/files/${esc(p.slip_key.split('/').slice(1).join('/'))}">View</a>` : ''}</td>
-  <td class="row">${p.status === 'submitted' && p.can_verify ? `<button class="btn small primary" data-v="${p.id}">Verify</button><button class="btn small danger" data-r="${p.id}">Reject</button>` : p.receipt_no ? `<a href="#/receipt/${p.id}">#${p.receipt_no}</a>` : esc(p.reason || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Nothing here</td></tr>'}
+  <td class="row">${p.status === 'submitted' && p.can_verify ? `<button class="btn small primary" data-v="${p.id}">Verify</button><button class="btn small danger" data-r="${p.id}">Reject</button>` : p.receipt_no ? `<a href="/receipt/${p.id}">#${p.receipt_no}</a>` : esc(p.reason || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Nothing here</td></tr>'}
   </tbody></table></div><p class="small muted">Check each slip against the institution's Easypaisa/JazzCash account before verifying. Duplicate transaction IDs are blocked automatically.</p>`);
   $$('[data-v]').forEach((b) => b.onclick = async () => { const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: {} })); toast(`Verified — receipt #${r.receipt}`); render(); });
   $$('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason } }), 'Rejected'); render(); });
@@ -1263,7 +1263,7 @@ route('/fees/defaulters', async () => {
   const rows = await S('/fees/defaulters');
   view(`<h1>Long-term defaulters</h1>${feeTabs('/fees/defaulters')}<p class="muted">Students unpaid for 2 months or more.</p>
   <div class="table-wrap"><table><thead><tr><th>Student</th><th>Reg</th><th>Class</th><th class="num">Months unpaid</th><th class="num">Balance</th></tr></thead><tbody>
-  ${rows.map((r) => `<tr><td><a href="#/student/${r.id}?tab=fees">${esc(r.name)}</a> ${r.status === 'left' ? badge('left', 'warn') : ''}</td><td>${esc(r.reg_no)}</td><td>${esc(r.class_name)}</td><td class="num">${r.months}</td><td class="num">${money(r.balance)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">None</td></tr>'}
+  ${rows.map((r) => `<tr><td><a href="/student/${r.id}?tab=fees">${esc(r.name)}</a> ${r.status === 'left' ? badge('left', 'warn') : ''}</td><td>${esc(r.reg_no)}</td><td>${esc(r.class_name)}</td><td class="num">${r.months}</td><td class="num">${money(r.balance)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">None</td></tr>'}
   </tbody></table></div>`);
 });
 
@@ -1355,13 +1355,13 @@ route('/threads', async () => {
   const rows = await S('/threads');
   const kids = ME.kind === 'guardian' ? ME.children : [];
   view(`<h1>Messages</h1><p class="muted small">One conversation per student between the parent and the student's teachers. The institution administrator can read all of them. Phone numbers stay private.</p>
-  ${kids.length ? `<div class="row" style="margin-bottom:12px">${kids.map((k) => `<a class="btn" href="#/thread/${k.id}">Message ${esc(k.name)}'s teachers</a>`).join('')}</div>` : ''}
-  <div class="card">${rows.map((r) => `<a class="list-item" style="display:block;color:inherit" href="#/thread/${r.student_id}"><b>${esc(r.name)}</b> <span class="muted small">· ${esc(r.class_name)} · ${fmtTime(r.created_at)}</span><div class="muted small">${esc(r.sender_name)}: ${esc(r.body.slice(0, 120))}</div></a>`).join('') || '<span class="muted">No conversations yet. Open a student and choose Messages to start one.</span>'}</div>`);
+  ${kids.length ? `<div class="row" style="margin-bottom:12px">${kids.map((k) => `<a class="btn" href="/thread/${k.id}">Message ${esc(k.name)}'s teachers</a>`).join('')}</div>` : ''}
+  <div class="card">${rows.map((r) => `<a class="list-item" style="display:block;color:inherit" href="/thread/${r.student_id}"><b>${esc(r.name)}</b> <span class="muted small">· ${esc(r.class_name)} · ${fmtTime(r.created_at)}</span><div class="muted small">${esc(r.sender_name)}: ${esc(r.body.slice(0, 120))}</div></a>`).join('') || '<span class="muted">No conversations yet. Open a student and choose Messages to start one.</span>'}</div>`);
 });
 route('/thread/:id', async ({ id }) => {
   const d = await S('/threads/' + id);
   const myKey = (ME.kind === 'guardian' ? 'g:' : 's:') + ME.id;
-  view(`<div class="row between"><h1>Messages about ${esc(d.student.name)}</h1>${ME.kind === 'staff' ? `<a class="btn" href="#/student/${id}">Profile</a>` : ''}</div>
+  view(`<div class="row between"><h1>Messages about ${esc(d.student.name)}</h1>${ME.kind === 'staff' ? `<a class="btn" href="/student/${id}">Profile</a>` : ''}</div>
   <div class="card"><div class="msgs" id="msgs">${d.messages.map((m) => `<div class="msg ${m.sender_key === myKey ? 'me' : ''}"><div class="who">${esc(m.sender_name)} · ${fmtTime(m.created_at)}</div><div style="white-space:pre-wrap" dir="auto">${esc(m.body)}</div></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
   <form id="mf" class="row" style="margin-top:12px"><textarea name="body" required placeholder="Write a message" style="flex:1;min-height:48px" dir="auto"></textarea><button class="btn primary">Send</button></form></div>`);
   const box = $('#msgs'); box.scrollTop = box.scrollHeight;
@@ -1379,7 +1379,7 @@ route('/results', async () => {
   ${Object.values(groups).map((g) => { const hidden = g.items.filter((x) => !x.published_at).length;
     return `<div class="card"><div class="row between"><h3 style="margin:0">${esc(g.class_name)} — ${esc(g.title)}</h3>
     ${ME.isAdmin && g.class_id && hidden ? `<button class="btn primary small" data-pub="${g.class_id}" data-title="${esc(g.title)}">Publish ${hidden} to parents</button>` : hidden ? '' : badge('published', 'ok')}</div>
-    <div class="table-wrap" style="margin-top:10px"><table><tbody>${g.items.map((r) => `<tr><td>${r.student_id ? `<a href="#/student/${r.student_id}?tab=results">${esc(r.student_name)}</a> <span class="muted small">${esc(r.reg_no)}</span>` : `<b>${esc(r.file_name)}</b> ${ME.isAdmin ? `<button class="btn small" data-assign="${r.id}">Assign to student</button>` : ''}`}</td>
+    <div class="table-wrap" style="margin-top:10px"><table><tbody>${g.items.map((r) => `<tr><td>${r.student_id ? `<a href="/student/${r.student_id}?tab=results">${esc(r.student_name)}</a> <span class="muted small">${esc(r.reg_no)}</span>` : `<b>${esc(r.file_name)}</b> ${ME.isAdmin ? `<button class="btn small" data-assign="${r.id}">Assign to student</button>` : ''}`}</td>
     <td>${r.published_at ? badge('published', 'ok') : badge('hidden', 'warn')}</td><td><a target="_blank" href="/api/s/result-file/${r.id}">Open</a></td><td>${ME.role === 'admin' || !r.published_at ? `<a href="#" data-del="${r.id}" class="small">delete</a>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`; }).join('') || '<div class="card muted">No results uploaded yet.</div>'}`);
   const up = $('#up'); if (up) up.onclick = () => modal(`<h2>Upload results</h2><form id="uf" class="form">
     <div><label>Title</label><input name="title" placeholder="Mid-term 2026" required></div><div><label>Session</label><input name="session" placeholder="2026-2027"></div>
@@ -1407,7 +1407,7 @@ route('/results', async () => {
 route('/requests', async () => {
   const rows = await S('/change-requests');
   view(`<h1>Change requests</h1><div class="table-wrap"><table><thead><tr><th>When</th><th>From</th><th>Student</th><th>Request</th><th>Status</th><th></th></tr></thead><tbody>
-  ${rows.map((r) => `<tr><td>${fmtTime(r.created_at)}</td><td>${esc(r.requested_by_name || '')}</td><td><a href="#/student/${r.ref}">${esc(r.student_name || '')}</a></td>
+  ${rows.map((r) => `<tr><td>${fmtTime(r.created_at)}</td><td>${esc(r.requested_by_name || '')}</td><td><a href="/student/${r.ref}">${esc(r.student_name || '')}</a></td>
   <td>${r.kind === 'attendance' ? `Attendance ${esc(r.detail.date)} → <b>${STATUS[r.detail.status]}</b><br>` : ''}<span class="small">${esc(r.reason)}</span></td>
   <td>${badge(r.status, r.status === 'approved' ? 'ok' : r.status === 'declined' ? 'bad' : 'warn')}</td>
   <td class="row">${ME.isAdmin && r.status === 'open' ? `<button class="btn small primary" data-a="${r.id}">Approve</button><button class="btn small" data-d="${r.id}">Decline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No requests</td></tr>'}
@@ -1426,7 +1426,7 @@ route('/outbox', async () => {
   const groups = {};
   for (const r of rows) (groups[r.text] ||= []).push(r);
   view(`<div class="row between"><h1>WhatsApp / SMS</h1><div class="row">
-    <a class="btn ${sentView ? '' : 'primary'}" href="#/outbox">To send (${sentView ? '…' : rows.length})</a><a class="btn ${sentView ? 'primary' : ''}" href="#/outbox?status=sent">Sent</a>
+    <a class="btn ${sentView ? '' : 'primary'}" href="/outbox">To send (${sentView ? '…' : rows.length})</a><a class="btn ${sentView ? 'primary' : ''}" href="/outbox?status=sent">Sent</a>
     <button class="btn" id="compose">New message</button></div></div>
   <p class="muted small">These go out from <b>your own phone number</b>, using WhatsApp or SMS on this device, so there's no extra cost. Tap <b>WhatsApp</b>: the chat opens with the text ready, you press send, and it's marked done. On a phone, <b>SMS to all</b> sends one text to the whole group.</p>
   ${sentView ? `<div class="table-wrap"><table><tbody>${rows.map((r) => `<tr><td>${fmtTime(r.sent_at)}</td><td>${esc(r.name)} <span class="muted small">${esc(r.kind)} · ${esc(r.phone)}</span></td><td>${badge(r.status === 'sent' ? r.channel || 'sent' : 'skipped', r.status === 'sent' ? 'ok' : '')}</td><td class="small" style="white-space:pre-wrap">${esc(r.text)}</td></tr>`).join('') || '<tr><td class="muted">Nothing yet</td></tr>'}</tbody></table></div>`
@@ -1508,7 +1508,7 @@ route('/settings', async () => {
     const mb = (b) => (b / 1024 / 1024).toFixed(1) + ' MB';
     body = `<div class="card"><p><b>${mb(st.used)}</b> of ${mb(st.limit)} used (${pct}%)</p><div style="background:var(--line);border-radius:6px;height:12px"><div style="width:${Math.min(100, pct)}%;background:${pct > 90 ? 'var(--bad)' : 'var(--brand)'};height:12px;border-radius:6px"></div></div>
     <h3>By type</h3>${st.byKind.map((k) => `<div>${esc(k.kind)}: ${mb(k.bytes)} (${k.n} files)</div>`).join('') || '<span class="muted">No files yet</span>'}
-    <p class="small muted">Attendance and fee records do not count. When storage is full only new uploads stop. Buy more under <a href="#/billing">Billing</a>.</p></div>`;
+    <p class="small muted">Attendance and fee records do not count. When storage is full only new uploads stop. Buy more under <a href="/billing">Billing</a>.</p></div>`;
   }
   if (tab === 'data') body = `<div class="card stack"><p>Download every record of your institution as one file at any time. Your data is never deleted for non-payment.</p><a class="btn primary" href="/api/export">Download full backup (JSON)</a>
     <p class="small muted">To close your account permanently, download the backup first, then write to the platform owner from Billing.</p></div>`;
@@ -1538,7 +1538,7 @@ route('/settings', async () => {
     const rows = await S('/audit').catch(() => []);
     body = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small" style="max-width:420px;overflow-wrap:anywhere">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>`;
   }
-  view(`<h1>Settings</h1><div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings?tab=${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>${body}`);
+  view(`<h1>Settings</h1><div class="tabs">${tabs.map(([k, l]) => `<a href="/settings?tab=${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>${body}`);
   const sf = $('#sf'); if (sf) sf.onsubmit = async (e) => {
     e.preventDefault(); const b = formData(e.target);
     const settings = {}; for (const k of Object.keys(ME.settings)) if (k !== 'payment_accounts') settings[k] = b[k] ?? '0';
