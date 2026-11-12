@@ -1657,11 +1657,11 @@ route('/owner', async () => {
   <h2>Renewals this week</h2><div class="card small">${d.renewalsThisWeek.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)}${s.slips_waiting ? ' (slip uploaded)' : ''}`).join('<br>') || '–'}</div>
   <h2>Trials ending in 7 days</h2><div class="card small">${d.trialsEnding.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)} · ${s.students} students`).join('<br>') || '–'}</div>
   <div class="row between"><h2>All institutions</h2><div class="row"><button class="btn" id="ann">Announce</button><button class="btn" id="bill">Run billing now</button><button class="btn primary" id="new">Add institution</button></div></div>
-  <div class="table-wrap"><table><thead><tr><th>School</th><th>Status</th><th>Plan</th><th>Renews</th><th class="num">Students</th><th class="num">Storage</th><th>Support access</th><th></th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Institution</th><th>Status</th><th>Plan</th><th>Renews</th><th class="num">Students</th><th class="num">Storage</th><th>Support access</th><th></th></tr></thead><tbody>
   ${d.schools.map((s) => `<tr><td>${esc(s.name)}<div class="muted small">${esc(institutionLabel(s.kind))} · ${esc(s.id)}</div></td><td>${badge(s.status, s.status === 'active' ? 'ok' : s.status === 'trial' ? 'info' : 'bad')}</td><td>${esc(planLabel(s.tier))} · ${esc(s.cycle)}${s.price_override != null ? ` · ${money(s.price_override)} fixed` : ''}</td>
   <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 3).toFixed(2)} / ${(Number(s.base_storage_gb || 0) + Number(s.extra_storage_gb || 0)).toFixed(1)} GB</td><td class="small">${s.support_until && s.support_until > new Date().toISOString() ? 'until ' + fmtTime(s.support_until) : '–'}</td>
   <td><button class="btn small" data-ed="${s.id}">Change</button></td></tr>`).join('')}
-  </tbody></table></div><p class="small muted">You see billing and usage only — never a school's records.</p>`);
+  </tbody></table></div><p class="small muted">You manage institution accounts, subscriptions and storage allocations. Academic records remain private unless temporary support access is explicitly granted.</p>`);
   const storageQueue = document.createElement('section');
   storageQueue.className = 'stack';
   storageQueue.innerHTML = '<h2>Extra storage requests</h2>' +
@@ -1692,7 +1692,6 @@ route('/owner', async () => {
   $('#bill').onclick = async () => { await act(() => api('/api/owner/run-billing', { body: {} }), 'Billing run complete'); render(); };
   $('#new').onclick = () => modal(`<h2>Add institution</h2><form id="nf" class="form"><div class="full"><label>Institution name</label><input name="name" required></div>
     <div><label>Institution category</label><select name="kind"><option value="school">School</option><option value="college">College</option><option value="university">University</option><option value="academy">Academy</option><option value="training_institute">Training institute</option><option value="other">Other education provider</option></select></div>
-     <div><label>Institution category</label><select name="kind"><option value="school">School</option><option value="college">College</option><option value="university">University</option><option value="academy">Academy</option><option value="training_institute">Training institute</option><option value="other">Other education provider</option></select></div>
      <div><label>Main administrator name</label><input name="admin_name" required></div><div><label>Administrator Google email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
     <div class="full row"><button class="btn primary">Create (starts on trial)</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#nf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/schools', { body: formData(e.target) }), 'Institution created'); closeModal(); render(); };
