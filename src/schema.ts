@@ -124,7 +124,6 @@ CREATE TABLE IF NOT EXISTS file_upload_reservations (
 CREATE INDEX IF NOT EXISTS file_reservations_created ON file_upload_reservations(created_at);
 CREATE INDEX IF NOT EXISTS vouchers_status_due ON vouchers(status, due_date);
 CREATE INDEX IF NOT EXISTS payments_status_verified ON payments(status, verified_at);
-CREATE INDEX IF NOT EXISTS audit_created ON audit_log(created_at);
 
 -- Messages the admin sends from their own phone via WhatsApp or SMS (no paid gateway).
 CREATE TABLE IF NOT EXISTS phone_outbox (
@@ -143,6 +142,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_entity ON audit_log(entity, entity_id);
+CREATE INDEX IF NOT EXISTS audit_created ON audit_log(created_at);
 `;
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
