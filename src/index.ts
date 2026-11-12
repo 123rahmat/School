@@ -151,20 +151,44 @@ app.post('/api/auth/logout', async (c) => {
 });
 
 app.post('/api/auth/google', async (c) => {
-  const { credential, pick } = await c.req.json<any>();
+  const { credential, pick, role } = await c.req.json<any>();
   const identity = await verifyGoogleIdentity(c.env, credential);
+  const requestedRole = role ? String(role) : '';
+  const allowedRoles = new Set(['main_admin', 'teacher', 'parent']);
+  if (requestedRole && !allowedRoles.has(requestedRole)) fail(400, 'Choose a valid account type.');
 
-  // The platform owner uses the same verified Google sign-in, with no email-code fallback.
+  // Platform owner access is available only through the main-admin entry.
   if (identity.email === normId(c.env.OWNER_EMAIL)) {
+    if (requestedRole && requestedRole !== 'main_admin') fail(403, 'This is the platform owner account. Choose Main administrator.');
     await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
     return c.json({ ok: true, kind: 'owner' });
   }
 
-  const rows = await loginRows(c.env, identity.email);
-  if (!rows.length) fail(403, 'This Google email is not linked to an institution. Create an institution account or ask your institution administrator to register this exact email.');
+  let rows = await loginRows(c.env, identity.email);
+  if (!rows.length) fail(403, 'No account is registered for this Google email. To create a new workspace, register an institution. Teachers and parents must be added by their institution administrator.');
+
+  if (requestedRole) {
+    const matching: any[] = [];
+    for (const row of rows) {
+      let actualRole = row.kind === 'guardian' ? 'parent' : 'teacher';
+      if (row.kind === 'staff') {
+        const ctx = await ctxFor(c.env, row.school_id, 'staff', row.ref_id);
+        const profile = await callSchoolJson(c.env, ctx, '/me');
+        actualRole = profile.isMainAdmin ? 'main_admin' : 'teacher';
+      }
+      if (actualRole === requestedRole) matching.push(row);
+    }
+    rows = matching;
+    if (!rows.length) {
+      if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. Register a new institution only when you are creating a new institution.');
+      if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
+      fail(403, 'No parent profile is registered for this Google email. Ask your institution administrator to add your email to your child’s guardian profile.');
+    }
+  }
+
   if (rows.length > 1 && (pick === undefined || pick === null)) {
     return c.json({ choose: rows.map((r, i) => ({
-      pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : 'Staff'}`,
+      pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : requestedRole === 'main_admin' ? 'Main administrator' : 'Teacher / staff'}`,
     })) });
   }
   return finishLogin(c, rows, pick);
@@ -491,7 +515,10 @@ app.route('/api/owner', owner);
 app.get('/api/whoami', async (c) => {
   const s = await loadSession(c);
   if (!s) return c.json({ signedIn: false });
-  if (s.kind === 'owner') return c.json({ signedIn: true, kind: 'owner', name: 'Owner' });
+  if (s.kind === 'owner') return c.json({
+    signedIn: true, kind: 'owner', name: 'Owner',
+    userId: (await sha256('platform-owner:' + normId(c.env.OWNER_EMAIL))).slice(0, 32),
+  });
   const ctx = await ctxFor(c.env, s.school_id, s.kind as any, s.ref_id);
   const r = await callSchool(c.env, ctx, '/me');
   if (!r.ok) return c.json({ signedIn: false });
