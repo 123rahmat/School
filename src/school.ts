@@ -2014,8 +2014,12 @@ export class SchoolDO extends DurableObject<Env> {
         }
         let st: Row | null = null;
         if (sid) { try { st = this.student(a, sid); } catch { st = null; } }
-        if (st && !this.isAdmin(a) && !(this.setting('teacher_upload_results') === '1' && a.classTeacherOf.has(st.class_id))) fail(403, 'You cannot upload results for this class');
-        if (!st && !this.isAdmin(a)) { out.push({ file: file.name, ok: false, error: 'No student with this registration number in your class' }); continue; }
+        const canManageResultClass = !!st && (this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, st.class_id)));
+        const teacherUploadAllowed = !!st && this.setting('teacher_upload_results') === '1' && a.classTeacherOf.has(st.class_id);
+        if (st && !canManageResultClass && !teacherUploadAllowed) fail(403, 'You cannot upload results for this class');
+        if (!st && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && a.scopeAll))) {
+          out.push({ file: file.name, ok: false, error: 'No student with this registration number in your assigned results scope' }); continue;
+        }
         const key = await this.putFile(ctx, a, file, 'results', 10);
         const id = 'rs_' + rid(10);
         this.run('INSERT INTO results (id, student_id, session, title, file_key, file_name, uploaded_by, created_at) VALUES (?,?,?,?,?,?,?,?)', id, st?.id ?? null, session, title, key, file.name, a.key, now());
@@ -2029,17 +2033,27 @@ export class SchoolDO extends DurableObject<Env> {
       const [w, p] = this.studentScope(a, 's');
       const rows = this.q(`SELECT r.id, r.title, r.session, r.file_name, r.published_at, r.created_at, r.student_id, s.name AS student_name, s.reg_no, c.name AS class_name, c.id AS class_id
         FROM results r LEFT JOIN students s ON s.id=r.student_id LEFT JOIN classes c ON c.id=s.class_id WHERE r.deleted_at IS NULL AND (r.student_id IS NULL OR ${w}) ORDER BY r.created_at DESC LIMIT 1000`, ...p);
-      return c.json(this.isAdmin(a) ? rows : rows.filter((r) => r.student_id));
+      const canAssignUnmatched = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && a.scopeAll);
+      return c.json(rows.filter((r) => !!r.student_id || canAssignUnmatched));
     });
     app.post('/results/:id/assign', async (c) => {
-      const a = c.get('actor'); this.requireAdmin(a);
-      const { student_id } = await c.req.json<any>(); this.student(a, student_id);
-      this.run('UPDATE results SET student_id=? WHERE id=?', student_id, c.req.param('id'));
+      const a = c.get('actor');
+      const result = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
+      if (!result || result.student_id) fail(404, 'Unassigned result not found');
+      const { student_id, confirm } = await c.req.json<any>();
+      const student = this.student(a, student_id);
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, student.class_id)))) fail(403, 'Results management is not assigned for this class');
+      if (confirm !== true) fail(400, 'Confirm assigning this result PDF to the selected student');
+      this.run('UPDATE results SET student_id=? WHERE id=?', student_id, result.id);
+      this.audit(a, 'result.assign', 'student', student_id, { result_id:result.id, title:result.title });
       return c.json({ ok: true });
     });
     app.post('/results/publish', async (c) => {
-      const a = c.get('actor'); this.requireAdmin(a);
-      const { class_id, title } = await c.req.json<any>();
+      const a = c.get('actor');
+      const { class_id, title, confirm } = await c.req.json<any>();
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, class_id)))) fail(403, 'Results publishing permission is required for this class');
+      if (confirm !== true) fail(400, 'Review the result title and class, then confirm publishing to parents');
+      this.classOf(a, class_id);
       const rows = this.q('SELECT r.* FROM results r JOIN students s ON s.id=r.student_id WHERE r.published_at IS NULL AND r.deleted_at IS NULL AND s.class_id=? AND r.title=?', class_id, title);
       for (const r of rows) { this.run('UPDATE results SET published_at=? WHERE id=?', now(), r.id); this.notifyParentOf(r.student_id, 'Result published', `${r.title} is now available.`); }
       this.audit(a, 'results.publish', 'class', class_id, { title, count: rows.length });
@@ -2048,7 +2062,10 @@ export class SchoolDO extends DurableObject<Env> {
     app.delete('/results/:id', (c) => {
       const a = c.get('actor');
       const r = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!r) fail(404, 'Not found');
-      if (!(this.isFullAdmin(a) || (r!.uploaded_by === a.key && !r!.published_at))) fail(403, 'You cannot delete this result');
+      const rclass = r!.student_id ? this.one('SELECT class_id FROM students WHERE id=?', r!.student_id)?.class_id : null;
+      const canManageResult = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && !!rclass && this.inClassScope(a, rclass));
+      if (!(canManageResult || (r!.uploaded_by === a.key && !r!.published_at))) fail(403, 'You cannot delete this result');
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this result PDF');
       this.run('UPDATE results SET deleted_at=? WHERE id=?', now(), r!.id);
       this.run('UPDATE files SET deleted_at=? WHERE key=?', now(), r!.file_key);
       this.audit(a, 'result.delete', 'student', r!.student_id, r!.title);
