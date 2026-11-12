@@ -63,7 +63,7 @@ await call(admin, '/api/s/fees/generate', { month: new Date(Date.now() + 5 * 360
 await call(admin, '/api/s/notices', { audience: 'school', title: 'Welcome back', body: 'School reopens Monday.' });
 for (const h of ['/', '/setup', '/students', `/student/${st.id}`, `/student/${st.id}?tab=attendance`, `/student/${st.id}?tab=fees`, `/student/${st.id}?tab=history`, '/staff', `/staff/${t.id}`, '/classes', `/class/${c.id}`,
   '/attendance', `/attendance/${c.id}`, '/fees', '/fees/unpaid', '/fees/slips', '/fees/defaulters', '/fees/report', '/fees/setup', '/cash', '/notices', '/threads', `/thread/${st.id}`, '/results', '/requests',
-  '/notifications', '/settings', '/settings?tab=holidays', '/settings?tab=devices', '/settings?tab=promotion', '/settings?tab=storage', '/settings?tab=data', '/settings?tab=audit', '/billing'])
+  '/outbox', '/outbox?status=sent', '/notifications', '/settings', '/settings?tab=holidays', '/settings?tab=devices', '/settings?tab=promotion', '/settings?tab=storage', '/settings?tab=data', '/settings?tab=audit', '/billing'])
   await visit(admin, h, 'admin');
 
 console.log('Teacher marks attendance in the UI');

@@ -116,6 +116,13 @@ CREATE TABLE IF NOT EXISTS files (
   key TEXT PRIMARY KEY, size INTEGER NOT NULL, kind TEXT NOT NULL, uploaded_by TEXT NOT NULL, content_type TEXT, created_at TEXT NOT NULL, deleted_at TEXT
 );
 
+-- Messages the admin sends from their own phone via WhatsApp or SMS (no paid gateway).
+CREATE TABLE IF NOT EXISTS phone_outbox (
+  id TEXT PRIMARY KEY, user_key TEXT NOT NULL, name TEXT, phone TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, sent_at TEXT, sent_by TEXT, channel TEXT
+);
+CREATE INDEX IF NOT EXISTS phone_outbox_status ON phone_outbox(status, created_at);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY, user_key TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, link TEXT, created_at TEXT NOT NULL, read_at TEXT
 );
@@ -143,4 +150,5 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   absence_alerts: '1',
   low_attendance_percent: '75',
   reg_prefix: '',
+  phone_messages: '1',
 };

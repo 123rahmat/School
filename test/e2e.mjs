@@ -171,6 +171,15 @@ ok((await S(tok1, 'POST', '/students', { name: 'X', father_name: 'Y', class_id: 
 ok((await S(tok1, 'POST', `/students/${pend.id}/confirm`)).status === 403, 'teacher cannot confirm');
 ok((await S(adminA, 'POST', `/students/${pend.id}/confirm`)).status === 200, 'admin confirms');
 
+console.log('WhatsApp / SMS from admin phone');
+const ob = (await S(adminA, 'GET', '/outbox')).json;
+ok(ob.some((r) => r.phone === phone(1) && /Absent today/.test(r.text)), 'absence alert queued for parent phone');
+ok((await S(tok1, 'GET', '/outbox')).status === 403, 'teacher cannot open the send list');
+const qd = (await S(adminA, 'POST', '/outbox/compose', { to: 'parents', title: 'Holiday', text: 'School closed Friday' })).json;
+ok(qd.queued >= 2, 'admin composes message to all parents');
+await S(adminA, 'POST', '/outbox/mark', { ids: [ob[0].id], channel: 'whatsapp' });
+ok((await S(adminA, 'GET', '/outbox?status=sent')).json.some((r) => r.id === ob[0].id), 'marked as sent');
+
 console.log('Billing and owner panel');
 const bill = (await api(adminA, 'GET', '/api/billing')).json;
 ok(bill.status === 'trial', 'school is on trial');

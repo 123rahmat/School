@@ -130,6 +130,19 @@ export class SchoolDO extends DurableObject<Env> {
 
   notify(userKey: string, title: string, body: string, link?: string) {
     this.run('INSERT INTO notifications (id, user_key, title, body, link, created_at) VALUES (?,?,?,?,?,?)', rid(12), userKey, title, body, link ?? null, now());
+    this.queuePhone(userKey, title, body);
+  }
+
+  /** Queue a WhatsApp/SMS for parents and teachers; the admin sends it from their own phone. */
+  queuePhone(userKey: string, title: string, body: string) {
+    if (this.setting('phone_messages') !== '1') return;
+    let who: Row | null = null, kind = '';
+    if (userKey.startsWith('g:')) { who = this.one('SELECT name, phone FROM guardians WHERE id=?', userKey.slice(2)); kind = 'parent'; }
+    else if (userKey.startsWith('s:')) { who = this.one("SELECT name, phone FROM staff WHERE id=? AND role='teacher' AND active=1", userKey.slice(2)); kind = 'teacher'; }
+    if (!who?.phone) return;
+    const school = this.one("SELECT value FROM meta WHERE key='school_name'")?.value || 'School';
+    this.run('INSERT INTO phone_outbox (id, user_key, name, phone, kind, text, created_at) VALUES (?,?,?,?,?,?,?)',
+      'po_' + rid(12), userKey, who.name, who.phone, kind, `${school}: ${title}\n${body}`, now());
   }
   notifyParentOf(studentId: string, title: string, body: string, link?: string) {
     const s = this.one('SELECT guardian_id, name FROM students WHERE id=?', studentId);
@@ -518,7 +531,8 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ id: a.id, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), canFees: this.canFeesAll(a),
         canManageStudents: this.canManageStudents(a),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
-        unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n) });
+        unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
+        outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
     });
 
     app.get('/dashboard', (c) => { this.requireAdmin(c.get('actor')); return c.json(this.dashboard(c.get('actor'))); });
@@ -1328,6 +1342,32 @@ export class SchoolDO extends DurableObject<Env> {
       if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
       const o = await this.env.FILES.get(r!.file_key); if (!o) fail(404, 'File missing');
       return new Response(o!.body, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${String(r!.file_name || 'result.pdf').replace(/[^\w.-]/g, '_')}"`, 'cache-control': 'private, max-age=300' } });
+    });
+
+    // ----- phone outbox: admin sends from own WhatsApp / SMS -----
+    const outboxAccess = (a: Actor) => { if (!(this.isFullAdmin(a) || a.subrole === 'office')) fail(403, 'Only admins can send phone messages'); };
+    app.get('/outbox', (c) => {
+      outboxAccess(c.get('actor'));
+      const status = c.req.query('status') === 'sent' ? 'sent' : 'pending';
+      return c.json(this.q(`SELECT * FROM phone_outbox WHERE status=? ORDER BY created_at ${status === 'sent' ? 'DESC' : 'ASC'} LIMIT 500`, status));
+    });
+    app.post('/outbox/mark', async (c) => {
+      const a = c.get('actor'); outboxAccess(a);
+      const b = await c.req.json<any>();
+      const st = b.status === 'skipped' ? 'skipped' : 'sent';
+      for (const id of (b.ids || []).slice(0, 500)) this.run("UPDATE phone_outbox SET status=?, sent_at=?, sent_by=?, channel=? WHERE id=? AND status='pending'", st, now(), a.key, b.channel || null, id);
+      return c.json({ ok: true });
+    });
+    app.post('/outbox/compose', async (c) => {
+      const a = c.get('actor'); outboxAccess(a);
+      const b = await c.req.json<any>();
+      if (!b.text) fail(400, 'Write a message');
+      const keys = new Set<string>();
+      if (b.to === 'parents' || b.to === 'all') for (const g of this.q("SELECT DISTINCT guardian_id FROM students WHERE status='active'" + (b.class_id ? ' AND class_id=?' : ''), ...(b.class_id ? [b.class_id] : []))) keys.add('g:' + g.guardian_id);
+      if (b.to === 'teachers' || b.to === 'all') for (const s of this.q("SELECT id FROM staff WHERE active=1 AND role='teacher'")) keys.add('s:' + s.id);
+      const before = Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n);
+      for (const k of keys) this.queuePhone(k, b.title || 'Message', b.text);
+      return c.json({ queued: Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) - before });
     });
 
     // ----- notifications -----

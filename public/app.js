@@ -129,6 +129,7 @@ function nav() {
     items.push(link('/cash', 'Cash held'));
     items.push(link('/notices', 'Notices'));
     if (ME.subrole !== 'accountant' && ME.role !== 'subadmin') items.push(link('/threads', 'Messages'));
+    if (ME.role === 'admin' || ME.subrole === 'office') items.push(link('/outbox', 'WhatsApp / SMS', ME.outbox ? ` <span class="badge warn">${ME.outbox}</span>` : ''));
     items.push(link('/results', 'Results'), link('/requests', 'Change requests'));
     if (ME.isAdmin) { items.push(`<div class="group">School</div>`, link('/settings', 'Settings')); }
     if (ME.isMainAdmin) items.push(link('/billing', 'Billing'));
@@ -1076,6 +1077,39 @@ route('/requests', async () => {
   $$('[data-d]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false } }), 'Declined'); render(); });
 });
 
+// ---------- WhatsApp / SMS from the admin's own phone ----------
+const intlPhone = (p) => { const d = String(p).replace(/\D/g, ''); return d.startsWith('0') ? '92' + d.slice(1) : d; };
+route('/outbox', async () => {
+  const sentView = query().status === 'sent';
+  const [rows, classes] = await Promise.all([S('/outbox' + (sentView ? '?status=sent' : '')), S('/classes')]);
+  ME.outbox = sentView ? ME.outbox : rows.length;
+  // Same text → one group, so SMS can go to many numbers at once.
+  const groups = {};
+  for (const r of rows) (groups[r.text] ||= []).push(r);
+  view(`<div class="row between"><h1>WhatsApp / SMS</h1><div class="row">
+    <a class="btn ${sentView ? '' : 'primary'}" href="#/outbox">To send (${sentView ? '…' : rows.length})</a><a class="btn ${sentView ? 'primary' : ''}" href="#/outbox?status=sent">Sent</a>
+    <button class="btn" id="compose">New message</button></div></div>
+  <p class="muted small">These go out from <b>your own phone number</b>, using WhatsApp or SMS on this device, so there's no extra cost. Tap <b>WhatsApp</b>: the chat opens with the text ready, you press send, and it's marked done. On a phone, <b>SMS to all</b> sends one text to the whole group.</p>
+  ${sentView ? `<div class="table-wrap"><table><tbody>${rows.map((r) => `<tr><td>${fmtTime(r.sent_at)}</td><td>${esc(r.name)} <span class="muted small">${esc(r.kind)} · ${esc(r.phone)}</span></td><td>${badge(r.status === 'sent' ? r.channel || 'sent' : 'skipped', r.status === 'sent' ? 'ok' : '')}</td><td class="small" style="white-space:pre-wrap">${esc(r.text)}</td></tr>`).join('') || '<tr><td class="muted">Nothing yet</td></tr>'}</tbody></table></div>`
+  : Object.entries(groups).map(([text, list], gi) => `<div class="card"><div class="row between"><div style="white-space:pre-wrap;flex:1" dir="auto">${esc(text)}</div>
+    <div class="row">${list.length > 1 ? `<a class="btn small" data-smsall="${gi}" href="sms:${list.map((r) => r.phone).join(',')}?body=${encodeURIComponent(text)}">SMS to all ${list.length}</a>` : ''}<button class="btn small" data-skipall="${gi}">Skip all</button></div></div>
+    <div class="table-wrap" style="margin-top:10px"><table><tbody>${list.map((r) => `<tr id="r_${r.id}"><td>${esc(r.name)} <span class="muted small">${esc(r.kind)}</span></td><td>${esc(r.phone)}</td>
+    <td class="row"><a class="btn small primary" target="_blank" data-send="${r.id}" data-ch="whatsapp" href="https://wa.me/${intlPhone(r.phone)}?text=${encodeURIComponent(r.text)}">WhatsApp</a>
+    <a class="btn small" data-send="${r.id}" data-ch="sms" href="sms:${esc(r.phone)}?body=${encodeURIComponent(r.text)}">SMS</a></td></tr>`).join('')}</tbody></table></div></div>`).join('') || '<div class="card muted">Nothing to send. Absence alerts, fee reminders, receipts and notices show up here automatically.</div>'}`);
+  const glist = Object.values(groups);
+  const mark = (ids, channel, status = 'sent') => S('/outbox/mark', { body: { ids, channel, status } }).catch(() => {});
+  $$('[data-send]').forEach((a) => a.addEventListener('click', () => { mark([a.dataset.send], a.dataset.ch); const tr = $('#r_' + a.dataset.send); if (tr) tr.style.opacity = '.4'; }));
+  $$('[data-smsall]').forEach((a) => a.addEventListener('click', () => { mark(glist[a.dataset.smsall].map((r) => r.id), 'sms'); setTimeout(render, 1500); }));
+  $$('[data-skipall]').forEach((b) => b.onclick = async () => { await mark(glist[b.dataset.skipall].map((r) => r.id), null, 'skipped'); render(); });
+  $('#compose').onclick = () => modal(`<h2>New WhatsApp / SMS</h2><form id="cf" class="form">
+    <div><label>To</label><select name="to"><option value="parents">Parents</option><option value="teachers">Teachers</option><option value="all">Parents and teachers</option></select></div>
+    <div><label>Class (parents only)</label><select name="class_id"><option value="">All classes</option>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="full"><label>Title</label><input name="title" required></div><div class="full"><label>Message (English or Urdu)</label><textarea name="text" required dir="auto"></textarea></div>
+    <div class="full row"><button class="btn primary">Add to send list</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+    $('#cf', m).onsubmit = async (e) => { e.preventDefault(); const r = await act(() => S('/outbox/compose', { body: formData(e.target) })); toast(`${r.queued} message(s) ready to send`); closeModal(); render(); };
+  });
+});
+
 // ---------- notifications ----------
 route('/notifications', async () => {
   const rows = await S('/notifications');
@@ -1101,7 +1135,7 @@ route('/settings', async () => {
       ${f('cash_alert_days', 'Alert when cash held longer than (days)')}${f('low_attendance_percent', 'Low attendance warning below (%)')}
       ${f('reg_prefix', 'Registration number prefix', 'text', 'Empty = current year, e.g. 2026-0001')}
       <div class="full stack">${t('teacher_add_students', 'Class teachers can add students to their own class (admin confirms)')}${t('teacher_verify_slips', 'Class teachers can verify payment slips for their class')}
-      ${t('teacher_upload_results', 'Class teachers can upload results for their class')}${t('absence_alerts', 'Alert parents of absence and late arrival')}${t('result_fee_hold', 'Hide results until fees are cleared')}</div>
+      ${t('phone_messages', 'Queue WhatsApp/SMS for parents and teachers, sent from the admin\'s own phone')}${t('teacher_upload_results', 'Class teachers can upload results for their class')}${t('absence_alerts', 'Alert parents of absence and late arrival')}${t('result_fee_hold', 'Hide results until fees are cleared')}</div>
       ${ME.isMainAdmin ? '<div class="full"><button class="btn primary">Save settings</button></div>' : '<p class="full muted small">Only the main admin can change settings.</p>'}</form>`;
   }
   if (tab === 'holidays') {
