@@ -2,10 +2,11 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
 const read = (path) => readFile(new URL('../' + path, import.meta.url), 'utf8');
-const [wrangler, util, worker, app, sw, school, schema, css, html] = await Promise.all([
+const [wrangler, util, worker, platform, app, sw, school, schema, css, html] = await Promise.all([
   read('wrangler.toml'),
   read('src/util.ts'),
   read('src/index.ts'),
+  read('src/platform.ts'),
   read('public/app.js'),
   read('public/sw.js'),
   read('src/school.ts'),
@@ -19,6 +20,11 @@ assert.match(wrangler, /^GOOGLE_CLIENT_ID = ".+apps\.googleusercontent\.com"$/m,
 assert.match(wrangler, /^name = "PLATFORM"$/m, 'Platform SQLite Durable Object binding must exist');
 assert.doesNotMatch(wrangler, /d1_databases|binding = "DB"/, 'D1 must be removed');
 assert.match(wrangler, /new_sqlite_classes = \["PlatformDO"\]/, 'Platform SQLite migration must exist');
+assert.match(util, /PLATFORM: DurableObjectNamespace/, 'Platform registry must use a Durable Object namespace');
+assert.match(platform, /export class PlatformDO extends DurableObject/, 'Platform registry must be a Durable Object');
+assert.match(platform, /state\.storage\.sql/, 'Platform registry must use its own SQLite storage');
+assert.match(platform, /idFromName\('platform-registry'\)/, 'Platform registry must use a stable singleton identity');
+assert.match(worker, /idFromName\(id\)/, 'Each school must resolve to its own stable Durable Object identity');
 assert.match(wrangler, /^binding = "FILES"$/m, 'R2 binding must exist');
 assert.match(wrangler, /^invocation_logs = true$/m, 'Wrangler observability config must be present');
 
