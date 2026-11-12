@@ -159,15 +159,17 @@ app.post('/api/auth/google', async (c) => {
   const { credential, pick, role } = await c.req.json<any>();
   const identity = await verifyGoogleIdentity(c.env, credential);
   const requestedRole = role ? String(role) : '';
-  const allowedRoles = new Set(['main_admin', 'teacher', 'parent']);
+  const allowedRoles = new Set(['main_admin', 'teacher', 'parent', 'platform_owner']);
   if (requestedRole && !allowedRoles.has(requestedRole)) fail(400, 'Choose a valid account type.');
 
-  // Platform owner access is available only through the main-admin entry.
+  // The dedicated /admin entry requests platform_owner. Only the configured
+  // OWNER_EMAIL can obtain this role; institution administrators cannot.
   if (identity.email === normId(c.env.OWNER_EMAIL)) {
-    if (requestedRole && requestedRole !== 'main_admin') fail(403, 'This is the platform owner account. Choose Main administrator.');
+    if (requestedRole && !['main_admin', 'platform_owner'].includes(requestedRole)) fail(403, 'This is the platform owner account. Use the platform administrator sign-in page.');
     await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
     return c.json({ ok: true, kind: 'owner' });
   }
+  if (requestedRole === 'platform_owner') fail(403, 'This Google account is not authorized for platform administration.');
 
   const allRows = await loginRows(c.env, identity.email);
   let rows = allRows;
