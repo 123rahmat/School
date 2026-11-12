@@ -119,9 +119,9 @@ document.addEventListener('click', (event) => {
 
 async function render() {
   const path = currentPath();
-  if (!ME && !['/', '/login', '/signup'].includes(path)) {
+  if (!ME && !['/login', '/signup'].includes(path)) {
     try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
-    if (!ME) return go('/');
+    if (!ME && !['/', '/login', '/signup'].includes(path)) return go('/');
   }
   if (ME && ['/login', '/signup'].includes(path)) return go('/');
   if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
@@ -1464,7 +1464,7 @@ route('/settings', async () => {
     const f = (k, label, type = 'number', help = '') => `<div><label>${label}</label><input name="${k}" type="${type}" value="${esc(s[k])}">${help ? `<div class="small muted">${help}</div>` : ''}</div>`;
     const t = (k, label) => `<label class="row" style="margin:0"><input type="checkbox" name="${k}" value="1" ${s[k] === '1' ? 'checked' : ''}> ${label}</label>`;
     body = `<form id="sf" class="card form">
-      <div class="full"><label>School name</label><input name="schoolName" value="${esc(schoolName)}"></div>
+      <div class="full"><label>Institution name</label><input name="schoolName" value="${esc(schoolName)}"></div>
       ${f('voucher_day', 'Voucher day of month')}${f('due_day', 'Fee due day of month')}<div class="full"><h3 style="margin-bottom:4px">Late fee fine (optional)</h3><p class="small muted" style="margin:0">Off unless you turn it on. Added automatically after the due date, every month a voucher stays unpaid. You can also add, change or waive a fine on any single voucher from the student's Fees tab.</p></div>
       <div class="full">${t('fine_enabled', 'Charge a late fine automatically')}</div>
       ${f('fine_fixed', 'Fine once after due date (Rs)')}${f('fine_per_day', 'Fine per day late (Rs)')}${f('fine_per_month', 'Fine for each month late (Rs)')}${f('fine_max', 'Maximum fine per voucher (Rs, 0 = no limit)')}
@@ -1605,7 +1605,7 @@ route('/owner', async () => {
     <div class="stat"><div class="n">${d.slips.length}</div><div class="l">Slips to confirm</div></div>
     <div class="stat"><div class="n">${money(d.income.collected)}</div><div class="l">Collected this month</div></div>
     <div class="stat"><div class="n">${money(d.income.expected)}</div><div class="l">Expected (open invoices)</div></div>
-    <div class="stat"><div class="l">Schools by status</div>${Object.entries(d.byStatus).map(([k, v]) => `${esc(k)}: <b>${v}</b>`).join(' · ') || '–'}</div>
+    <div class="stat"><div class="l">Institutions by status</div>${Object.entries(d.byStatus).map(([k, v]) => `${esc(k)}: <b>${v}</b>`).join(' · ') || '–'}</div>
   </div>
   <h2>Today's to-do: slips to confirm</h2>
   <div class="table-wrap"><table><thead><tr><th>School</th><th>Invoice</th><th>Txn ID</th><th class="num">Paid</th><th>Slip</th><th></th></tr></thead><tbody>
@@ -1614,7 +1614,7 @@ route('/owner', async () => {
   </tbody></table></div>
   <h2>Renewals this week</h2><div class="card small">${d.renewalsThisWeek.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)}${s.slips_waiting ? ' (slip uploaded)' : ''}`).join('<br>') || '–'}</div>
   <h2>Trials ending in 7 days</h2><div class="card small">${d.trialsEnding.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)} · ${s.students} students`).join('<br>') || '–'}</div>
-  <div class="row between"><h2>All schools</h2><div class="row"><button class="btn" id="ann">Announce</button><button class="btn" id="bill">Run billing now</button><button class="btn primary" id="new">Add school</button></div></div>
+  <div class="row between"><h2>All institutions</h2><div class="row"><button class="btn" id="ann">Announce</button><button class="btn" id="bill">Run billing now</button><button class="btn primary" id="new">Add institution</button></div></div>
   <div class="table-wrap"><table><thead><tr><th>School</th><th>Status</th><th>Plan</th><th>Renews</th><th class="num">Students</th><th class="num">Storage</th><th>Support access</th><th></th></tr></thead><tbody>
   ${d.schools.map((s) => `<tr><td>${esc(s.name)}<div class="muted small">${esc(s.id)}</div></td><td>${badge(s.status, s.status === 'active' ? 'ok' : s.status === 'trial' ? 'info' : 'bad')}</td><td>${esc(s.tier)} · ${esc(s.cycle)}${s.price_override != null ? ` · ${money(s.price_override)} fixed` : ''}</td>
   <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 2).toFixed(1)} MB</td><td class="small">${s.support_until && s.support_until > new Date().toISOString() ? 'until ' + fmtTime(s.support_until) : '–'}</td>
@@ -1626,7 +1626,7 @@ route('/owner', async () => {
   $('#new').onclick = () => modal(`<h2>Add school</h2><form id="nf" class="form"><div class="full"><label>School name</label><input name="name" required></div>
     <div><label>Main admin name</label><input name="admin_name" required></div><div><label>Admin email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
     <div class="full row"><button class="btn primary">Create (starts on trial)</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#nf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/schools', { body: formData(e.target) }), 'School created'); closeModal(); render(); };
+    $('#nf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/schools', { body: formData(e.target) }), 'Institution created'); closeModal(); render(); };
   });
   $('#ann').onclick = () => modal(`<h2>Announcement to main admins</h2><form id="af" class="form"><div class="full"><label>School</label><select name="school_id"><option value="">All schools</option>${d.schools.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
     <div class="full"><label>Title</label><input name="title" required></div><div class="full"><label>Message</label><textarea name="body"></textarea></div>
