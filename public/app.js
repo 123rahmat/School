@@ -430,7 +430,7 @@ function view(html) {
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
-      toast('Connect to the internet to sign out securely. Your queued attendance will remain saved on this device.');
+      toast('Connect to the internet to sign out securely. Your pending school submissions will remain saved on this device.');
       return;
     }
     try { await api('/api/auth/logout', { body: {} }); }
@@ -668,7 +668,7 @@ function landingPage() {
           <div class="preview-footer"><span>Student records</span><span>Fees</span><span>Results</span><span>Notices</span></div>
         </div>
       </section>
-      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Browser or installable app</span><span>Attendance drafts queue offline</span></section>
+      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Browser or installable app</span><span>School forms queue offline</span></section>
       <section class="landing-section" id="institutions">
         <div class="landing-section-heading"><div class="landing-eyebrow">WHO IT SERVES</div><h2>Made for the people who keep an education institution moving.</h2><p>Give each institution its own workspace, then give each person the tools and access appropriate to their role.</p></div>
         <div class="landing-card-grid three">
@@ -689,7 +689,7 @@ function landingPage() {
           <article class="landing-card"><div class="landing-card-icon">G</div><h3>Notices and parent communication</h3><p>Share notices with the right audience, keep student-related message threads and track notification reads.</p></article>
           <article class="landing-card"><div class="landing-card-icon">H</div><h3>Results and documents</h3><p>Upload result documents for individual students or groups, control publication and keep files access-protected.</p></article>
           <article class="landing-card"><div class="landing-card-icon">I</div><h3>Reports, history and backups</h3><p>Review dashboards, audit important actions, monitor storage and export institution data for backup.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">J</div><h3>Offline attendance queue</h3><p>After opening the relevant class and date online, attendance drafts and submissions can be saved on the device and queued until the connection returns. Other changes still need a live connection.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">J</div><h3>Offline-ready forms</h3><p>Supported school forms and file uploads can be saved on the device and queued until the connection returns. The app shows what is still pending locally and what the school server has confirmed.</p></article>
         </div>
       </section>
       <section class="landing-section landing-workflow" id="how-it-works">
