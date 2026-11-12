@@ -1,0 +1,1412 @@
+import { DurableObject } from 'cloudflare:workers';
+import { Hono } from 'hono';
+import { Env, Ctx, now, rid, normId, pkt, addDays, HttpError, fail } from './util';
+import { SCHOOL_SCHEMA, DEFAULT_SETTINGS } from './schema';
+
+type Row = Record<string, any>;
+
+/** Who is asking, resolved from the school's own records on every request. */
+export interface Actor {
+  key: string; // s:<staffId> | g:<guardianId> | system
+  type: 'staff' | 'guardian' | 'system';
+  id: string;
+  name: string;
+  role: 'admin' | 'subadmin' | 'teacher' | 'parent' | 'system';
+  subrole: string | null;
+  isMain: boolean;
+  classTeacherOf: Set<string>;
+  teaches: Set<string>;
+  children: string[];
+}
+
+/** Spelling-forgiving key: Muhammad / Mohammad / Muhammed all become "mhmd". */
+export function skeleton(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => {
+      w = w.replace(/[^a-z؀-ۿ]/g, '');
+      if (!w) return '';
+      const first = w[0];
+      const rest = w.slice(1).replace(/[aeiouyw]/g, '').replace(/(.)\1+/g, '$1');
+      return (first + rest).replace(/^([aeiou])/, 'a');
+    })
+    .filter(Boolean)
+    .join(' ');
+}
+
+const STATUS_LABEL: Record<string, string> = { P: 'Present', A: 'Absent', L: 'Late', V: 'Leave' };
+const money = (n: number) => 'Rs ' + Math.round(n).toLocaleString('en-PK');
+
+export class SchoolDO extends DurableObject<Env> {
+  sql: SqlStorage;
+  app: Hono<{ Variables: { actor: Actor; ctx: Ctx } }>;
+
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
+    this.sql = state.storage.sql;
+    state.blockConcurrencyWhile(async () => {
+      for (const stmt of SCHOOL_SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) this.sql.exec(stmt);
+    });
+    this.app = this.routes();
+  }
+
+  // ---------- tiny SQL helpers ----------
+  q(sql: string, ...p: any[]): Row[] { return this.sql.exec(sql, ...p).toArray() as Row[]; }
+  one(sql: string, ...p: any[]): Row | null { return this.q(sql, ...p)[0] ?? null; }
+  run(sql: string, ...p: any[]) { this.sql.exec(sql, ...p); }
+  tx<T>(fn: () => T): T { return this.ctx.storage.transactionSync(fn); }
+  setting(k: string): string { return (this.one('SELECT value FROM settings WHERE key=?', k)?.value as string) ?? DEFAULT_SETTINGS[k] ?? ''; }
+  num(k: string) { return Number(this.setting(k)) || 0; }
+
+  async fetch(req: Request): Promise<Response> { return this.app.fetch(req); }
+
+  // ---------- identity & access layer ----------
+  loadActor(ctx: Ctx): Actor {
+    const base = { classTeacherOf: new Set<string>(), teaches: new Set<string>(), children: [] as string[], subrole: null, isMain: false };
+    if (ctx.refId === 'system') return { ...base, key: 'system', type: 'system', id: 'system', name: 'System', role: 'system', isMain: true };
+    if (ctx.kind === 'staff') {
+      const s = this.one('SELECT * FROM staff WHERE id=? AND active=1', ctx.refId);
+      if (!s) fail(401, 'Your account is not active. Please contact the school.');
+      const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main };
+      for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
+      for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
+      return a;
+    }
+    const g = this.one('SELECT * FROM guardians WHERE id=?', ctx.refId);
+    if (!g) fail(401, 'Not found');
+    const kids = this.q("SELECT id FROM students WHERE guardian_id=? AND status='active'", g!.id).map((r) => r.id);
+    if (!kids.length) fail(401, 'No active student is linked to this sign-in.');
+    return { ...base, key: 'g:' + g!.id, type: 'guardian', id: g!.id, name: g!.name || 'Parent', role: 'parent', children: kids };
+  }
+
+  isAdmin(a: Actor) { return a.role === 'admin' || a.role === 'system' || a.role === 'subadmin'; }
+  isFullAdmin(a: Actor) { return a.role === 'admin' || a.role === 'system'; }
+  canFeesAll(a: Actor) { return this.isFullAdmin(a) || a.subrole === 'accountant' || a.subrole === 'office'; }
+  canManageStudents(a: Actor) { return this.isFullAdmin(a) || (a.role === 'subadmin' && a.subrole !== 'accountant'); }
+  requireAdmin(a: Actor) { if (!this.isAdmin(a)) fail(403, 'Only admins can do this'); }
+  requireFullAdmin(a: Actor) { if (!this.isFullAdmin(a)) fail(403, 'Only the admin can do this'); }
+  requireMain(a: Actor) { if (!a.isMain) fail(403, 'Only the main admin can do this'); }
+
+  /** SQL filter for the students this person may see. Every student list goes through it. */
+  studentScope(a: Actor, alias = 'st'): [string, any[]] {
+    if (this.isAdmin(a)) return ['1=1', []];
+    if (a.type === 'guardian') return [`${alias}.guardian_id=?`, [a.id]];
+    const ids = [...a.teaches];
+    if (!ids.length) return ['0=1', []];
+    return [`${alias}.class_id IN (${ids.map(() => '?').join(',')})`, ids];
+  }
+
+  student(a: Actor, id: string, need: 'view' | 'fees' | 'edit' = 'view'): Row {
+    const s = this.one('SELECT * FROM students WHERE id=?', id);
+    if (!s) fail(404, 'Student not found');
+    const st = s!;
+    let ok = false;
+    if (need === 'edit') ok = this.canManageStudents(a);
+    else if (need === 'fees') ok = this.canFeesAll(a) || a.classTeacherOf.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    else ok = this.isAdmin(a) || a.teaches.has(st.class_id) || (a.type === 'guardian' && st.guardian_id === a.id);
+    if (!ok) fail(403, 'You do not have access to this student');
+    return st;
+  }
+
+  classOf(a: Actor, id: string, need: 'view' | 'teacher' = 'view'): Row {
+    const c = this.one('SELECT * FROM classes WHERE id=?', id);
+    if (!c) fail(404, 'Class not found');
+    if (this.isAdmin(a)) return c!;
+    if (need === 'teacher' ? a.classTeacherOf.has(id) : a.teaches.has(id)) return c!;
+    fail(403, 'You do not have access to this class');
+    return c!;
+  }
+
+  writable(ctx: Ctx) {
+    if (ctx.schoolStatus === 'paused') fail(402, 'The school is paused for non-payment. You can view and export data; the main admin can restore it under Billing.');
+  }
+
+  audit(a: Actor, action: string, entity: string | null, entityId: string | null, detail?: any) {
+    this.run('INSERT INTO audit_log (id, user_key, user_name, action, entity, entity_id, detail, created_at) VALUES (?,?,?,?,?,?,?,?)',
+      rid(12), a.key, a.name, action, entity, entityId, detail === undefined ? null : typeof detail === 'string' ? detail : JSON.stringify(detail), now());
+  }
+
+  notify(userKey: string, title: string, body: string, link?: string) {
+    this.run('INSERT INTO notifications (id, user_key, title, body, link, created_at) VALUES (?,?,?,?,?,?)', rid(12), userKey, title, body, link ?? null, now());
+  }
+  notifyParentOf(studentId: string, title: string, body: string, link?: string) {
+    const s = this.one('SELECT guardian_id, name FROM students WHERE id=?', studentId);
+    if (s) this.notify('g:' + s.guardian_id, title, `${s.name}: ${body}`, link ?? `#/student/${studentId}`);
+  }
+  notifyAdmins(title: string, body: string, opts: { mainOnly?: boolean; subrole?: string; link?: string } = {}) {
+    let rows = this.q("SELECT id, role, subrole, is_main FROM staff WHERE active=1 AND role IN ('admin','subadmin')");
+    if (opts.mainOnly) rows = rows.filter((r) => r.is_main);
+    else if (opts.subrole) rows = rows.filter((r) => r.role === 'admin' || r.subrole === opts.subrole);
+    for (const r of rows) this.notify('s:' + r.id, title, body, opts.link);
+  }
+  notifyClassTeacher(classId: string, title: string, body: string, link?: string) {
+    const c = this.one('SELECT class_teacher_id FROM classes WHERE id=?', classId);
+    if (c?.class_teacher_id) this.notify('s:' + c.class_teacher_id, title, body, link);
+  }
+
+  /** Keep the platform sign-in lookup in step with the school's records. */
+  async syncLogin(kind: 'staff' | 'guardian', refId: string, ids: string[], revoke = false) {
+    const schoolId = this.schoolId();
+    const stmts = [this.env.DB.prepare('DELETE FROM logins WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId)];
+    for (const i of [...new Set(ids.map(normId).filter(Boolean))])
+      stmts.push(this.env.DB.prepare('INSERT OR IGNORE INTO logins (identifier, school_id, kind, ref_id) VALUES (?,?,?,?)').bind(i, schoolId, kind, refId));
+    if (revoke) stmts.push(this.env.DB.prepare('UPDATE sessions SET revoked=1 WHERE school_id=? AND kind=? AND ref_id=?').bind(schoolId, kind, refId));
+    await this.env.DB.batch(stmts);
+  }
+  schoolId(): string { return this.one("SELECT value FROM meta WHERE key='school_id'")?.value as string; }
+
+  storageUsed(): number { return Number(this.one('SELECT COALESCE(SUM(size),0) AS n FROM files WHERE deleted_at IS NULL')?.n || 0); }
+
+  async putFile(ctx: Ctx, a: Actor, file: File, kind: string, maxMb = 10): Promise<string> {
+    if (file.size > maxMb * 1024 * 1024) fail(400, `File too large (max ${maxMb} MB)`);
+    if (this.storageUsed() + file.size > ctx.storageLimitBytes) fail(507, 'Storage is full. Ask the main admin to add a storage block.');
+    const key = `${ctx.schoolId}/${kind}/${rid(16)}-${(file.name || 'file').replace(/[^\w.-]/g, '_').slice(-60)}`;
+    await this.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+    this.run('INSERT INTO files (key, size, kind, uploaded_by, content_type, created_at) VALUES (?,?,?,?,?,?)', key, file.size, kind, a.key, file.type, now());
+    const used = this.storageUsed(), lim = ctx.storageLimitBytes;
+    for (const pct of [95, 80]) {
+      if (used / lim >= pct / 100 && (used - file.size) / lim < pct / 100) { this.notifyAdmins('Storage warning', `Storage is ${pct}% full.`, { mainOnly: true }); break; }
+    }
+    return key;
+  }
+
+  // ---------- registration numbers, guardians ----------
+  nextRegNo(): string {
+    const y = pkt().date.slice(0, 4);
+    const prefix = (this.setting('reg_prefix') || y) + '-';
+    const last = this.one('SELECT reg_no FROM students WHERE reg_no LIKE ? ORDER BY length(reg_no) DESC, reg_no DESC LIMIT 1', prefix + '%');
+    const n = last ? Number(String(last.reg_no).slice(prefix.length)) + 1 : 1;
+    return prefix + String(n || 1).padStart(4, '0');
+  }
+
+  guardianFor(phone: string, email: string | null, fatherName: string): string {
+    const p = normId(phone), e = email ? normId(email) : null;
+    const g = this.one('SELECT * FROM guardians WHERE phone=?', p) || (e ? this.one('SELECT * FROM guardians WHERE email=?', e) : null);
+    if (g) {
+      if (e && !g.email) this.run('UPDATE guardians SET email=? WHERE id=?', e, g.id);
+      return g.id;
+    }
+    const id = 'g_' + rid(12);
+    this.run('INSERT INTO guardians (id, phone, email, name, created_at) VALUES (?,?,?,?,?)', id, p, e, fatherName, now());
+    return id;
+  }
+  async syncGuardian(gid: string) {
+    const g = this.one('SELECT * FROM guardians WHERE id=?', gid);
+    const active = this.one("SELECT COUNT(*) AS n FROM students WHERE guardian_id=? AND status='active'", gid)?.n;
+    await this.syncLogin('guardian', gid, active && g ? [g.phone, g.email] : [], !active);
+  }
+
+  currentSession(): Row {
+    let s = this.one('SELECT * FROM academic_sessions WHERE current=1');
+    if (!s) {
+      const y = Number(pkt().date.slice(0, 4));
+      const id = 'ses_' + rid(8);
+      this.run('INSERT INTO academic_sessions (id, name, current, created_at) VALUES (?,?,1,?)', id, `${y}-${y + 1}`, now());
+      s = this.one('SELECT * FROM academic_sessions WHERE id=?', id);
+    }
+    return s!;
+  }
+
+  // ---------- students ----------
+  createStudent(a: Actor, ctx: Ctx, b: Row): Row {
+    for (const f of ['name', 'father_name', 'class_id', 'parent_phone']) if (!String(b[f] ?? '').trim()) fail(400, `Missing ${f.replace('_', ' ')}`);
+    const cls = this.one('SELECT * FROM classes WHERE id=? AND active=1', b.class_id);
+    if (!cls) fail(400, 'Unknown class');
+    const byTeacher = !this.canManageStudents(a);
+    if (byTeacher) {
+      if (this.setting('teacher_add_students') !== '1' || !a.classTeacherOf.has(b.class_id)) fail(403, 'Only the class teacher can add students to their own class, if the admin allows it');
+    }
+    const activeCount = Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status!='left'")?.n || 0);
+    if (activeCount >= ctx.studentCap) fail(402, `Your plan allows ${ctx.studentCap} students. Upgrade under Billing.`);
+    const reg = String(b.reg_no || '').trim() || this.nextRegNo();
+    if (this.one('SELECT 1 FROM students WHERE reg_no=?', reg)) fail(409, `Registration number ${reg} already exists`);
+    const phone = normId(b.parent_phone);
+    if (!/^0\d{10}$/.test(phone)) fail(400, 'Parent phone should look like 03001234567');
+    const id = 'st_' + rid(12);
+    const gid = this.guardianFor(phone, b.parent_email || null, b.father_name);
+    const status = byTeacher ? 'pending' : 'active';
+    this.run(`INSERT INTO students (id, reg_no, name, father_name, guardian_id, class_id, parent_phone, parent_email, dob, gender, address, admission_date,
+      status, added_by, confirmed_by, search_key, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      id, reg, b.name.trim(), b.father_name.trim(), gid, b.class_id, phone, b.parent_email ? normId(b.parent_email) : null,
+      b.dob || null, b.gender || null, b.address || null, b.admission_date || pkt().date, status, a.key, byTeacher ? null : a.key,
+      skeleton(b.name + ' ' + b.father_name), now());
+    this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), id, b.class_id, this.currentSession().id, pkt().date);
+    this.audit(a, 'student.add', 'student', id, { reg_no: reg, status });
+    if (byTeacher) this.notifyAdmins('Student awaiting confirmation', `${b.name} added to ${cls!.name} by ${a.name}`, { link: '#/students?status=pending' });
+    return this.one('SELECT * FROM students WHERE id=?', id)!;
+  }
+
+  duplicateWarning(b: Row): string | null {
+    const d = this.one("SELECT reg_no FROM students WHERE lower(name)=lower(?) AND lower(father_name)=lower(?) AND class_id=? AND status!='left'", b.name?.trim(), b.father_name?.trim(), b.class_id);
+    return d ? `A student with the same name and father's name already exists in this class (${d.reg_no}).` : null;
+  }
+
+  // ---------- attendance ----------
+  attendanceSheet(a: Actor, classId: string, date: string) {
+    const cls = this.classOf(a, classId);
+    const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
+    const students = this.q(`SELECT s.id, s.name, s.father_name, s.reg_no, COALESCE(r.status,'P') AS status FROM students s
+      LEFT JOIN attendance_records r ON r.student_id=s.id AND r.date=? WHERE s.class_id=? AND s.status IN ('active','pending') ORDER BY s.name`, date, classId);
+    const holiday = this.one('SELECT name FROM holidays WHERE date=?', date);
+    return { class: cls, date, status: day?.status || 'new', submitted_at: day?.submitted_at, submitted_by: day?.submitted_by, holiday: holiday?.name || null, students };
+  }
+
+  saveAttendance(a: Actor, classId: string, date: string, records: Record<string, string>, submit: boolean) {
+    this.classOf(a, classId, 'teacher');
+    if (date > pkt().date) fail(400, 'Cannot mark attendance for a future date');
+    if (this.one('SELECT 1 FROM holidays WHERE date=?', date)) fail(400, 'This date is a holiday');
+    const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
+    if (day?.status === 'submitted') fail(409, 'Attendance is already submitted. Send a change request to the admin.');
+    const valid = new Set(this.q("SELECT id FROM students WHERE class_id=? AND status IN ('active','pending')", classId).map((r) => r.id));
+    const t = now();
+    this.tx(() => {
+      for (const sid of valid) {
+        const st = records[sid] && STATUS_LABEL[records[sid]] ? records[sid] : 'P';
+        this.run(`INSERT INTO attendance_records (student_id, class_id, date, status, marked_by, updated_at) VALUES (?,?,?,?,?,?)
+          ON CONFLICT(student_id, date) DO UPDATE SET status=excluded.status, marked_by=excluded.marked_by, updated_at=excluded.updated_at, class_id=excluded.class_id`,
+          sid, classId, date, st, a.key, t);
+      }
+      this.run(`INSERT INTO attendance_days (class_id, date, status, submitted_by, submitted_at) VALUES (?,?,?,?,?)
+        ON CONFLICT(class_id, date) DO UPDATE SET status=excluded.status, submitted_by=excluded.submitted_by, submitted_at=excluded.submitted_at`,
+        classId, date, submit ? 'submitted' : 'draft', submit ? a.key : null, submit ? t : null);
+    });
+    if (submit) {
+      this.audit(a, 'attendance.submit', 'class', classId, { date });
+      if (this.setting('absence_alerts') === '1') {
+        for (const r of this.q("SELECT student_id, status FROM attendance_records WHERE class_id=? AND date=? AND status IN ('A','L')", classId, date))
+          this.notifyParentOf(r.student_id, r.status === 'A' ? 'Absent today' : 'Late today', `marked ${STATUS_LABEL[r.status].toLowerCase()} on ${date}.`);
+      }
+      this.checkAbsenceStreaks(classId, date);
+    }
+    return this.attendanceSheet(a, classId, date);
+  }
+
+  checkAbsenceStreaks(classId: string, date: string) {
+    for (const r of this.q("SELECT student_id FROM attendance_records WHERE class_id=? AND date=? AND status='A'", classId, date)) {
+      const last = this.q('SELECT status FROM attendance_records WHERE student_id=? AND date<=? ORDER BY date DESC LIMIT 3', r.student_id, date);
+      if (last.length === 3 && last.every((x) => x.status === 'A')) {
+        const s = this.one('SELECT name FROM students WHERE id=?', r.student_id)!;
+        this.notifyClassTeacher(classId, 'Absent 3 days in a row', `${s.name} has been absent for 3 school days in a row.`, `#/student/${r.student_id}`);
+        this.notifyAdmins('Absent 3 days in a row', `${s.name} has been absent for 3 school days in a row.`, { subrole: 'coordinator', link: `#/student/${r.student_id}` });
+      }
+    }
+  }
+
+  correctAttendance(a: Actor, studentId: string, date: string, status: string, reason: string) {
+    if (!STATUS_LABEL[status]) fail(400, 'Unknown status');
+    if (!reason) fail(400, 'A reason is required');
+    const st = this.student(a, studentId);
+    const old = this.one('SELECT status FROM attendance_records WHERE student_id=? AND date=?', studentId, date);
+    this.run(`INSERT INTO attendance_records (student_id, class_id, date, status, marked_by, source, updated_at) VALUES (?,?,?,?,?, 'correction', ?)
+      ON CONFLICT(student_id, date) DO UPDATE SET status=excluded.status, marked_by=excluded.marked_by, source='correction', updated_at=excluded.updated_at`,
+      studentId, st.class_id, date, status, a.key, now());
+    this.audit(a, 'attendance.correct', 'student', studentId, { date, old: old?.status ?? null, new: status, reason });
+    this.notifyParentOf(studentId, 'Attendance corrected', `${date} changed from ${STATUS_LABEL[old?.status] || 'not marked'} to ${STATUS_LABEL[status]}. Reason: ${reason}`);
+  }
+
+  monthAttendance(studentIds: string[], month: string) {
+    if (!studentIds.length) return [];
+    return this.q(`SELECT student_id, date, status FROM attendance_records WHERE date LIKE ? AND student_id IN (${studentIds.map(() => '?').join(',')}) ORDER BY date`, month + '%', ...studentIds);
+  }
+
+  // ---------- fees ----------
+  voucherTotal(v: Row) { return v.current - v.discount + v.arrears + v.fine; }
+  voucherBalance(v: Row) { return this.voucherTotal(v) - v.paid; }
+
+  generateVouchers(a: Actor, month: string, studentIds?: string[]) {
+    if (!/^\d{4}-\d{2}$/.test(month)) fail(400, 'Month should be YYYY-MM');
+    const heads = this.q('SELECT * FROM fee_heads');
+    const dueDay = Math.min(28, Math.max(1, this.num('due_day') || 10));
+    const issue = pkt().date;
+    const due = `${month}-${String(dueDay).padStart(2, '0')}`;
+    let students = this.q("SELECT * FROM students WHERE status='active'");
+    if (studentIds) students = students.filter((s) => studentIds.includes(s.id));
+    let created = 0;
+    let num = Number(this.one('SELECT COALESCE(MAX(number),1000) AS n FROM vouchers')!.n);
+    // Sibling discount: from setting? Discounts are stored per student; nothing automatic beyond what the admin sets.
+    this.tx(() => {
+      for (const s of students) {
+        if (this.one('SELECT 1 FROM vouchers WHERE student_id=? AND month=?', s.id, month)) continue;
+        const lines = this.q('SELECT h.name, p.amount FROM fee_plans p JOIN fee_heads h ON h.id=p.head_id WHERE p.class_id=? AND h.monthly=1 AND p.amount>0', s.class_id);
+        if (!lines.length && !heads.length) continue;
+        const current = lines.reduce((t, l) => t + l.amount, 0);
+        const discount = Math.min(current, this.q('SELECT amount FROM student_discounts WHERE student_id=?', s.id).reduce((t, d) => t + d.amount, 0));
+        const prev = this.q("SELECT * FROM vouchers WHERE student_id=? AND status IN ('unpaid','partial') AND month<?", s.id, month);
+        const arrears = prev.reduce((t, v) => t + this.voucherBalance(v), 0);
+        for (const v of prev) this.run("UPDATE vouchers SET status='carried' WHERE id=?", v.id);
+        if (current - discount + arrears <= 0) continue;
+        const id = 'v_' + rid(12);
+        num += 1;
+        this.run(`INSERT INTO vouchers (id, number, student_id, class_id, month, issue_date, due_date, current, discount, arrears, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, id, num, s.id, s.class_id, month, issue, due, current, discount, arrears, now());
+        for (const l of lines) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', id, l.name, l.amount);
+        if (discount) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', id, 'Discount', -discount);
+        if (arrears) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', id, 'Arrears', arrears);
+        this.notifyParentOf(s.id, 'Fee voucher issued', `${money(current - discount + arrears)} for ${month}, due ${due}.`, `#/student/${s.id}`);
+        created++;
+      }
+    });
+    this.audit(a, 'vouchers.generate', 'month', month, { created });
+    return { created };
+  }
+
+  latestVoucher(studentId: string): Row | null {
+    return this.one("SELECT * FROM vouchers WHERE student_id=? AND status!='carried' ORDER BY month DESC LIMIT 1", studentId);
+  }
+
+  applyVerified(p: Row) {
+    const v = this.one('SELECT * FROM vouchers WHERE id=?', p.voucher_id)!;
+    const paid = v.paid + p.amount;
+    const status = paid >= this.voucherTotal(v) ? 'paid' : 'partial';
+    const receipt = Number(this.one('SELECT COALESCE(MAX(receipt_no),0) AS n FROM payments')!.n) + 1;
+    this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', paid, status, v.id);
+    this.run("UPDATE payments SET status='verified', receipt_no=?, verified_at=? WHERE id=?", receipt, now(), p.id);
+    this.notifyParentOf(p.student_id, 'Payment received', `${money(p.amount)} received. Receipt #${receipt}. Balance ${money(this.voucherTotal(v) - paid)}.`, `#/receipt/${p.id}`);
+    this.notifyClassTeacher(p.class_id, 'Fee paid', `Receipt #${receipt}: ${money(p.amount)} for ${this.one('SELECT name FROM students WHERE id=?', p.student_id)!.name}.`);
+    return receipt;
+  }
+
+  canVerify(a: Actor, p: Row) {
+    if (this.canFeesAll(a)) return true;
+    return a.classTeacherOf.has(p.class_id) && this.setting('teacher_verify_slips') === '1' && p.method !== 'cash_teacher';
+  }
+
+  // ---------- daily automation ----------
+  runCron(ctx: Ctx) {
+    const t = pkt();
+    const paused = ctx.schoolStatus === 'paused';
+    const ran = (k: string) => { if (this.one('SELECT 1 FROM meta WHERE key=?', k)) return true; this.run('INSERT INTO meta VALUES (?,?)', k, now()); return false; };
+    const sys = this.loadActor({ ...ctx, refId: 'system' });
+    const isHoliday = !!this.one('SELECT 1 FROM holidays WHERE date=?', t.date) || t.weekday === 0;
+
+    if (!paused) {
+      // Monthly vouchers on the voucher day.
+      if (t.day >= (this.num('voucher_day') || 1) && !ran('vouchers:' + t.month) && this.q('SELECT 1 FROM fee_plans LIMIT 1').length) this.generateVouchers(sys, t.month);
+
+      // Attendance not submitted by the deadline.
+      if (!isHoliday && t.hour >= (this.num('attendance_deadline_hour') || 10) && !ran('att-reminder:' + t.date)) {
+        const missing = this.q(`SELECT c.* FROM classes c WHERE c.active=1 AND NOT EXISTS
+          (SELECT 1 FROM attendance_days d WHERE d.class_id=c.id AND d.date=? AND d.status='submitted')`, t.date);
+        for (const c of missing) if (c.class_teacher_id) this.notify('s:' + c.class_teacher_id, 'Attendance not submitted', `${c.name}: please submit today's attendance.`, `#/attendance/${c.id}`);
+        if (missing.length) this.notifyAdmins('Attendance pending', `${missing.length} class(es) have not submitted: ${missing.map((c) => c.name).join(', ')}`, { subrole: 'coordinator' });
+      }
+
+      // Late fines and fee reminders (once a day at 9 AM or later).
+      if (t.hour >= 9 && !ran('fees-daily:' + t.date)) {
+        const fixed = this.num('fine_fixed'), perDay = this.num('fine_per_day'), before = this.num('reminder_days_before') || 3;
+        for (const v of this.q("SELECT * FROM vouchers WHERE status IN ('unpaid','partial')")) {
+          const late = Math.round((Date.parse(t.date) - Date.parse(v.due_date)) / 864e5);
+          if (late > 0 && (fixed || perDay)) {
+            const fine = fixed + perDay * late;
+            if (fine !== v.fine) this.run('UPDATE vouchers SET fine=? WHERE id=?', fine, v.id);
+          }
+          if (this.one('SELECT 1 FROM reminder_pauses WHERE student_id=?', v.student_id)) continue;
+          const remind = late === -before || late === 0 || (late > 0 && late % 7 === 0);
+          if (remind) {
+            const bal = this.voucherBalance({ ...v, fine: late > 0 ? fixed + perDay * late : v.fine });
+            this.notifyParentOf(v.student_id, late < 0 ? 'Fee due soon' : late === 0 ? 'Fee due today' : 'Fee overdue', `${money(bal)} for ${v.month} (due ${v.due_date}).`, `#/student/${v.student_id}`);
+            this.run('UPDATE vouchers SET last_reminder=? WHERE id=?', now(), v.id);
+          }
+        }
+        // Cash held too long.
+        const days = this.num('cash_alert_days') || 3;
+        const old = this.q(`SELECT held_by, SUM(amount) AS amt, MIN(created_at) AS since FROM payments WHERE method='cash_teacher' AND handover_id IS NULL
+          AND status IN ('submitted','verified') GROUP BY held_by HAVING MIN(created_at) < ?`, new Date(Date.now() - days * 864e5).toISOString());
+        for (const r of old) {
+          const s = this.one('SELECT name FROM staff WHERE id=?', String(r.held_by).slice(2));
+          this.notifyAdmins('Cash held too long', `${s?.name || 'A teacher'} has held ${money(r.amt)} since ${String(r.since).slice(0, 10)}.`, { subrole: 'accountant', link: '#/cash' });
+        }
+      }
+
+      // End-of-day summary for the main admin.
+      if (t.hour >= 18 && !ran('summary:' + t.date)) {
+        const d = this.dashboard(sys);
+        this.notifyAdmins('Daily summary', `Attendance ${d.attendance.percent}% (${d.attendance.submitted}/${d.attendance.classes} classes). Collected today ${money(d.fees.collectedToday)}. Slips waiting ${d.fees.slipsWaiting}. Cash with teachers ${money(d.fees.cashWithTeachers)}.`, { mainOnly: true, link: '#/' });
+      }
+    }
+
+    // Recycle bin: remove files deleted more than 30 days ago.
+    const cutoff = new Date(Date.now() - 30 * 864e5).toISOString();
+    for (const f of this.q('SELECT key FROM files WHERE deleted_at IS NOT NULL AND deleted_at<?', cutoff)) {
+      this.ctx.waitUntil(this.env.FILES.delete(f.key));
+      this.run('DELETE FROM files WHERE key=?', f.key);
+    }
+    this.run('DELETE FROM notifications WHERE created_at<?', new Date(Date.now() - 180 * 864e5).toISOString());
+
+    return { students: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status!='left'")!.n), storage_bytes: this.storageUsed() };
+  }
+
+  dashboard(a: Actor) {
+    const t = pkt();
+    const classes = this.q('SELECT id, name, class_teacher_id FROM classes WHERE active=1 ORDER BY grade, name');
+    const days = new Map(this.q('SELECT class_id, status FROM attendance_days WHERE date=?', t.date).map((r) => [r.class_id, r.status]));
+    const counts = this.q("SELECT class_id, status, COUNT(*) AS n FROM attendance_records WHERE date=? GROUP BY class_id, status", t.date);
+    const perClass = classes.map((c) => {
+      const cs = counts.filter((x) => x.class_id === c.id);
+      const total = cs.reduce((s, x) => s + x.n, 0), present = cs.filter((x) => x.status === 'P' || x.status === 'L').reduce((s, x) => s + x.n, 0);
+      return { id: c.id, name: c.name, status: days.get(c.id) || 'not started', present, total };
+    });
+    const sub = perClass.filter((c) => c.status === 'submitted');
+    const tot = sub.reduce((s, c) => s + c.total, 0), pres = sub.reduce((s, c) => s + c.present, 0);
+    const startUtc = new Date(Date.parse(t.date + 'T00:00:00Z') - 5 * 3600e3).toISOString();
+    return {
+      date: t.date,
+      attendance: { classes: classes.length, submitted: sub.length, percent: tot ? Math.round((pres / tot) * 100) : 0, perClass, notSubmitted: perClass.filter((c) => c.status !== 'submitted').map((c) => c.name) },
+      fees: {
+        collectedToday: Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE status='verified' AND verified_at>=?", startUtc)!.n),
+        slipsWaiting: Number(this.one("SELECT COUNT(*) AS n FROM payments WHERE status='submitted' AND method!='cash_teacher'")!.n),
+        cashWithTeachers: Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')")!.n),
+        defaulters: Number(this.one("SELECT COUNT(DISTINCT student_id) AS n FROM vouchers WHERE status IN ('unpaid','partial') AND due_date<?", t.date)!.n),
+      },
+      students: { active: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status='active'")!.n), pending: Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status='pending'")!.n) },
+      changeRequests: Number(this.one("SELECT COUNT(*) AS n FROM change_requests WHERE status='open'")!.n),
+      notices: this.q('SELECT id, title, poster_name, created_at FROM notices WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 5'),
+    };
+  }
+
+  // ---------- routes ----------
+  routes() {
+    const app = new Hono<{ Variables: { actor: Actor; ctx: Ctx } }>();
+    app.onError((err, c) => {
+      if (err instanceof HttpError) return c.json({ error: err.message }, err.status as any);
+      console.error(err);
+      return c.json({ error: String((err as any)?.message || 'Something went wrong') }, 500);
+    });
+
+    // Internal calls from the Worker (never reachable from the browser: the Worker blocks /internal).
+    app.post('/internal/init', async (c) => {
+      const ctx = JSON.parse(c.req.header('x-ctx')!) as Ctx;
+      const b = await c.req.json<any>();
+      if (this.one("SELECT 1 FROM meta WHERE key='school_id'")) fail(409, 'Already initialised');
+      this.run("INSERT INTO meta VALUES ('school_id', ?)", ctx.schoolId);
+      this.run("INSERT INTO meta VALUES ('school_name', ?)", b.name);
+      const id = 'tch_' + rid(12);
+      this.run("INSERT INTO staff (id, name, email, phone, role, is_main, search_key, created_at) VALUES (?,?,?,?, 'admin', 1, ?, ?)",
+        id, b.admin.name, normId(b.admin.email), normId(b.admin.phone) || null, skeleton(b.admin.name), now());
+      for (const h of ['Tuition', 'Admission', 'Exam', 'Transport']) this.run('INSERT INTO fee_heads VALUES (?,?,?)', 'fh_' + rid(8), h, h === 'Tuition' || h === 'Transport' ? 1 : 0);
+      this.currentSession();
+      await this.syncLogin('staff', id, [b.admin.email, b.admin.phone]);
+      return c.json({ ok: true, id });
+    });
+    app.post('/internal/main-admin', (c) => c.json(this.one('SELECT id, name FROM staff WHERE is_main=1 LIMIT 1')));
+    app.post('/internal/notify-admins', async (c) => {
+      const b = await c.req.json<any>();
+      if (b.once) { if (this.one('SELECT 1 FROM meta WHERE key=?', 'n:' + b.once)) return c.json({ ok: true }); this.run('INSERT INTO meta VALUES (?,?)', 'n:' + b.once, now()); }
+      this.notifyAdmins(b.title, b.body, { mainOnly: b.mainOnly, link: '#/billing' });
+      return c.json({ ok: true });
+    });
+    app.post('/internal/cron', (c) => c.json(this.runCron(JSON.parse(c.req.header('x-ctx')!))));
+
+    // Everything else: resolve the actor first.
+    app.use('*', async (c, next) => {
+      const ctx = JSON.parse(c.req.header('x-ctx') || 'null') as Ctx;
+      if (!ctx) fail(401, 'Unauthorised');
+      c.set('ctx', ctx);
+      c.set('actor', this.loadActor(ctx));
+      if (!['GET', 'HEAD'].includes(c.req.method) && !c.req.path.startsWith('/notifications') && !c.req.path.endsWith('/read')) this.writable(ctx);
+      await next();
+    });
+
+    app.get('/me', (c) => {
+      const a = c.get('actor');
+      const classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name').filter((x) => this.isAdmin(a) || a.teaches.has(x.id));
+      const children = a.type === 'guardian' ? this.q("SELECT s.id, s.name, s.reg_no, c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id WHERE s.guardian_id=? AND s.status='active'", a.id) : [];
+      const settings: Row = {};
+      for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = this.setting(k);
+      return c.json({ id: a.id, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), canFees: this.canFeesAll(a),
+        canManageStudents: this.canManageStudents(a),
+        schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
+        unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n) });
+    });
+
+    app.get('/dashboard', (c) => { this.requireAdmin(c.get('actor')); return c.json(this.dashboard(c.get('actor'))); });
+
+    // ----- settings -----
+    app.get('/settings', (c) => {
+      const s: Row = {}; for (const k of Object.keys(DEFAULT_SETTINGS)) s[k] = this.setting(k);
+      return c.json({ settings: s, schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value });
+    });
+    app.post('/settings', async (c) => {
+      const a = c.get('actor'); this.requireMain(a);
+      const b = await c.req.json<any>();
+      for (const [k, v] of Object.entries(b.settings || {})) if (k in DEFAULT_SETTINGS) this.run('INSERT OR REPLACE INTO settings VALUES (?,?)', k, String(v));
+      if (b.schoolName) this.run("INSERT OR REPLACE INTO meta VALUES ('school_name', ?)", b.schoolName);
+      this.audit(a, 'settings.update', null, null, b);
+      return c.json({ ok: true });
+    });
+
+    // ----- staff -----
+    app.get('/staff', (c) => {
+      const a = c.get('actor');
+      if (a.type === 'guardian') fail(403, 'No access');
+      const active = c.req.query('active') !== '0' ? 1 : 0;
+      const cols = this.isAdmin(a) ? '*' : 'id, name, role, subjects, active';
+      const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
+      return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
+    });
+    app.post('/staff', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (!b.name || (!b.email && !b.phone)) fail(400, 'Name and email or phone are required');
+      const role = ['teacher', 'subadmin', 'admin'].includes(b.role) ? b.role : 'teacher';
+      if (role !== 'teacher') this.requireMain(a);
+      const email = normId(b.email) || null, phone = normId(b.phone) || null;
+      if ((email && this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email)) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
+      const id = 'tch_' + rid(12);
+      this.run('INSERT INTO staff (id, name, email, phone, role, subrole, subjects, search_key, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+        id, b.name.trim(), email, phone, role, role === 'subadmin' ? b.subrole || 'office' : null, b.subjects || null, skeleton(b.name), now());
+      await this.syncLogin('staff', id, [email!, phone!]);
+      this.audit(a, 'staff.add', 'staff', id, { name: b.name, role });
+      return c.json(this.one('SELECT * FROM staff WHERE id=?', id));
+    });
+    app.get('/staff/:id', (c) => {
+      const a = c.get('actor');
+      const id = c.req.param('id');
+      if (!this.isAdmin(a) && a.id !== id) fail(403, 'You can only view your own profile');
+      const s = this.one('SELECT * FROM staff WHERE id=?', id);
+      if (!s) fail(404, 'Not found');
+      return c.json({
+        staff: s,
+        classTeacherOf: this.q('SELECT id, name FROM classes WHERE class_teacher_id=?', id),
+        subjects: this.q('SELECT cs.subject, c.name AS class_name, c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', id),
+        submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
+        notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
+        cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
+        history: this.isAdmin(a) ? this.q("SELECT * FROM audit_log WHERE entity='staff' AND entity_id=? ORDER BY created_at DESC LIMIT 50", id) : [],
+      });
+    });
+    app.patch('/staff/:id', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const id = c.req.param('id');
+      const s = this.one('SELECT * FROM staff WHERE id=?', id); if (!s) fail(404, 'Not found');
+      if (s!.is_main && !a.isMain) fail(403, 'Only the main admin can edit the main admin');
+      const b = await c.req.json<any>();
+      const changes: Row = {};
+      for (const k of ['name', 'email', 'phone', 'subjects', 'role', 'subrole']) if (k in b) {
+        let v = b[k]; if (k === 'email' || k === 'phone') v = normId(v) || null;
+        if ((k === 'role' || k === 'subrole') && !a.isMain) continue;
+        if (s![k] !== v) { changes[k] = { old: s![k], new: v }; this.run(`UPDATE staff SET ${k}=? WHERE id=?`, v, id); }
+      }
+      if (changes.name) this.run('UPDATE staff SET search_key=? WHERE id=?', skeleton(b.name), id);
+      const n = this.one('SELECT * FROM staff WHERE id=?', id)!;
+      if (changes.email || changes.phone) await this.syncLogin('staff', id, [n.email, n.phone], true);
+      this.audit(a, 'staff.edit', 'staff', id, changes);
+      return c.json(n);
+    });
+    app.post('/staff/:id/deactivate', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const id = c.req.param('id');
+      const b = await c.req.json<any>();
+      const s = this.one('SELECT * FROM staff WHERE id=?', id); if (!s) fail(404, 'Not found');
+      if (s!.is_main) fail(400, 'The main admin cannot be deactivated');
+      const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + id)!.n);
+      if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${s!.name} still holds ${money(cash)} in cash. Settle it first, or confirm to continue.` }, 409);
+      this.run('UPDATE staff SET active=0, left_at=?, left_reason=? WHERE id=?', b.date || pkt().date, b.reason || null, id);
+      await this.syncLogin('staff', id, [], true);
+      this.audit(a, 'staff.deactivate', 'staff', id, { reason: b.reason, cash });
+      return c.json({ ok: true });
+    });
+    app.post('/staff/:id/reactivate', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const id = c.req.param('id');
+      this.run('UPDATE staff SET active=1, left_at=NULL, left_reason=NULL WHERE id=?', id);
+      const s = this.one('SELECT * FROM staff WHERE id=?', id)!;
+      await this.syncLogin('staff', id, [s.email, s.phone]);
+      this.audit(a, 'staff.reactivate', 'staff', id);
+      return c.json({ ok: true });
+    });
+
+    // ----- classes -----
+    app.get('/classes', (c) => {
+      const a = c.get('actor');
+      if (a.type === 'guardian') fail(403, 'No access');
+      const rows = this.q(`SELECT c.*, t.name AS class_teacher_name, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id AND s.status='active') AS students
+        FROM classes c LEFT JOIN staff t ON t.id=c.class_teacher_id WHERE c.active=1 ORDER BY c.grade, c.name`);
+      return c.json(rows.filter((r) => this.isAdmin(a) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
+    });
+    app.post('/classes', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (!b.name) fail(400, 'Class name is required');
+      const id = 'cl_' + rid(10);
+      this.run('INSERT INTO classes (id, name, grade, section, room, class_teacher_id, created_at) VALUES (?,?,?,?,?,?,?)', id, b.name.trim(), Number(b.grade) || 0, b.section || null, b.room || null, b.class_teacher_id || null, now());
+      if (b.class_teacher_id) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), id, b.class_teacher_id, pkt().date);
+      this.audit(a, 'class.add', 'class', id, b);
+      return c.json(this.one('SELECT * FROM classes WHERE id=?', id));
+    });
+    app.patch('/classes/:id', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const id = c.req.param('id'); const b = await c.req.json<any>();
+      const cl = this.one('SELECT * FROM classes WHERE id=?', id); if (!cl) fail(404, 'Not found');
+      for (const k of ['name', 'grade', 'section', 'room']) if (k in b) this.run(`UPDATE classes SET ${k}=? WHERE id=?`, b[k], id);
+      if ('class_teacher_id' in b && b.class_teacher_id !== cl!.class_teacher_id) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
+      this.audit(a, 'class.edit', 'class', id, b);
+      return c.json(this.one('SELECT * FROM classes WHERE id=?', id));
+    });
+    app.post('/classes/:id/replace-teacher', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      this.replaceTeacher(a, c.req.param('id'), b.teacher_id, b.from_date || pkt().date, !!b.subjects_too);
+      return c.json({ ok: true });
+    });
+    app.post('/classes/:id/subjects', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (!b.subject) fail(400, 'Subject is required');
+      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', 'cs_' + rid(10), c.req.param('id'), b.subject.trim(), b.teacher_id || null);
+      this.audit(a, 'class.subject.add', 'class', c.req.param('id'), b);
+      return c.json({ ok: true });
+    });
+    app.delete('/classes/:id/subjects/:sid', (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
+      this.audit(a, 'class.subject.remove', 'class', c.req.param('id'), c.req.param('sid'));
+      return c.json({ ok: true });
+    });
+    app.get('/classes/:id', (c) => {
+      const a = c.get('actor');
+      const cl = this.classOf(a, c.req.param('id'));
+      const feeAccess = this.canFeesAll(a) || a.classTeacherOf.has(cl.id);
+      const students = this.q("SELECT id, reg_no, name, father_name, status FROM students WHERE class_id=? AND status IN ('active','pending') ORDER BY name", cl.id);
+      const month = pkt().month;
+      const fees = feeAccess ? this.q(`SELECT v.*, s.name AS student_name FROM vouchers v JOIN students s ON s.id=v.student_id WHERE v.class_id=? AND v.month=?`, cl.id, month)
+        .map((v) => ({ id: v.id, student_name: v.student_name, total: this.voucherTotal(v), paid: v.paid, status: v.status })) : null;
+      return c.json({
+        class: { ...cl, class_teacher_name: this.one('SELECT name FROM staff WHERE id=?', cl.class_teacher_id)?.name },
+        subjects: this.q('SELECT cs.subject, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', cl.id),
+        students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
+        history: this.q('SELECT a.from_date, a.to_date, t.name FROM class_teacher_assignments a JOIN staff t ON t.id=a.teacher_id WHERE a.class_id=? ORDER BY a.from_date DESC', cl.id),
+      });
+    });
+
+    // ----- students -----
+    app.get('/students', (c) => {
+      const a = c.get('actor');
+      const [w, p] = this.studentScope(a, 's');
+      const status = c.req.query('status') || 'active';
+      const cls = c.req.query('class_id');
+      let sql = `SELECT s.id, s.reg_no, s.name, s.father_name, s.class_id, c.name AS class_name, s.status, s.left_date, s.created_at,
+        ${this.isAdmin(a) ? 's.parent_phone' : "'' AS parent_phone"} FROM students s JOIN classes c ON c.id=s.class_id WHERE ${w}`;
+      const params: any[] = [...p];
+      if (status !== 'all') { sql += ' AND s.status=?'; params.push(status); }
+      if (cls) { sql += ' AND s.class_id=?'; params.push(cls); }
+      if (c.req.query('added') === 'month') { sql += ' AND s.created_at>=?'; params.push(pkt().month + '-01'); }
+      let rows = this.q(sql + ' ORDER BY c.grade, c.name, s.name LIMIT 5000', ...params);
+      if (c.req.query('unpaid') === '1') {
+        const unpaid = new Set(this.q("SELECT DISTINCT student_id FROM vouchers WHERE status IN ('unpaid','partial')").map((r) => r.student_id));
+        rows = rows.filter((r) => unpaid.has(r.id));
+      }
+      const below = Number(c.req.query('below') || 0);
+      if (below) {
+        const m = pkt().month;
+        const stats = new Map(this.q("SELECT student_id, SUM(status IN ('P','L')) AS p, COUNT(*) AS n FROM attendance_records WHERE date LIKE ? GROUP BY student_id", m + '%').map((r) => [r.student_id, r.n ? (100 * r.p) / r.n : 100]));
+        rows = rows.filter((r) => (stats.get(r.id) ?? 100) < below);
+      }
+      return c.json(rows);
+    });
+    app.post('/students', async (c) => {
+      const a = c.get('actor'); const b = await c.req.json<any>();
+      const warning = this.duplicateWarning(b);
+      if (warning && !b.allow_duplicate) return c.json({ needsConfirm: true, message: warning }, 409);
+      const s = this.createStudent(a, c.get('ctx'), b);
+      if (s.status === 'active') await this.syncGuardian(s.guardian_id);
+      return c.json(s);
+    });
+    app.post('/students/import', async (c) => {
+      const a = c.get('actor'); if (!this.canManageStudents(a)) fail(403, 'Only admins can import');
+      const { rows } = await c.req.json<any>();
+      const classes = this.q('SELECT id, name FROM classes WHERE active=1');
+      const byName = new Map(classes.map((x) => [String(x.name).toLowerCase().replace(/\s+/g, ''), x.id]));
+      const out: any[] = []; const gids = new Set<string>();
+      for (const [i, r] of (rows || []).entries()) {
+        try {
+          const class_id = r.class_id || byName.get(String(r.class || '').toLowerCase().replace(/\s+/g, ''));
+          if (!class_id) throw new HttpError(400, `Unknown class "${r.class}"`);
+          const s = this.createStudent(a, c.get('ctx'), { ...r, class_id });
+          gids.add(s.guardian_id);
+          out.push({ row: i + 1, ok: true, reg_no: s.reg_no });
+        } catch (e: any) { out.push({ row: i + 1, ok: false, error: e.message }); }
+      }
+      for (const g of gids) await this.syncGuardian(g);
+      return c.json({ results: out, added: out.filter((x) => x.ok).length });
+    });
+    app.get('/students/:id', (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'));
+      const feeAccess = this.canFeesAll(a) || a.classTeacherOf.has(s.class_id) || a.type === 'guardian';
+      const month = c.req.query('month') || pkt().month;
+      const vouchers = feeAccess ? this.q('SELECT * FROM vouchers WHERE student_id=? ORDER BY month DESC', s.id).map((v): Row => ({ ...v, total: this.voucherTotal(v), balance: this.voucherBalance(v), lines: this.q('SELECT label, amount FROM voucher_lines WHERE voucher_id=?', v.id) })) : null;
+      const showPhone = this.isAdmin(a) || a.type === 'guardian';
+      const att = this.monthAttendance([s.id], month);
+      const counted = att.length, present = att.filter((r) => r.status === 'P' || r.status === 'L').length;
+      const fullAdmin = this.isAdmin(a);
+      const hold = this.setting('result_fee_hold') === '1' && a.type === 'guardian' && (vouchers || []).some((v: Row) => v.balance > 0 && v.status !== 'carried');
+      return c.json({
+        student: { ...s, parent_phone: showPhone ? s.parent_phone : null, parent_email: showPhone ? s.parent_email : null, class_name: this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name },
+        attendance: { month, records: att, percent: counted ? Math.round((100 * present) / counted) : null, holidays: this.q('SELECT date, name FROM holidays WHERE date LIKE ?', month + '%') },
+        vouchers, payments: feeAccess ? this.q('SELECT id, voucher_id, method, amount, txn_id, status, reason, receipt_no, created_at, verified_at, slip_key FROM payments WHERE student_id=? ORDER BY created_at DESC', s.id) : null,
+        discounts: feeAccess ? this.q('SELECT * FROM student_discounts WHERE student_id=?', s.id) : null,
+        results: hold ? [] : this.q(`SELECT id, session, title, file_name, published_at, created_at FROM results WHERE student_id=? AND deleted_at IS NULL ${a.type === 'guardian' ? 'AND published_at IS NOT NULL' : ''} ORDER BY created_at DESC`, s.id),
+        resultsHeld: hold,
+        notices: this.noticesFor(a, s.id).slice(0, 20),
+        classHistory: this.q('SELECT e.*, c.name AS class_name, ss.name AS session_name FROM enrollments e JOIN classes c ON c.id=e.class_id LEFT JOIN academic_sessions ss ON ss.id=e.session_id WHERE e.student_id=? ORDER BY e.from_date DESC', s.id),
+        history: fullAdmin ? this.q("SELECT * FROM audit_log WHERE entity='student' AND entity_id=? ORDER BY created_at DESC LIMIT 100", s.id) : [],
+        reminderPause: feeAccess ? this.one('SELECT * FROM reminder_pauses WHERE student_id=?', s.id) : null,
+      });
+    });
+    app.patch('/students/:id', async (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'), 'edit');
+      const b = await c.req.json<any>();
+      const changes: Row = {};
+      for (const k of ['name', 'father_name', 'reg_no', 'class_id', 'parent_phone', 'parent_email', 'dob', 'gender', 'address', 'admission_date']) {
+        if (!(k in b)) continue;
+        let v = b[k] === '' ? null : b[k];
+        if (k === 'parent_phone' || k === 'parent_email') v = v ? normId(v) : null;
+        if (k === 'parent_phone' && !v) fail(400, 'Parent phone is required');
+        if (k === 'reg_no' && v !== s.reg_no && this.one('SELECT 1 FROM students WHERE reg_no=?', v)) fail(409, 'Registration number already used');
+        if (s[k] !== v) changes[k] = { old: s[k], new: v };
+      }
+      if (!Object.keys(changes).length) return c.json(s);
+      const oldGid = s.guardian_id;
+      this.tx(() => {
+        for (const [k, ch] of Object.entries(changes)) this.run(`UPDATE students SET ${k}=? WHERE id=?`, (ch as any).new, s.id);
+        if (changes.class_id) this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, changes.class_id.new, this.currentSession().id, pkt().date);
+        if (changes.parent_phone || changes.parent_email) {
+          const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
+          // Changing the contact changes who has parent access.
+          const gid = this.one('SELECT id FROM guardians WHERE phone=?', n.parent_phone)?.id ?? (() => {
+            const id = 'g_' + rid(12);
+            this.run('INSERT INTO guardians (id, phone, email, name, created_at) VALUES (?,?,?,?,?)', id, n.parent_phone, n.parent_email, n.father_name, now());
+            return id;
+          })();
+          if (n.parent_email) this.run('UPDATE guardians SET email=? WHERE id=?', n.parent_email, gid);
+          this.run('UPDATE students SET guardian_id=? WHERE id=?', gid, s.id);
+        }
+        this.run('UPDATE students SET search_key=? WHERE id=?', skeleton((b.name ?? s.name) + ' ' + (b.father_name ?? s.father_name)), s.id);
+        this.audit(a, 'student.edit', 'student', s.id, { changes, reason: b.reason || null });
+      });
+      const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
+      if (n.guardian_id !== oldGid || changes.parent_email) {
+        if (n.guardian_id !== oldGid) await this.syncLogin('guardian', oldGid, [], true);
+        await this.syncGuardian(oldGid);
+        await this.syncGuardian(n.guardian_id);
+      }
+      return c.json(n);
+    });
+    app.post('/students/:id/confirm', async (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'), 'edit');
+      if (s.status !== 'pending') fail(400, 'Student is not awaiting confirmation');
+      this.run("UPDATE students SET status='active', confirmed_by=? WHERE id=?", a.key, s.id);
+      this.audit(a, 'student.confirm', 'student', s.id);
+      await this.syncGuardian(s.guardian_id);
+      this.notifyParentOf(s.id, 'Welcome', `${this.one("SELECT value FROM meta WHERE key='school_name'")?.value} has added your child. Install the app and sign in with this phone number.`);
+      return c.json({ ok: true });
+    });
+    app.post('/students/:id/left', async (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'), 'edit');
+      const b = await c.req.json<any>();
+      const reasons = ['transferred', 'left without notice', 'expelled', 'passed out', 'other'];
+      if (!reasons.includes(b.reason)) fail(400, 'Choose a leaving reason');
+      this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", b.date || pkt().date, b.reason + (b.note ? `: ${b.note}` : ''), s.id);
+      this.audit(a, 'student.left', 'student', s.id, b);
+      await this.syncGuardian(s.guardian_id);
+      return c.json({ ok: true });
+    });
+    app.post('/students/:id/restore', async (c) => {
+      const a = c.get('actor');
+      const s = this.student(a, c.req.param('id'), 'edit');
+      const b = await c.req.json<any>();
+      const classId = b.class_id || s.class_id;
+      this.run("UPDATE students SET status='active', left_date=NULL, left_reason=NULL, class_id=? WHERE id=?", classId, s.id);
+      this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, classId, this.currentSession().id, pkt().date);
+      this.audit(a, 'student.restore', 'student', s.id, { class_id: classId });
+      await this.syncGuardian(s.guardian_id);
+      return c.json({ ok: true });
+    });
+    app.delete('/students/:id', async (c) => {
+      const a = c.get('actor'); this.requireMain(a);
+      const s = this.student(a, c.req.param('id'), 'edit');
+      if (this.one('SELECT 1 FROM attendance_records WHERE student_id=? LIMIT 1', s.id) || this.one('SELECT 1 FROM vouchers WHERE student_id=? LIMIT 1', s.id))
+        fail(400, 'This student has attendance or fee records. Use Mark as left instead.');
+      this.tx(() => { this.run('DELETE FROM enrollments WHERE student_id=?', s.id); this.run('DELETE FROM students WHERE id=?', s.id); this.audit(a, 'student.delete', 'student', s.id, s); });
+      await this.syncGuardian(s.guardian_id);
+      return c.json({ ok: true });
+    });
+    app.post('/students/:id/discounts', async (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only admins or the accountant can set discounts');
+      const s = this.student(a, c.req.param('id'), 'fees'); const b = await c.req.json<any>();
+      if (!['sibling', 'scholarship', 'staff child', 'custom'].includes(b.kind) || !(Number(b.amount) > 0)) fail(400, 'Choose a kind and an amount');
+      this.run('INSERT INTO student_discounts VALUES (?,?,?,?,?)', 'sd_' + rid(10), s.id, b.kind, Math.round(Number(b.amount)), b.note || null);
+      this.audit(a, 'discount.add', 'student', s.id, b);
+      return c.json({ ok: true });
+    });
+    app.delete('/students/:id/discounts/:did', (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
+      this.run('DELETE FROM student_discounts WHERE id=? AND student_id=?', c.req.param('did'), c.req.param('id'));
+      this.audit(a, 'discount.remove', 'student', c.req.param('id'), c.req.param('did'));
+      return c.json({ ok: true });
+    });
+    app.post('/students/:id/reminder-pause', async (c) => {
+      const a = c.get('actor'); const s = this.student(a, c.req.param('id'), 'fees');
+      if (a.type === 'guardian') fail(403, 'No access');
+      const b = await c.req.json<any>();
+      if (b.off) this.run('DELETE FROM reminder_pauses WHERE student_id=?', s.id);
+      else { if (!b.reason) fail(400, 'A reason is required'); this.run('INSERT OR REPLACE INTO reminder_pauses VALUES (?,?,?,?)', s.id, b.reason, a.key, b.until || null); }
+      this.audit(a, b.off ? 'reminders.resume' : 'reminders.pause', 'student', s.id, b);
+      return c.json({ ok: true });
+    });
+
+    // ----- search -----
+    app.get('/search', (c) => {
+      const a = c.get('actor');
+      if (a.type === 'guardian') return c.json({ students: [], staff: [] });
+      const raw = String(c.req.query('q') || '').trim();
+      if (raw.length < 2) return c.json({ students: [], staff: [] });
+      const lower = raw.toLowerCase(), sk = skeleton(raw), digits = raw.replace(/\D/g, '');
+      const [w, p] = this.studentScope(a, 's');
+      const cand = this.q(`SELECT s.id, s.reg_no, s.name, s.father_name, s.status, s.parent_phone, s.search_key, c.name AS class_name FROM students s
+        JOIN classes c ON c.id=s.class_id WHERE ${w}`, ...p);
+      const students = cand.filter((s) => {
+        if (s.name.toLowerCase().includes(lower) || s.father_name.toLowerCase().includes(lower) || s.reg_no.toLowerCase().includes(lower) || s.class_name.toLowerCase().replace(/\s/g, '') === lower.replace(/\s/g, '')) return true;
+        if (digits.length >= 4 && s.parent_phone.endsWith(digits)) return true;
+        return sk.split(' ').every((part) => s.search_key.split(' ').some((x: string) => x.startsWith(part)));
+      }).slice(0, 20).map((s) => ({ ...s, parent_phone: this.isAdmin(a) ? s.parent_phone : undefined, search_key: undefined }));
+      const staff = this.q('SELECT id, name, phone, subjects, search_key, active FROM staff').filter((s) =>
+        s.name.toLowerCase().includes(lower) || (s.subjects || '').toLowerCase().includes(lower) || (digits.length >= 4 && (s.phone || '').endsWith(digits)) ||
+        sk.split(' ').every((part) => String(s.search_key).split(' ').some((x: string) => x.startsWith(part)))
+      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined }));
+      return c.json({ students, staff });
+    });
+
+    // ----- attendance -----
+    app.get('/attendance/:classId/:date', (c) => c.json(this.attendanceSheet(c.get('actor'), c.req.param('classId'), c.req.param('date'))));
+    app.put('/attendance/:classId/:date', async (c) => {
+      const b = await c.req.json<any>();
+      return c.json(this.saveAttendance(c.get('actor'), c.req.param('classId'), c.req.param('date'), b.records || {}, false));
+    });
+    app.post('/attendance/:classId/:date/submit', async (c) => {
+      const b = await c.req.json<any>();
+      return c.json(this.saveAttendance(c.get('actor'), c.req.param('classId'), c.req.param('date'), b.records || {}, true));
+    });
+    app.post('/attendance/correct', async (c) => {
+      const a = c.get('actor'); this.requireAdmin(a);
+      if (a.subrole === 'accountant') fail(403, 'No access');
+      const b = await c.req.json<any>();
+      this.correctAttendance(a, b.student_id, b.date, b.status, b.reason);
+      return c.json({ ok: true });
+    });
+    app.get('/register/:classId/:month', (c) => {
+      const a = c.get('actor');
+      const cl = this.classOf(a, c.req.param('classId'));
+      const month = c.req.param('month');
+      const students = this.q("SELECT id, name, reg_no FROM students WHERE class_id=? AND status IN ('active','pending') ORDER BY name", cl.id);
+      const records = this.monthAttendance(students.map((s) => s.id), month);
+      const dates = [...new Set(records.map((r) => r.date))].sort();
+      const low = this.num('low_attendance_percent') || 75;
+      const rows = students.map((s) => {
+        const r = records.filter((x) => x.student_id === s.id);
+        const pres = r.filter((x) => x.status === 'P' || x.status === 'L').length;
+        const pct = r.length ? Math.round((100 * pres) / r.length) : null;
+        let streak = 0, max = 0; for (const x of r) { streak = x.status === 'A' ? streak + 1 : 0; max = Math.max(max, streak); }
+        return { ...s, days: Object.fromEntries(r.map((x) => [x.date, x.status])), percent: pct, warning: max >= 3 ? '3+ absences in a row' : pct !== null && pct < low ? `Below ${low}%` : null };
+      });
+      return c.json({ class: cl, month, dates, rows });
+    });
+    app.get('/holidays', (c) => c.json(this.q('SELECT * FROM holidays ORDER BY date')));
+    app.post('/holidays', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date) || !b.name) fail(400, 'Date and name are required');
+      const to = b.to && /^\d{4}-\d{2}-\d{2}$/.test(b.to) ? b.to : b.date;
+      for (let d = b.date; d <= to; d = addDays(d, 1)) this.run('INSERT OR REPLACE INTO holidays VALUES (?,?)', d, b.name);
+      this.audit(a, 'holiday.add', null, null, b);
+      return c.json({ ok: true });
+    });
+    app.delete('/holidays/:date', (c) => { const a = c.get('actor'); this.requireFullAdmin(a); this.run('DELETE FROM holidays WHERE date=?', c.req.param('date')); this.audit(a, 'holiday.remove', null, null, c.req.param('date')); return c.json({ ok: true }); });
+
+    // ----- change requests (teacher → admin) -----
+    app.post('/change-requests', async (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Only staff can send change requests');
+      const b = await c.req.json<any>();
+      if (!b.reason) fail(400, 'A reason is required');
+      if (b.kind === 'attendance') {
+        this.student(a, b.student_id);
+        if (!STATUS_LABEL[b.status]) fail(400, 'Unknown status');
+      } else if (b.kind === 'student') this.student(a, b.student_id);
+      else fail(400, 'Unknown request');
+      const id = 'cr_' + rid(10);
+      this.run('INSERT INTO change_requests (id, kind, ref, detail, reason, requested_by, created_at) VALUES (?,?,?,?,?,?,?)', id, b.kind, b.student_id, JSON.stringify(b), b.reason, a.key, now());
+      this.notifyAdmins('Change request', `${a.name}: ${b.reason}`, { subrole: 'coordinator', link: '#/requests' });
+      return c.json({ ok: true, id });
+    });
+    app.get('/change-requests', (c) => {
+      const a = c.get('actor');
+      const rows = this.isAdmin(a) ? this.q("SELECT * FROM change_requests ORDER BY status='open' DESC, created_at DESC LIMIT 200") : this.q('SELECT * FROM change_requests WHERE requested_by=? ORDER BY created_at DESC LIMIT 100', a.key);
+      return c.json(rows.map((r) => ({ ...r, detail: JSON.parse(r.detail), student_name: this.one('SELECT name FROM students WHERE id=?', r.ref)?.name, requested_by_name: this.one('SELECT name FROM staff WHERE id=?', String(r.requested_by).slice(2))?.name })));
+    });
+    app.post('/change-requests/:id/decide', async (c) => {
+      const a = c.get('actor'); this.requireAdmin(a);
+      const b = await c.req.json<any>();
+      const r = this.one("SELECT * FROM change_requests WHERE id=? AND status='open'", c.req.param('id')); if (!r) fail(404, 'Not found');
+      const d = JSON.parse(r!.detail);
+      if (b.approve && r!.kind === 'attendance') this.correctAttendance(a, d.student_id, d.date, d.status, `Teacher request: ${r!.reason}`);
+      this.run('UPDATE change_requests SET status=?, decided_by=?, decided_at=? WHERE id=?', b.approve ? 'approved' : 'declined', a.key, now(), r!.id);
+      this.notify(r!.requested_by, `Request ${b.approve ? 'approved' : 'declined'}`, r!.reason);
+      this.audit(a, 'change_request.' + (b.approve ? 'approve' : 'decline'), 'student', r!.ref, r!.reason);
+      return c.json({ ok: true });
+    });
+
+    // ----- fees -----
+    app.get('/fees/setup', (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
+      return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans: this.q('SELECT * FROM fee_plans'), classes: this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name') });
+    });
+    app.post('/fees/heads', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>(); if (!b.name) fail(400, 'Name required');
+      this.run('INSERT INTO fee_heads VALUES (?,?,?)', 'fh_' + rid(8), b.name, b.monthly === false ? 0 : 1);
+      this.audit(a, 'fee_head.add', null, null, b); return c.json({ ok: true });
+    });
+    app.post('/fees/plans', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      for (const p of b.plans || []) this.run('INSERT OR REPLACE INTO fee_plans VALUES (?,?,?)', p.class_id, p.head_id, Math.max(0, Math.round(Number(p.amount) || 0)));
+      this.audit(a, 'fee_plan.update', null, null, b); return c.json({ ok: true });
+    });
+    app.post('/fees/generate', async (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
+      const b = await c.req.json<any>();
+      return c.json(this.generateVouchers(a, b.month || pkt().month));
+    });
+    app.get('/vouchers/:id', (c) => {
+      const a = c.get('actor');
+      const v = this.one('SELECT * FROM vouchers WHERE id=?', c.req.param('id')); if (!v) fail(404, 'Not found');
+      const s = this.student(a, v!.student_id, 'fees');
+      return c.json({ voucher: { ...v, total: this.voucherTotal(v!), balance: this.voucherBalance(v!) }, lines: this.q('SELECT * FROM voucher_lines WHERE voucher_id=?', v!.id),
+        student: { name: s.name, father_name: s.father_name, reg_no: s.reg_no, class_name: this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name },
+        school: this.one("SELECT value FROM meta WHERE key='school_name'")?.value });
+    });
+    app.get('/fees/unpaid', (c) => {
+      const a = c.get('actor');
+      const month = c.req.query('month') || pkt().month;
+      const cls = c.req.query('class_id');
+      let classes: string[] | null = null;
+      if (!this.canFeesAll(a)) { classes = [...a.classTeacherOf]; if (!classes.length) fail(403, 'No access'); }
+      let rows = this.q(`SELECT v.*, s.name, s.reg_no, s.parent_phone, c.name AS class_name, s.status AS student_status FROM vouchers v JOIN students s ON s.id=v.student_id
+        JOIN classes c ON c.id=v.class_id WHERE v.month=? AND v.status IN ('unpaid','partial','carried')`, month);
+      if (classes) rows = rows.filter((r) => classes!.includes(r.class_id));
+      if (cls) rows = rows.filter((r) => r.class_id === cls);
+      const today = pkt().date;
+      return c.json(rows.map((v) => ({ id: v.id, student_id: v.student_id, name: v.name, reg_no: v.reg_no, parent_phone: v.parent_phone, class_name: v.class_name, month: v.month,
+        due: this.voucherTotal(v), paid: v.paid, balance: this.voucherBalance(v), status: v.status, student_status: v.student_status,
+        days_overdue: Math.max(0, Math.round((Date.parse(today) - Date.parse(v.due_date)) / 864e5)), last_reminder: v.last_reminder })));
+    });
+    app.get('/fees/defaulters', (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
+      const rows = this.q(`SELECT s.id, s.name, s.reg_no, s.status, c.name AS class_name, COUNT(*) AS months FROM vouchers v JOIN students s ON s.id=v.student_id JOIN classes c ON c.id=s.class_id
+        WHERE v.status IN ('unpaid','partial','carried') AND v.paid < v.current - v.discount + v.fine + v.arrears GROUP BY s.id HAVING COUNT(*)>=2 ORDER BY months DESC`);
+      return c.json(rows.map((r) => ({ ...r, balance: this.latestVoucher(r.id) ? this.voucherBalance(this.latestVoucher(r.id)!) : 0 })));
+    });
+    app.get('/fees/report', (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
+      const month = c.req.query('month') || pkt().month;
+      const v = this.q('SELECT * FROM vouchers WHERE month=?', month);
+      const expected = v.reduce((t, x) => t + x.current - x.discount + x.fine, 0);
+      const daily = this.q(`SELECT substr(datetime(verified_at, '+5 hours'),1,10) AS day, method, SUM(amount) AS amount, COUNT(*) AS n FROM payments
+        WHERE status='verified' AND substr(datetime(verified_at, '+5 hours'),1,7)=? GROUP BY day, method ORDER BY day`, month);
+      return c.json({ month, expected, collected: daily.reduce((t, x) => t + x.amount, 0), vouchers: v.length, paid: v.filter((x) => x.status === 'paid').length, daily });
+    });
+    app.post('/fees/remind', async (c) => {
+      const a = c.get('actor');
+      const b = await c.req.json<any>();
+      let sent = 0;
+      for (const id of b.voucher_ids || []) {
+        const v = this.one('SELECT * FROM vouchers WHERE id=?', id); if (!v) continue;
+        this.student(a, v.student_id, 'fees');
+        if (a.type === 'guardian') fail(403, 'No access');
+        this.notifyParentOf(v.student_id, 'Fee reminder', `${money(this.voucherBalance(v))} is due for ${v.month}.`);
+        this.run('UPDATE vouchers SET last_reminder=? WHERE id=?', now(), v.id); sent++;
+      }
+      return c.json({ sent });
+    });
+
+    app.post('/payments', async (c) => {
+      const a = c.get('actor'); const ctx = c.get('ctx');
+      const ct = c.req.header('content-type') || '';
+      let b: Row; let file: File | null = null;
+      if (ct.includes('multipart')) { const f = await c.req.formData(); b = Object.fromEntries([...f.entries()].filter(([, v]) => typeof v === 'string')); file = (f.get('slip') as unknown as File) || null; }
+      else b = await c.req.json<any>();
+      const v = this.one('SELECT * FROM vouchers WHERE id=?', b.voucher_id); if (!v) fail(404, 'Voucher not found');
+      const s = this.student(a, v!.student_id, 'fees');
+      if (v!.status === 'carried') fail(400, 'This voucher was carried into a newer one. Pay the latest voucher.');
+      const amount = Math.round(Number(b.amount));
+      if (!(amount > 0)) fail(400, 'Enter the amount');
+      const method = String(b.method);
+      const txn = b.txn_id ? String(b.txn_id).trim().toUpperCase() : null;
+      let status = 'submitted', held: string | null = null;
+      if (a.type === 'guardian') {
+        if (!['easypaisa', 'jazzcash', 'bank'].includes(method)) fail(400, 'Choose Easypaisa, JazzCash or bank');
+        if (!txn) fail(400, 'Transaction ID is required');
+        if (!file || !file.size) fail(400, 'Upload the payment slip (image or PDF)');
+      } else if (method === 'cash_teacher') {
+        if (!a.classTeacherOf.has(s.class_id) && !this.canFeesAll(a)) fail(403, 'Only the class teacher can take cash for this class');
+        held = a.key;
+      } else if (['office_cash', 'bank', 'easypaisa', 'jazzcash'].includes(method)) {
+        if (!this.canFeesAll(a)) fail(403, 'Only the accountant or admin can record office payments');
+        status = 'verified';
+      } else fail(400, 'Unknown payment method');
+      if (txn && this.one("SELECT 1 FROM payments WHERE txn_id=? AND status IN ('submitted','verified')", txn)) fail(409, 'This transaction ID has already been used. It may be a duplicate slip.');
+      const slipKey = file && file.size ? await this.putFile(ctx, a, file, 'slips', 5) : null;
+      const id = 'pay_' + rid(12);
+      this.run(`INSERT INTO payments (id, voucher_id, student_id, class_id, method, amount, txn_id, slip_key, status, submitted_by, held_by, created_at)
+        VALUES (?,?,?,?,?,?,?,?,'submitted',?,?,?)`, id, v!.id, s.id, s.class_id, method, amount, txn, slipKey, a.key, held, now());
+      this.audit(a, 'payment.submit', 'student', s.id, { id, method, amount, txn });
+      let receipt: number | null = null;
+      if (status === 'verified') { this.run('UPDATE payments SET verified_by=? WHERE id=?', a.key, id); receipt = this.applyVerified(this.one('SELECT * FROM payments WHERE id=?', id)!); }
+      else if (method === 'cash_teacher') {
+        this.notifyParentOf(s.id, 'Cash received by teacher', `${money(amount)} received by ${a.name}. A receipt follows once the office confirms.`);
+        this.notifyAdmins('Cash with teacher', `${a.name} took ${money(amount)} from ${s.name}.`, { subrole: 'accountant', link: '#/cash' });
+      } else {
+        this.notifyParentOf(s.id, 'Slip received', `Your ${method} slip for ${money(amount)} is awaiting verification.`);
+        this.notifyAdmins('New slip to verify', `${s.name}: ${money(amount)} by ${method} (${txn}).`, { subrole: 'accountant', link: '#/fees/slips' });
+        this.notifyClassTeacher(s.class_id, 'New slip', `${s.name}: ${money(amount)} by ${method}.`);
+      }
+      return c.json({ ok: true, id, receipt });
+    });
+    app.get('/payments', (c) => {
+      const a = c.get('actor');
+      const status = c.req.query('status') || 'submitted';
+      let rows = this.q(`SELECT p.*, s.name AS student_name, s.reg_no, c.name AS class_name FROM payments p JOIN students s ON s.id=p.student_id JOIN classes c ON c.id=p.class_id
+        WHERE p.status=? ORDER BY p.created_at DESC LIMIT 500`, status);
+      if (!this.canFeesAll(a)) {
+        if (a.type === 'guardian') fail(403, 'No access');
+        rows = rows.filter((r) => a.classTeacherOf.has(r.class_id));
+      }
+      return c.json(rows.map((r) => ({ ...r, can_verify: this.canVerify(a, r), submitted_by_name: this.one('SELECT name FROM staff WHERE id=?', String(r.submitted_by).slice(2))?.name || (r.submitted_by.startsWith('g:') ? 'Parent' : '') })));
+    });
+    app.get('/payments/:id', (c) => {
+      const a = c.get('actor');
+      const p = this.one('SELECT * FROM payments WHERE id=?', c.req.param('id')); if (!p) fail(404, 'Not found');
+      const s = this.student(a, p!.student_id, 'fees');
+      const v = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id)!;
+      return c.json({ payment: p, student: { name: s.name, father_name: s.father_name, reg_no: s.reg_no, class_name: this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name },
+        voucher: { ...v, total: this.voucherTotal(v), balance: this.voucherBalance(v) }, school: this.one("SELECT value FROM meta WHERE key='school_name'")?.value,
+        verified_by_name: this.one('SELECT name FROM staff WHERE id=?', String(p!.verified_by || '').slice(2))?.name });
+    });
+    app.post('/payments/:id/verify', (c) => {
+      const a = c.get('actor');
+      const p = this.one("SELECT * FROM payments WHERE id=? AND status='submitted'", c.req.param('id')); if (!p) fail(404, 'Payment not found or already handled');
+      if (!this.canVerify(a, p!)) fail(403, 'You cannot verify this payment');
+      if (p!.submitted_by === a.key && a.type !== 'staff') fail(403, 'You cannot verify your own payment');
+      const receipt = this.tx(() => { this.run('UPDATE payments SET verified_by=? WHERE id=?', a.key, p!.id); return this.applyVerified(p!); });
+      this.audit(a, 'payment.verify', 'student', p!.student_id, { id: p!.id, receipt });
+      return c.json({ ok: true, receipt });
+    });
+    app.post('/payments/:id/reject', async (c) => {
+      const a = c.get('actor'); const { reason } = await c.req.json<any>();
+      const p = this.one("SELECT * FROM payments WHERE id=? AND status='submitted'", c.req.param('id')); if (!p) fail(404, 'Not found');
+      if (!this.canVerify(a, p!)) fail(403, 'You cannot reject this payment');
+      if (!reason) fail(400, 'A reason is required');
+      this.run("UPDATE payments SET status='rejected', reason=?, verified_by=?, verified_at=? WHERE id=?", reason, a.key, now(), p!.id);
+      this.notifyParentOf(p!.student_id, 'Slip rejected', `Reason: ${reason}. Please upload again.`);
+      this.notifyClassTeacher(p!.class_id, 'Slip rejected', reason);
+      this.audit(a, 'payment.reject', 'student', p!.student_id, { id: p!.id, reason });
+      return c.json({ ok: true });
+    });
+    app.post('/payments/:id/cancel', async (c) => {
+      const a = c.get('actor'); this.requireMain(a);
+      const { reason } = await c.req.json<any>(); if (!reason) fail(400, 'A reason is required');
+      const p = this.one("SELECT * FROM payments WHERE id=? AND status='verified'", c.req.param('id')); if (!p) fail(404, 'Not found');
+      this.tx(() => {
+        const v = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id)!;
+        const paid = v.paid - p!.amount;
+        this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', paid, v.status === 'carried' ? 'carried' : paid <= 0 ? 'unpaid' : 'partial', v.id);
+        this.run("UPDATE payments SET status='cancelled', reason=? WHERE id=?", reason, p!.id);
+        this.audit(a, 'receipt.cancel', 'student', p!.student_id, { id: p!.id, receipt: p!.receipt_no, reason });
+      });
+      return c.json({ ok: true });
+    });
+
+    app.get('/cash', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'No access');
+      const where = this.canFeesAll(a) ? '1=1' : 'p.held_by=?';
+      const rows = this.q(`SELECT p.id, p.amount, p.created_at, p.held_by, p.status, s.name AS student_name, c.name AS class_name FROM payments p JOIN students s ON s.id=p.student_id
+        JOIN classes c ON c.id=p.class_id WHERE p.method='cash_teacher' AND p.handover_id IS NULL AND p.status IN ('submitted','verified') AND ${where} ORDER BY p.created_at`, ...(this.canFeesAll(a) ? [] : [a.key]));
+      const byTeacher: Row = {};
+      for (const r of rows) {
+        const t = (byTeacher[r.held_by] ||= { teacher_id: String(r.held_by).slice(2), name: this.one('SELECT name FROM staff WHERE id=?', String(r.held_by).slice(2))?.name, total: 0, items: [] });
+        t.total += r.amount; t.items.push(r);
+      }
+      return c.json({ teachers: Object.values(byTeacher), handovers: this.q('SELECT h.*, t.name FROM cash_handovers h JOIN staff t ON t.id=h.teacher_id ORDER BY h.created_at DESC LIMIT 50') });
+    });
+    app.post('/cash/handover', async (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only the accountant or admin can confirm a handover');
+      const { teacher_id, amount } = await c.req.json<any>();
+      const items = this.q("SELECT * FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + teacher_id);
+      const total = items.reduce((t, p) => t + p.amount, 0);
+      if (!items.length) fail(400, 'This teacher holds no cash');
+      if (amount !== undefined && Number(amount) !== total) fail(400, `Amount does not match. The teacher holds ${money(total)}.`);
+      const id = 'ho_' + rid(10);
+      this.tx(() => {
+        this.run('INSERT INTO cash_handovers VALUES (?,?,?,?,?)', id, teacher_id, total, a.key, now());
+        for (const p of items) {
+          this.run('UPDATE payments SET handover_id=? WHERE id=?', id, p.id);
+          if (p.status === 'submitted') { this.run('UPDATE payments SET verified_by=? WHERE id=?', a.key, p.id); this.applyVerified(p); }
+        }
+      });
+      this.notify('s:' + teacher_id, 'Cash handover confirmed', `${money(total)} received by ${a.name}.`);
+      this.audit(a, 'cash.handover', 'staff', teacher_id, { total, id });
+      return c.json({ ok: true, total });
+    });
+
+    // ----- notices -----
+    app.get('/notices', (c) => c.json(this.noticesFor(c.get('actor'))));
+    app.post('/notices', async (c) => {
+      const a = c.get('actor'); const b = await c.req.json<any>();
+      if (a.type !== 'staff' && a.type !== 'system') fail(403, 'Parents cannot post notices');
+      if (!b.title || !b.body) fail(400, 'Title and message are required');
+      const aud = String(b.audience);
+      if (aud === 'school' && !(this.isFullAdmin(a) || a.subrole === 'office')) fail(403, 'Only admins can send school-wide notices');
+      if (aud === 'teachers' && !(this.isFullAdmin(a) || a.subrole === 'coordinator')) fail(403, 'Only admins can notify all teachers');
+      if (aud === 'admins' && !a.isMain) fail(403, 'Only the main admin can do this');
+      if (aud === 'class') this.classOf(a, b.target_id);
+      if (aud === 'student') this.student(a, b.target_id);
+      if (!['school', 'class', 'student', 'teachers', 'admins'].includes(aud)) fail(400, 'Choose an audience');
+      const id = 'nt_' + rid(10);
+      this.run('INSERT INTO notices (id, audience, target_id, title, body, posted_by, poster_name, created_at) VALUES (?,?,?,?,?,?,?,?)', id, aud, b.target_id || null, b.title, b.body, a.key, a.name, now());
+      // App notification to everyone in the audience.
+      const keys = new Set<string>();
+      if (aud === 'school') for (const g of this.q("SELECT DISTINCT guardian_id FROM students WHERE status='active'")) keys.add('g:' + g.guardian_id);
+      if (aud === 'class') for (const g of this.q("SELECT DISTINCT guardian_id FROM students WHERE status='active' AND class_id=?", b.target_id)) keys.add('g:' + g.guardian_id);
+      if (aud === 'student') keys.add('g:' + this.one('SELECT guardian_id FROM students WHERE id=?', b.target_id)!.guardian_id);
+      if (aud === 'teachers' || aud === 'school') for (const s of this.q('SELECT id FROM staff WHERE active=1')) keys.add('s:' + s.id);
+      if (aud === 'admins') for (const s of this.q("SELECT id FROM staff WHERE active=1 AND role IN ('admin','subadmin')")) keys.add('s:' + s.id);
+      keys.delete(a.key);
+      for (const k of keys) this.notify(k, 'Notice: ' + b.title, String(b.body).slice(0, 140), '#/notices');
+      this.audit(a, 'notice.post', 'notice', id, { audience: aud, title: b.title });
+      return c.json({ ok: true, id, recipients: keys.size });
+    });
+    app.delete('/notices/:id', (c) => {
+      const a = c.get('actor');
+      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!n) fail(404, 'Not found');
+      if (!this.isFullAdmin(a)) fail(403, 'Sent notices can only be removed by an admin');
+      this.run('UPDATE notices SET deleted_at=? WHERE id=?', now(), n!.id);
+      this.audit(a, 'notice.delete', 'notice', n!.id, n!.title);
+      return c.json({ ok: true });
+    });
+    app.post('/notices/:id/read', (c) => {
+      this.run('INSERT OR IGNORE INTO notice_reads VALUES (?,?,?)', c.req.param('id'), c.get('actor').key, now());
+      return c.json({ ok: true });
+    });
+
+    // ----- message threads (one per student) -----
+    app.get('/threads', (c) => {
+      const a = c.get('actor');
+      if (a.subrole === 'accountant') fail(403, 'No access');
+      const [w, p] = this.studentScope(a, 's');
+      if (this.isAdmin(a) && !a.isMain && a.role !== 'admin') fail(403, 'No access');
+      const rows = this.q(`SELECT s.id AS student_id, s.name, c.name AS class_name, m.body, m.sender_name, m.created_at FROM thread_messages m
+        JOIN students s ON s.id=m.student_id JOIN classes c ON c.id=s.class_id WHERE ${w}
+        AND m.created_at=(SELECT MAX(created_at) FROM thread_messages x WHERE x.student_id=m.student_id) ORDER BY m.created_at DESC LIMIT 200`, ...p);
+      return c.json(rows);
+    });
+    app.get('/threads/:studentId', (c) => {
+      const a = c.get('actor');
+      if (a.subrole === 'accountant' || (a.role === 'subadmin')) fail(403, 'No access');
+      const s = this.student(a, c.req.param('studentId'));
+      if (this.isAdmin(a) && a.type === 'staff') this.audit(a, 'thread.read', 'student', s.id);
+      return c.json({ student: { id: s.id, name: s.name }, messages: this.q('SELECT id, sender_key, sender_name, body, created_at FROM thread_messages WHERE student_id=? ORDER BY created_at', s.id) });
+    });
+    app.post('/threads/:studentId', async (c) => {
+      const a = c.get('actor');
+      if (a.role === 'subadmin') fail(403, 'No access');
+      const s = this.student(a, c.req.param('studentId'));
+      const { body } = await c.req.json<any>();
+      if (!body || !String(body).trim()) fail(400, 'Write a message');
+      const label = a.type === 'guardian' ? `${a.name} (parent)` : a.name;
+      this.run('INSERT INTO thread_messages VALUES (?,?,?,?,?,?)', 'tm_' + rid(12), s.id, a.key, label, String(body).slice(0, 4000), now());
+      const keys = new Set<string>(['g:' + s.guardian_id]);
+      const cl = this.one('SELECT class_teacher_id FROM classes WHERE id=?', s.class_id);
+      if (cl?.class_teacher_id) keys.add('s:' + cl.class_teacher_id);
+      for (const t of this.q('SELECT DISTINCT teacher_id FROM class_subjects WHERE class_id=? AND teacher_id IS NOT NULL', s.class_id)) {
+        // Subject teachers hear only when they have taken part in this thread.
+        if (this.one('SELECT 1 FROM thread_messages WHERE student_id=? AND sender_key=? LIMIT 1', s.id, 's:' + t.teacher_id)) keys.add('s:' + t.teacher_id);
+      }
+      keys.delete(a.key);
+      for (const k of keys) this.notify(k, `Message about ${s.name}`, `${label}: ${String(body).slice(0, 100)}`, `#/thread/${s.id}`);
+      return c.json({ ok: true });
+    });
+
+    // ----- results (PDF per student, hidden until published) -----
+    app.post('/results', async (c) => {
+      const a = c.get('actor'); const ctx = c.get('ctx');
+      const f = await c.req.formData();
+      const title = String(f.get('title') || '').trim(), session = String(f.get('session') || this.currentSession().name);
+      if (!title) fail(400, 'Title is required');
+      const studentId = f.get('student_id') as string | null;
+      const files = f.getAll('files') as unknown as File[];
+      const out: any[] = [];
+      for (const file of files) {
+        if (!file || typeof file !== 'object' || !file.size) continue;
+        let sid = studentId;
+        if (!sid) {
+          const reg = file.name.replace(/\.pdf$/i, '').trim();
+          sid = this.one('SELECT id FROM students WHERE reg_no=?', reg)?.id ?? null;
+        }
+        let st: Row | null = null;
+        if (sid) { try { st = this.student(a, sid); } catch { st = null; } }
+        if (st && !this.isAdmin(a) && !(this.setting('teacher_upload_results') === '1' && a.classTeacherOf.has(st.class_id))) fail(403, 'You cannot upload results for this class');
+        if (!st && !this.isAdmin(a)) { out.push({ file: file.name, ok: false, error: 'No student with this registration number in your class' }); continue; }
+        const key = await this.putFile(ctx, a, file, 'results', 10);
+        const id = 'rs_' + rid(10);
+        this.run('INSERT INTO results (id, student_id, session, title, file_key, file_name, uploaded_by, created_at) VALUES (?,?,?,?,?,?,?,?)', id, st?.id ?? null, session, title, key, file.name, a.key, now());
+        out.push({ file: file.name, ok: !!st, id, student: st?.name, error: st ? undefined : 'Unmatched — assign it to a student' });
+      }
+      this.audit(a, 'results.upload', null, null, { title, count: out.length });
+      return c.json({ results: out });
+    });
+    app.get('/results', (c) => {
+      const a = c.get('actor'); if (a.type !== 'staff') fail(403, 'No access');
+      const [w, p] = this.studentScope(a, 's');
+      const rows = this.q(`SELECT r.id, r.title, r.session, r.file_name, r.published_at, r.created_at, r.student_id, s.name AS student_name, s.reg_no, c.name AS class_name, c.id AS class_id
+        FROM results r LEFT JOIN students s ON s.id=r.student_id LEFT JOIN classes c ON c.id=s.class_id WHERE r.deleted_at IS NULL AND (r.student_id IS NULL OR ${w}) ORDER BY r.created_at DESC LIMIT 1000`, ...p);
+      return c.json(this.isAdmin(a) ? rows : rows.filter((r) => r.student_id));
+    });
+    app.post('/results/:id/assign', async (c) => {
+      const a = c.get('actor'); this.requireAdmin(a);
+      const { student_id } = await c.req.json<any>(); this.student(a, student_id);
+      this.run('UPDATE results SET student_id=? WHERE id=?', student_id, c.req.param('id'));
+      return c.json({ ok: true });
+    });
+    app.post('/results/publish', async (c) => {
+      const a = c.get('actor'); this.requireAdmin(a);
+      const { class_id, title } = await c.req.json<any>();
+      const rows = this.q('SELECT r.* FROM results r JOIN students s ON s.id=r.student_id WHERE r.published_at IS NULL AND r.deleted_at IS NULL AND s.class_id=? AND r.title=?', class_id, title);
+      for (const r of rows) { this.run('UPDATE results SET published_at=? WHERE id=?', now(), r.id); this.notifyParentOf(r.student_id, 'Result published', `${r.title} is now available.`); }
+      this.audit(a, 'results.publish', 'class', class_id, { title, count: rows.length });
+      return c.json({ published: rows.length });
+    });
+    app.delete('/results/:id', (c) => {
+      const a = c.get('actor');
+      const r = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!r) fail(404, 'Not found');
+      if (!(this.isFullAdmin(a) || (r!.uploaded_by === a.key && !r!.published_at))) fail(403, 'You cannot delete this result');
+      this.run('UPDATE results SET deleted_at=? WHERE id=?', now(), r!.id);
+      this.run('UPDATE files SET deleted_at=? WHERE key=?', now(), r!.file_key);
+      this.audit(a, 'result.delete', 'student', r!.student_id, r!.title);
+      return c.json({ ok: true });
+    });
+
+    // Files are never public: every download is permission-checked.
+    app.get('/files/:kind/:name', async (c) => {
+      const a = c.get('actor');
+      const key = `${c.get('ctx').schoolId}/${c.req.param('kind')}/${c.req.param('name')}`;
+      const kind = c.req.param('kind');
+      if (kind === 'slips') {
+        const p = this.one('SELECT * FROM payments WHERE slip_key=?', key); if (!p) fail(404, 'Not found');
+        this.student(a, p!.student_id, 'fees');
+      } else if (kind === 'results') {
+        const r = this.one('SELECT * FROM results WHERE file_key=? AND deleted_at IS NULL', key); if (!r) fail(404, 'Not found');
+        if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
+        if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
+      } else fail(404, 'Not found');
+      const o = await this.env.FILES.get(key); if (!o) fail(404, 'File missing');
+      this.audit(a, 'file.download', kind, key);
+      return new Response(o!.body, { headers: { 'content-type': o!.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'private, max-age=300' } });
+    });
+
+    // ----- notifications -----
+    app.get('/notifications', (c) => c.json(this.q('SELECT * FROM notifications WHERE user_key=? ORDER BY created_at DESC LIMIT 100', c.get('actor').key)));
+    app.post('/notifications/read', (c) => { this.run('UPDATE notifications SET read_at=? WHERE user_key=? AND read_at IS NULL', now(), c.get('actor').key); return c.json({ ok: true }); });
+
+    // ----- audit, storage, sessions & promotion -----
+    app.get('/audit', (c) => { this.requireFullAdmin(c.get('actor')); return c.json(this.q('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500')); });
+    app.get('/storage', (c) => {
+      this.requireFullAdmin(c.get('actor'));
+      return c.json({ used: this.storageUsed(), limit: c.get('ctx').storageLimitBytes, byKind: this.q('SELECT kind, SUM(size) AS bytes, COUNT(*) AS n FROM files WHERE deleted_at IS NULL GROUP BY kind'),
+        byUser: this.q('SELECT uploaded_by, SUM(size) AS bytes FROM files WHERE deleted_at IS NULL GROUP BY uploaded_by ORDER BY bytes DESC LIMIT 20') });
+    });
+    app.get('/sessions', (c) => c.json(this.q('SELECT * FROM academic_sessions ORDER BY created_at DESC')));
+    app.post('/promotion', async (c) => {
+      const a = c.get('actor'); this.requireMain(a);
+      const b = await c.req.json<any>();
+      if (!b.new_session) fail(400, 'Name the new session, e.g. 2027-2028');
+      const old = this.currentSession();
+      const decisions: Record<string, { outcome: string; class_id?: string }> = b.decisions || {};
+      const nextClass: Record<string, string> = b.next_class || {};
+      const sid = 'ses_' + rid(8);
+      const today = pkt().date;
+      const gids = new Set<string>();
+      const counts: Row = { promoted: 0, 'not promoted': 0, left: 0, 'passed out': 0 };
+      this.tx(() => {
+        this.run('UPDATE academic_sessions SET current=0, locked=1 WHERE id=?', old.id);
+        this.run('INSERT INTO academic_sessions (id, name, current, created_at) VALUES (?,?,1,?)', sid, b.new_session, now());
+        for (const s of this.q("SELECT * FROM students WHERE status='active'")) {
+          const d = decisions[s.id] || { outcome: nextClass[s.class_id] === 'passout' ? 'passed out' : 'promoted' };
+          let target = s.class_id;
+          if (d.outcome === 'promoted') target = d.class_id || nextClass[s.class_id] || s.class_id;
+          if (d.outcome === 'promoted' && target === 'passout') d.outcome = 'passed out';
+          this.run('UPDATE enrollments SET outcome=? WHERE student_id=? AND session_id=?', d.outcome, s.id, old.id);
+          if (d.outcome === 'left' || d.outcome === 'passed out') {
+            this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", today, d.outcome, s.id); gids.add(s.guardian_id);
+          } else {
+            this.run('UPDATE students SET class_id=? WHERE id=?', target, s.id);
+            this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, target, sid, today);
+          }
+          counts[d.outcome] = (counts[d.outcome] || 0) + 1;
+        }
+      });
+      for (const g of gids) await this.syncGuardian(g);
+      this.audit(a, 'promotion', null, null, { from: old.name, to: b.new_session, counts });
+      return c.json({ ok: true, counts });
+    });
+
+    app.get('/export', (c) => {
+      this.requireMain(c.get('actor'));
+      const tables = this.q("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite%'").map((r) => r.name);
+      const out: Row = { exported_at: now() };
+      for (const t of tables) out[t] = this.q(`SELECT * FROM "${t}"`);
+      this.audit(c.get('actor'), 'export', null, null);
+      return new Response(JSON.stringify(out), { headers: { 'content-type': 'application/json', 'content-disposition': `attachment; filename="school-backup-${pkt().date}.json"` } });
+    });
+
+    app.all('*', (c) => c.json({ error: 'Not found' }, 404));
+    return app;
+  }
+
+  noticesFor(a: Actor, onlyStudent?: string): Row[] {
+    let rows = this.q('SELECT * FROM notices WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 300');
+    const kids = a.type === 'guardian' ? this.q('SELECT id, class_id FROM students WHERE id IN (' + a.children.map(() => '?').join(',') + ')', ...a.children) : [];
+    rows = rows.filter((n) => {
+      if (onlyStudent) {
+        const s = this.one('SELECT class_id FROM students WHERE id=?', onlyStudent);
+        return n.audience === 'school' || (n.audience === 'class' && n.target_id === s?.class_id) || (n.audience === 'student' && n.target_id === onlyStudent);
+      }
+      if (this.isAdmin(a)) return n.audience !== 'admins' || a.role !== 'teacher';
+      if (a.type === 'guardian') return n.audience === 'school' || (n.audience === 'class' && kids.some((k) => k.class_id === n.target_id)) || (n.audience === 'student' && a.children.includes(n.target_id));
+      return n.audience === 'school' || n.audience === 'teachers' || (n.audience === 'class' && a.teaches.has(n.target_id)) || (n.audience === 'student' && (() => { const s = this.one('SELECT class_id FROM students WHERE id=?', n.target_id); return !!s && a.teaches.has(s.class_id); })());
+    });
+    const reads = this.isAdmin(a);
+    return rows.map((n) => ({ ...n, read_count: reads ? Number(this.one('SELECT COUNT(*) AS n FROM notice_reads WHERE notice_id=?', n.id)!.n) : undefined,
+      target_name: n.audience === 'class' ? this.one('SELECT name FROM classes WHERE id=?', n.target_id)?.name : n.audience === 'student' ? this.one('SELECT name FROM students WHERE id=?', n.target_id)?.name : null }));
+  }
+
+  replaceTeacher(a: Actor, classId: string, teacherId: string | null, from: string, subjectsToo = false) {
+    const cl = this.one('SELECT * FROM classes WHERE id=?', classId); if (!cl) fail(404, 'Class not found');
+    if (teacherId && !this.one('SELECT 1 FROM staff WHERE id=? AND active=1', teacherId)) fail(400, 'Unknown teacher');
+    this.tx(() => {
+      this.run('UPDATE class_teacher_assignments SET to_date=? WHERE class_id=? AND to_date IS NULL', addDays(from, -1), classId);
+      if (teacherId) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), classId, teacherId, from);
+      if (subjectsToo && cl!.class_teacher_id && teacherId) this.run('UPDATE class_subjects SET teacher_id=? WHERE class_id=? AND teacher_id=?', teacherId, classId, cl!.class_teacher_id);
+      this.run('UPDATE classes SET class_teacher_id=? WHERE id=?', teacherId, classId);
+    });
+    this.audit(a, 'class.replace_teacher', 'class', classId, { old: cl!.class_teacher_id, new: teacherId, from });
+    if (teacherId) this.notify('s:' + teacherId, 'Class assigned', `You are now the class teacher of ${cl!.name} from ${from}.`);
+  }
+}
