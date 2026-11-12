@@ -1711,11 +1711,20 @@ export class SchoolDO extends DurableObject<Env> {
       if (a.type !== 'staff' && a.type !== 'system') fail(403, 'Parents cannot post notices');
       if (!b.title || !b.body) fail(400, 'Title and message are required');
       const aud = String(b.audience);
-      if (aud === 'school' && !(this.isFullAdmin(a) || a.subrole === 'office')) fail(403, 'Only admins can send school-wide notices');
-      if (aud === 'teachers' && !(this.isFullAdmin(a) || a.subrole === 'coordinator')) fail(403, 'Only admins can notify all teachers');
-      if (aud === 'admins' && !a.isMain) fail(403, 'Only the main admin can do this');
-      if (aud === 'class') this.classOf(a, b.target_id);
-      if (aud === 'student') this.student(a, b.target_id);
+      if (aud === 'school' && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && a.scopeAll))) fail(403, 'School-wide notices require a full admin or an all-school notice permission');
+      if (aud === 'teachers' && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && a.scopeAll))) fail(403, 'Only a full admin or all-school notice manager can notify all teachers');
+      if (aud === 'admins' && !a.isMain) fail(403, 'Only the Main Admin can send notices to administrators');
+      if (aud === 'class') {
+        const classId = String(b.target_id || '');
+        this.classOf(a, classId);
+        const isSubjectTeacher = !!this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, a.id);
+        const mayManage = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, classId));
+        if (!mayManage && !a.classTeacherOf.has(classId) && !isSubjectTeacher) fail(403, 'You can only post a notice to a class you teach');
+      }
+      if (aud === 'student') {
+        if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, String(this.one('SELECT class_id FROM students WHERE id=?', b.target_id)?.class_id || '')))) fail(403, 'Only an administrator can send a notice to an individual student');
+        this.student(a, b.target_id);
+      }
       if (!['school', 'class', 'student', 'teachers', 'admins'].includes(aud)) fail(400, 'Choose an audience');
       const id = 'nt_' + rid(10);
       this.run('INSERT INTO notices (id, audience, target_id, title, body, posted_by, poster_name, created_at) VALUES (?,?,?,?,?,?,?,?)', id, aud, b.target_id || null, b.title, b.body, a.key, a.name, now());
@@ -1734,7 +1743,9 @@ export class SchoolDO extends DurableObject<Env> {
     app.delete('/notices/:id', (c) => {
       const a = c.get('actor');
       const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!n) fail(404, 'Not found');
-      if (!this.isFullAdmin(a)) fail(403, 'Sent notices can only be removed by an admin');
+      if (!this.canDeleteNotice(a, n!)) fail(403, 'You can remove only notices for classes you administer or notices you posted yourself');
+      const b = await c.req.json<any>().catch(() => ({}));
+      if (b.confirm !== true) fail(400, 'Confirm that you want to remove this notice');
       this.run('UPDATE notices SET deleted_at=? WHERE id=?', now(), n!.id);
       this.audit(a, 'notice.delete', 'notice', n!.id, n!.title);
       return c.json({ ok: true });
@@ -1963,6 +1974,15 @@ export class SchoolDO extends DurableObject<Env> {
     return app;
   }
 
+  canDeleteNotice(a: Actor, n: Row): boolean {
+    if (this.isFullAdmin(a)) return true;
+    if (n.audience !== 'class') return false;
+    const classId = String(n.target_id || '');
+    if (a.classTeacherOf.has(classId)) return true;
+    if (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, classId)) return true;
+    return n.posted_by === a.key && a.teaches.has(classId);
+  }
+
   noticesFor(a: Actor, onlyStudent?: string): Row[] {
     let rows = this.q('SELECT * FROM notices WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 300');
     const kids = a.type === 'guardian' ? this.q('SELECT id, class_id FROM students WHERE id IN (' + a.children.map(() => '?').join(',') + ')', ...a.children) : [];
@@ -1971,12 +1991,23 @@ export class SchoolDO extends DurableObject<Env> {
         const s = this.one('SELECT class_id FROM students WHERE id=?', onlyStudent);
         return n.audience === 'school' || (n.audience === 'class' && n.target_id === s?.class_id) || (n.audience === 'student' && n.target_id === onlyStudent);
       }
-      if (this.isAdmin(a)) return n.audience !== 'admins' || a.role !== 'teacher';
+      if (this.isFullAdmin(a)) return true;
       if (a.type === 'guardian') return n.audience === 'school' || (n.audience === 'class' && kids.some((k) => k.class_id === n.target_id)) || (n.audience === 'student' && a.children.includes(n.target_id));
+      if (a.role === 'subadmin') {
+        const canSchool = this.hasPermission(a, 'notices.manage') && a.scopeAll;
+        if (n.audience === 'admins') return a.isMain;
+        if (n.audience === 'school' || n.audience === 'teachers') return canSchool;
+        if (n.audience === 'class') return (this.hasPermission(a, 'notices.manage') && this.inClassScope(a, n.target_id)) || a.teaches.has(n.target_id);
+        if (n.audience === 'student') {
+          const st = this.one('SELECT class_id FROM students WHERE id=?', n.target_id);
+          return !!st && ((this.hasPermission(a, 'notices.manage') && this.inClassScope(a, st.class_id)) || a.teaches.has(st.class_id));
+        }
+        return false;
+      }
       return n.audience === 'school' || n.audience === 'teachers' || (n.audience === 'class' && a.teaches.has(n.target_id)) || (n.audience === 'student' && (() => { const s = this.one('SELECT class_id FROM students WHERE id=?', n.target_id); return !!s && a.teaches.has(s.class_id); })());
     });
     const reads = this.isAdmin(a);
-    return rows.map((n) => ({ ...n, read_count: reads ? Number(this.one('SELECT COUNT(*) AS n FROM notice_reads WHERE notice_id=?', n.id)!.n) : undefined,
+    return rows.map((n) => ({ ...n, can_delete: this.canDeleteNotice(a, n), read_count: reads ? Number(this.one('SELECT COUNT(*) AS n FROM notice_reads WHERE notice_id=?', n.id)!.n) : undefined,
       target_name: n.audience === 'class' ? this.one('SELECT name FROM classes WHERE id=?', n.target_id)?.name : n.audience === 'student' ? this.one('SELECT name FROM students WHERE id=?', n.target_id)?.name : null }));
   }
 
