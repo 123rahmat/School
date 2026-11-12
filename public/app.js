@@ -845,6 +845,7 @@ function studentActions(s) {
   const out = [];
   if (ME.canManageStudents) {
     out.push('<button class="btn" id="edit">Edit</button>');
+    if (s.status === 'active' || s.status === 'pending') out.push('<button class="btn" id="move-class">Move class</button>');
     if (s.status === 'pending') out.push('<button class="btn primary" id="confirm">Confirm</button>');
     if (s.status === 'active') out.push('<button class="btn" id="left">Mark as left</button>');
     if (s.status === 'left') out.push('<button class="btn" id="restore">Restore</button>', '<button class="btn" id="cert">Leaving certificate</button>');
@@ -855,6 +856,27 @@ function studentActions(s) {
 function bindStudentActions(s, p) {
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
   on('edit', async () => studentForm(await S('/classes'), s));
+  on('move-class', async () => {
+    const classes = await S('/classes');
+    const destinations = classes.filter((x) => x.id !== s.class_id);
+    if (!destinations.length) return toast('Create another active class before moving this student.');
+    modal(`<h2>Move ${esc(s.name)} to another class</h2>
+      <div class="card small"><b>Current class:</b> ${esc(s.class_name)}<br><b>Student:</b> ${esc(s.name)} · ${esc(s.reg_no)}<br><b>Father:</b> ${esc(s.father_name)}</div>
+      <form id="moveStudentForm" class="form">
+        <div class="full"><label>Destination class *</label><select name="class_id" required>${destinations.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+        <div class="full"><label>Reason (optional)</label><input name="reason" placeholder="Failed and repeating / parent request / placement change"></div>
+        <p class="full small muted">This changes the student's current class from today. Previous class attendance, fees, receipts and published results remain in the old records. The parent and both class teachers will be notified.</p>
+        <div class="full row"><button class="btn primary">Review and move student</button><button type="button" class="btn" data-close>Cancel</button></div>
+      </form>`, (m) => {
+        $('#moveStudentForm', m).onsubmit = async (e) => {
+          e.preventDefault(); const b = formData(e.target);
+          const target = destinations.find((x) => x.id === b.class_id);
+          if (!confirm('Move ' + s.name + ' from ' + s.class_name + ' to ' + target.name + ' from today? Existing attendance, fee and result history will not be moved or deleted.')) return;
+          await act(() => S('/students/' + s.id + '/move-class', { body: { ...b, effective_date:today(), confirm:true } }), 'Student moved to ' + target.name);
+          closeModal(); go('/student/' + s.id);
+        };
+      });
+  });
   on('confirm', async () => { if (!confirm('Activate this student profile and notify the parent?')) return; await act(() => S(`/students/${s.id}/confirm`, { body: { confirm: true } }), 'Confirmed; parent invited'); render(); });
   on('left', () => modal(`<h2>Mark ${esc(s.name)} as left</h2><form class="form" id="lf">
     <div><label>Leaving date</label><input type="date" name="date" value="${today()}"></div>
