@@ -1141,6 +1141,8 @@ function staffForm(t = null) {
           if (!b.permissions.length) return toast('Select at least one Mini Admin permission.');
           if (!b.scope_all && !b.scope_classes.length) return toast('Choose all classes or select one or more classes.');
         }
+        if (!confirm((t ? 'Save changes to ' + t.name : 'Create this staff account') + '? Role, Google sign-in and permissions changes may affect account access immediately.')) return;
+        b.confirm = true;
         if (t) await act(() => S('/staff/' + t.id, { method: 'PATCH', body: b }), 'Saved');
         else await act(() => S('/staff', { body: b }), 'Added');
         closeModal(); await refreshMe(); render();
@@ -1166,7 +1168,7 @@ route('/staff/:id', async ({ id }) => {
   ${d.history.length ? `<h2>Change history</h2><div class="table-wrap"><table><tbody>${d.history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
   const on = (i, f) => { const b = $('#' + i); if (b) b.onclick = f; };
   on('edit', () => staffForm(t));
-  on('react', async () => { await act(() => S(`/staff/${id}/reactivate`, { body: {} }), 'Reactivated'); render(); });
+  on('react', async () => { if (!confirm('Reactivate ' + t.name + ' and restore their sign-in access?')) return; await act(() => S(`/staff/${id}/reactivate`, { body: { confirm: true } }), 'Reactivated'); render(); });
   on('replace', () => modal(`<h2>Replace ${esc(t.name)} with a new teacher</h2>
     <p class="small muted">This creates a new teacher account with a separate permanent ID. The old teacher is signed out and marked as former. Past attendance, student records, messages and audit history remain attached to the old profile.</p>
     <form id="replaceTeacherForm" class="form">
@@ -1188,10 +1190,12 @@ route('/staff/:id', async ({ id }) => {
         const form = e.target;
         const b = formData(form);
         for (const key of ['transfer_classes', 'transfer_subjects', 'transfer_timetable']) b[key] = !!form.elements[key].checked;
+        if (!confirm('Create a NEW teacher account, revoke ' + t.name + '\\'s access, and transfer the selected current assignments? The old teacher history will remain.')) return;
+        b.confirm = true;
         let result = await act(() => S(`/staff/${id}/replace`, { body: b }));
         if (result?.needsConfirm) {
           if (!confirm(result.message + '\n\nContinue only after the cash has been physically handed over or settled.')) return;
-          result = await act(() => S(`/staff/${id}/replace`, { body: { ...b, confirm_cash: true } }));
+          result = await act(() => S(`/staff/${id}/replace`, { body: { ...b, confirm: true, confirm_cash: true } }));
         }
         if (result?.new_id) {
           closeModal();
@@ -1205,8 +1209,10 @@ route('/staff/:id', async ({ id }) => {
     <div class="full row"><button class="btn danger">Deactivate</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#df', m).onsubmit = async (e) => {
       e.preventDefault(); const b = formData(e.target);
+      if (!confirm('Deactivate ' + t.name + '? They will be signed out of all devices and lose access, but their history will remain.')) return;
+      b.confirm = true;
       let r = await act(() => S(`/staff/${id}/deactivate`, { body: b }));
-      if (r.needsConfirm) { if (!confirm(r.message)) return; r = await act(() => S(`/staff/${id}/deactivate`, { body: { ...b, confirm_cash: true } })); }
+      if (r.needsConfirm) { if (!confirm(r.message)) return; r = await act(() => S(`/staff/${id}/deactivate`, { body: { ...b, confirm: true, confirm_cash: true } })); }
       toast('Deactivated'); closeModal(); render();
     };
   }));
