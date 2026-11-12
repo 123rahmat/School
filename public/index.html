@@ -15,7 +15,24 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<div id="app"><div class="center muted">Loading…</div></div>
+<div id="app">
+  <div class="landing-shell boot-landing">
+    <header class="landing-nav">
+      <a class="landing-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
+      <div class="landing-nav-actions"><a class="btn" href="/login">Sign in</a><a class="btn primary" href="/signup">Create account</a></div>
+    </header>
+    <main>
+      <section class="landing-hero">
+        <div class="landing-hero-copy">
+          <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
+          <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
+          <p class="landing-lead">Manage student records, staff, classes, attendance, fees, communication and results in one organised institution workspace.</p>
+          <div class="landing-actions"><a class="btn primary" href="/login">Use in browser</a><a class="btn" href="/signup">Create an institution account</a></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-box" id="modal-box"></div></div>
 <script src="/app.js" type="module"></script>
