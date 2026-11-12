@@ -622,7 +622,7 @@ export class SchoolDO extends DurableObject<Env> {
       await this.syncLogin('staff', id, [b.admin.email, b.admin.phone]);
       return c.json({ ok: true, id });
     });
-    app.post('/internal/main-admin', (c) => c.json(this.one('SELECT id, name FROM staff WHERE is_main=1 LIMIT 1')));
+    app.post('/internal/main-admin', (c) => c.json(this.one('SELECT id, name, public_id AS userId FROM staff WHERE is_main=1 LIMIT 1')));
     app.post('/internal/notify-admins', async (c) => {
       const b = await c.req.json<any>();
       if (b.once) { if (this.one('SELECT 1 FROM meta WHERE key=?', 'n:' + b.once)) return c.json({ ok: true }); this.run('INSERT INTO meta VALUES (?,?)', 'n:' + b.once, now()); }
