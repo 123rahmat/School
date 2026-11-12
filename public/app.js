@@ -1847,6 +1847,29 @@ route('/settings', async () => {
     ${sorted.map((c, i) => `<tr><td>${esc(c.name)}</td><td>${c.students}</td><td><select name="next_${c.id}">${sorted.map((x) => `<option value="${x.id}" ${sorted.find((y) => y.grade === c.grade + 1)?.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="passout" ${!sorted.some((y) => y.grade === c.grade + 1) ? 'selected' : ''}>Passed out (final class)</option></select></td></tr>`).join('')}
     </tbody></table></div><button type="button" class="btn" id="exc">Next: review exceptions</button></form><div id="exlist"></div></div>`;
   }
+  if (tab === 'bonuses') {
+    const requestedMonth = query().month || today().slice(0,7);
+    const data = await S('/substitution-bonuses?month=' + encodeURIComponent(requestedMonth));
+    const rows = data.teachers.map((teacher) => teacher.substitutions.map((x) =>
+      '<tr><td><input type="checkbox" name="bonus_ids" value="' + esc(x.id) + '" ' +
+      (x.status === 'completed' && !x.bonus_paid_at ? '' : 'disabled') + '></td>' +
+      '<td>' + fmtDate(x.date) + '</td><td>' + esc(teacher.teacher_name) + '</td><td>' + esc(x.class_name) + '</td>' +
+      '<td>' + esc(x.reason) + '</td><td>' + money(x.rate_amount || 0) + '</td><td>' +
+      (x.bonus_paid_at ? badge('paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')) + '</td></tr>'
+    ).join('')).join('');
+    body = '<div class="row between"><div><h2 style="margin:0">Substitution bonuses</h2>' +
+      '<p class="small muted">Only days with submitted attendance count as completed. Amounts use the class rate saved when each substitute assignment was created. Marking paid records the manual payment; it does not transfer money.</p></div>' +
+      '<form id="bonusMonth" class="row"><input id="bonus-month" type="month" value="' + esc(requestedMonth) + '"><button class="btn">Load month</button></form></div>' +
+      '<div class="grid"><div class="stat"><div class="l">Completed days</div><b>' + data.totals.completed + '</b></div>' +
+      '<div class="stat"><div class="l">Bonus total</div><b>' + money(data.totals.bonus_total) + '</b></div>' +
+      '<div class="stat"><div class="l">Marked paid</div><b>' + money(data.totals.paid_total) + '</b></div>' +
+      '<div class="stat"><div class="l">Outstanding</div><b>' + money(data.totals.unpaid_total) + '</b></div></div>' +
+      '<div class="table-wrap"><table><thead><tr><th></th><th>Date</th><th>Teacher</th><th>Class</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="7" class="muted">No substitutions for this month.</td></tr>') + '</tbody></table></div>' +
+      '<div class="card form"><div><label>Batch payment note (optional)</label><input id="bonus-note" placeholder="Cash paid / bank transfer reference"></div>' +
+      '<div class="row"><button class="btn primary" id="bonus-paid">Mark selected completed days as paid</button></div>' +
+      '<p class="small muted">Select only substitution days actually included in this payment. The system records the administrator, time and note for audit.</p></div>';
+  }
   if (tab === 'storage') {
     const st = await S('/storage');
     const pct = st.limit ? Math.round((100 * st.used) / st.limit) : 0;
@@ -1892,6 +1915,21 @@ route('/settings', async () => {
   const hf = $('#hf'); if (hf) hf.onsubmit = async (e) => { e.preventDefault(); await act(() => S('/holidays', { body: formData(e.target) }), 'Added'); render(); };
   $$('[data-dh]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S('/holidays/' + a.dataset.dh, { method: 'DELETE' }), 'Removed'); render(); });
   $$('[data-so]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/devices/${b.dataset.so}/signout`, { body: {} }), 'Signed out'); render(); });
+  const bonusMonthForm = $('#bonusMonth');
+  if (bonusMonthForm) bonusMonthForm.onsubmit = (e) => {
+    e.preventDefault();
+    go('/settings?tab=bonuses&month=' + encodeURIComponent($('#bonus-month').value));
+  };
+  const bonusPay = $('#bonus-paid');
+  if (bonusPay) bonusPay.onclick = async () => {
+    const ids = $('input[name="bonus_ids"]:checked').map((x) => x.value);
+    if (!ids.length) return toast('Select at least one completed, unpaid substitution day.');
+    if (!confirm('Mark ' + ids.length + ' selected substitution day(s) as paid? Check the real payment first.')) return;
+    await act(() => S('/substitution-bonuses/mark-paid', {
+      body: { ids, note: $('#bonus-note').value, confirm: true }
+    }), 'Bonus payment batch recorded');
+    render();
+  };
   const exc = $('#exc'); if (exc) exc.onclick = async () => {
     const b = formData($('#pf'));
     const nextClass = {}; for (const [k, v] of Object.entries(b)) if (k.startsWith('next_')) nextClass[k.slice(5)] = v;
