@@ -34,35 +34,9 @@ CREATE TABLE IF NOT EXISTS class_subject_history (
 );
 CREATE INDEX IF NOT EXISTS class_subject_history_class ON class_subject_history(class_id, subject, from_date);
 
--- Weekly timetable is explicit, editable and conflict-checked by the school service.
-CREATE TABLE IF NOT EXISTS timetable_slots (
-  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, teacher_id TEXT,
-  day_of_week INTEGER NOT NULL, period INTEGER NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
-  room TEXT, created_by TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS timetable_class_day ON timetable_slots(class_id, day_of_week, period);
-CREATE INDEX IF NOT EXISTS timetable_teacher_day ON timetable_slots(teacher_id, day_of_week, start_time, end_time);
--- A substitute is assigned to a class for one dated school day; normal teaching history is unchanged.
-CREATE TABLE IF NOT EXISTS class_substitution_rates (
-  class_id TEXT PRIMARY KEY, amount_per_day INTEGER NOT NULL DEFAULT 0,
-  updated_by TEXT, updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS class_substitutions (
-  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, original_teacher_id TEXT, substitute_teacher_id TEXT NOT NULL,
-  date TEXT NOT NULL, reason TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
-  rate_amount INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'assigned',
-  completed_at TEXT, bonus_paid_at TEXT, bonus_paid_by TEXT, bonus_note TEXT,
-  UNIQUE(class_id, date)
-);
-CREATE INDEX IF NOT EXISTS class_substitutions_teacher_date ON class_substitutions(substitute_teacher_id, date);
-CREATE INDEX IF NOT EXISTS class_substitutions_month ON class_substitutions(date, substitute_teacher_id);
-
--- Syllabus documents belong to a class and subject, and remain private to authorized school users.
-CREATE TABLE IF NOT EXISTS syllabus_documents (
-  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, subject TEXT NOT NULL, title TEXT NOT NULL,
-  file_key TEXT NOT NULL, file_name TEXT, uploaded_by TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT
-);
-CREATE INDEX IF NOT EXISTS syllabus_class_subject ON syllabus_documents(class_id, subject, created_at);
+-- Weekly timetable, dated substitutions and syllabus library are intentionally excluded
+-- from the focused school workflow. Existing legacy tables are left untouched in
+-- existing school databases so historical data and R2 files are not discarded.
 
 CREATE TABLE IF NOT EXISTS guardians (
   id TEXT PRIMARY KEY, public_id TEXT, phone TEXT, email TEXT, name TEXT, created_at TEXT NOT NULL
