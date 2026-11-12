@@ -2233,6 +2233,7 @@ export class SchoolDO extends DurableObject<Env> {
       const gids = new Set<string>();
       const counts: Row = { promoted: 0, 'not promoted': 0, left: 0, 'passed out': 0 };
       this.tx(() => {
+        this.run('UPDATE enrollments SET to_date=?,class_name_snapshot=COALESCE(class_name_snapshot,(SELECT name FROM classes WHERE id=enrollments.class_id)) WHERE session_id=? AND to_date IS NULL', today, old.id);
         this.run('UPDATE academic_sessions SET current=0, locked=1 WHERE id=?', old.id);
         this.run('INSERT INTO academic_sessions (id, name, current, created_at) VALUES (?,?,1,?)', sid, b.new_session, now());
         for (const s of this.q("SELECT * FROM students WHERE status='active'")) {
