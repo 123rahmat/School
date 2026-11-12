@@ -1936,12 +1936,19 @@ route('/settings', async () => {
     const students = await S('/students?status=active');
     const decisions = {};
     $('#exlist').innerHTML = `<h3>Exceptions</h3><p class="small muted">Change only students who are not promoted, leaving, or moving to a different section.</p>
-    <div class="table-wrap"><table><tbody>${students.map((s) => `<tr><td>${esc(s.name)}</td><td>${esc(s.class_name)}</td><td><select data-st="${s.id}"><option value="promoted">Promote</option><option value="not promoted">Not promoted (repeat)</option><option value="left">Left school</option><option value="passed out">Passed out</option></select></td></tr>`).join('')}</tbody></table></div>
-    <button class="btn primary" id="run" style="margin-top:12px">Promote everyone and start ${esc(b.new_session)}</button>`;
+    <div class="table-wrap"><table><thead><tr><th>Student</th><th>Current class</th><th>Decision</th><th>New class if promoted</th></tr></thead><tbody>
+    ${students.map((s) => `<tr><td>${esc(s.name)}</td><td>${esc(s.class_name)}</td><td><select data-st="${s.id}"><option value="promoted">Promote</option><option value="not promoted">Repeat this class (failed / needs more time)</option><option value="left">Left school</option><option value="passed out">Passed out</option></select></td><td><select data-nextst="${s.id}">${sorted.map((x) => `<option value="${x.id}" ${(nextClass[s.class_id] || s.class_id) === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td></tr>`).join('')}
+    </tbody></table></div>
+    <button class="btn primary" id="run" style="margin-top:12px">Review decisions and start ${esc(b.new_session)}</button>`;
     $('#run').onclick = async () => {
-      $$('[data-st]').forEach((sel) => { if (sel.value !== 'promoted') decisions[sel.dataset.st] = { outcome: sel.value }; });
-      if (!confirm('Start the new session? The old session becomes read-only.')) return;
-      const r = await act(() => S('/promotion', { body: { new_session: b.new_session, next_class: nextClass, decisions } }));
+      $('[data-st]').forEach((sel) => {
+        const target = $('[data-nextst="' + sel.dataset.st + '"]').value;
+        if (sel.value !== 'promoted' || target !== (nextClass[students.find((x) => x.id === sel.dataset.st)?.class_id] || students.find((x) => x.id === sel.dataset.st)?.class_id)) {
+          decisions[sel.dataset.st] = { outcome: sel.value, class_id: target };
+        }
+      });
+      if (!confirm('Start ' + b.new_session + '? Your repeat, move, passed-out and left-student decisions will be applied individually. The previous session and its records will be locked, not deleted.')) return;
+      const r = await act(() => S('/promotion', { body: { new_session: b.new_session, next_class: nextClass, decisions, confirm: true } }));
       toast('Done: ' + Object.entries(r.counts).map(([k, v]) => `${v} ${k}`).join(', ')); render();
     };
   };
