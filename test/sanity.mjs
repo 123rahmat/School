@@ -49,7 +49,7 @@ assert.match(app, /No internet connection\. Connect to the internet to verify yo
 assert.match(app, /function connectionBannerHtml\(\)/, 'Global offline and restored connection banner must exist');
 assert.match(app, /Connection restored/, 'The app must show a connection-restored banner');
 assert.match(app, /Your unsent work stays on this device/, 'Offline banner must explain that unsent work remains local');
-assert.match(app, /submission\\(s\\) are waiting to reach the school server/, 'Offline banner must show pending submission count');
+assert.ok(app.includes('submission(s) are waiting to reach the school server'), 'Offline banner must show pending submission count');
 assert.match(app, /window\.addEventListener\('online', async/, 'Reconnect must revalidate the server session and sync queued attendance');
 assert.match(app, /window\.addEventListener\('offline'/, 'The app must show offline state when connectivity is lost');
 assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
