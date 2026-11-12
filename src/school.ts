@@ -395,6 +395,12 @@ export class SchoolDO extends DurableObject<Env> {
         classId, date, submit ? 'submitted' : 'draft', submit ? a.key : null, submit ? t : null);
     });
     if (submit) {
+      const substitute = this.one("SELECT * FROM class_substitutions WHERE class_id=? AND date=? AND substitute_teacher_id=? AND status='assigned'", classId, date, a.id);
+      if (substitute) {
+        this.run("UPDATE class_substitutions SET status='completed', completed_at=? WHERE id=? AND status='assigned'", t, substitute.id);
+        this.audit(a, 'teacher.substitute.complete', 'class', classId, { date, substitution_id:substitute.id, rate_amount:substitute.rate_amount });
+        this.notify('s:' + a.id, 'Substitution recorded', 'Your ' + money(Number(substitute.rate_amount || 0)) + ' substitution amount for ' + date + ' has been added to the month-end bonus statement. Payment is subject to administrator approval.');
+      }
       this.audit(a, 'attendance.submit', 'class', classId, { date });
       if (this.setting('absence_alerts') === '1') {
         for (const r of this.q("SELECT student_id, status FROM attendance_records WHERE class_id=? AND date=? AND status IN ('A','L')", classId, date))
@@ -801,6 +807,7 @@ export class SchoolDO extends DurableObject<Env> {
         subjects: this.q('SELECT cs.id,cs.subject,c.name AS class_name,c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=? ORDER BY c.grade,c.name,cs.subject', id),
         timetable: this.q('SELECT t.id,t.class_id,t.subject,t.day_of_week,t.period,t.start_time,t.end_time,t.room,c.name AS class_name FROM timetable_slots t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=? ORDER BY t.day_of_week,t.start_time', id),
         substitutions: this.q('SELECT x.*,c.name AS class_name FROM class_substitutions x JOIN classes c ON c.id=x.class_id WHERE x.substitute_teacher_id=? ORDER BY x.date DESC LIMIT 100',id),
+        substitutionBonus: this.one("SELECT COUNT(*) AS completed_days,COALESCE(SUM(rate_amount),0) AS earned,COALESCE(SUM(CASE WHEN bonus_paid_at IS NOT NULL THEN rate_amount ELSE 0 END),0) AS paid FROM class_substitutions WHERE substitute_teacher_id=? AND status='completed'",id),
         submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
         notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
         cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
@@ -998,6 +1005,8 @@ export class SchoolDO extends DurableObject<Env> {
         students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
         substitution: this.one('SELECT x.*, t.name AS substitute_teacher_name FROM class_substitutions x JOIN staff t ON t.id=x.substitute_teacher_id WHERE x.class_id=? AND x.date=?', cl.id, pkt().date),
         canManageSubstitution: this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, cl.id)),
+        substitutionRate: Number(this.one('SELECT amount_per_day FROM class_substitution_rates WHERE class_id=?', cl.id)?.amount_per_day || 0),
+        canEditSubstitutionRate: this.isFullAdmin(a),
         history: this.q('SELECT a.from_date, a.to_date, t.name FROM class_teacher_assignments a JOIN staff t ON t.id=a.teacher_id WHERE a.class_id=? ORDER BY a.from_date DESC', cl.id),
       });
     });
