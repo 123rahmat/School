@@ -69,7 +69,8 @@ const S = (p, o) => api('/api/s' + p, o);
 let connectionRestoreTimer = null;
 let connectionRestoredUntil = 0;
 function connectionBannerHtml() {
-  if (!navigator.onLine) return `<div class="network-banner offline" role="status" aria-live="assertive"><span class="network-dot"></span><div><b>No internet connection</b><span>Google sign-in, session verification and server updates require internet. Attendance drafts can be saved on this device and synced after reconnection.</span></div></div>`;
+  const pending = ME && typeof outbox === 'function' ? outbox().length : 0;
+  if (!navigator.onLine) return `<div class="network-banner offline" role="status" aria-live="assertive"><span class="network-dot"></span><div><b>No internet connection</b><span>Google sign-in, session verification and server updates require internet. Attendance drafts can be saved on this device and synced after reconnection.${pending ? ` ${pending} attendance item(s) are waiting on this device.` : ''}</span></div></div>`;
   if (connectionRestoredUntil > Date.now()) return `<div class="network-banner restored" role="status" aria-live="polite"><span class="network-dot"></span><div><b>Connection restored</b><span>Checking your secure session and syncing saved attendance changes.</span></div></div>`;
   return '';
 }
