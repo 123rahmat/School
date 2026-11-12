@@ -771,9 +771,11 @@ function studentForm(classes, s = null) {
     $('#sf', m).onsubmit = async (e) => {
       e.preventDefault();
       const b = formData(e.target);
+      if (!confirm(s ? 'Save these student profile changes? Existing parent, class and student records may be updated.' : 'Create this student profile now? Teacher-added profiles remain pending until an administrator confirms them.')) return;
+      b.confirm = true;
       if (s) { await act(() => S('/students/' + s.id, { method: 'PATCH', body: b }), 'Saved'); closeModal(); return render(); }
       let r = await act(() => S('/students', { body: b }));
-      if (r.needsConfirm) { if (!confirm(r.message + '\n\nAdd anyway?')) return; r = await act(() => S('/students', { body: { ...b, allow_duplicate: true } })); }
+      if (r.needsConfirm) { if (!confirm(r.message + '\n\nAdd anyway? Check that this is not a duplicate student.')) return; r = await act(() => S('/students', { body: { ...b, allow_duplicate: true, confirm: true } })); }
       toast(r.status === 'pending' ? 'Added — awaiting admin confirmation' : `Added (${r.reg_no})`);
       closeModal(); render();
     };
@@ -798,7 +800,8 @@ function importDialog() {
       $('#go', m).disabled = !rows.length;
     };
     $('#go', m).onclick = async () => {
-      const r = await act(() => S('/students/import', { body: { rows } }));
+      if (!confirm('Import ' + rows.length + ' student record(s)? This creates profiles and may invite parents to sign in.')) return;
+      const r = await act(() => S('/students/import', { body: { rows, confirm: true } }));
       const bad = r.results.filter((x) => !x.ok);
       $('#prev', m).innerHTML = `<p><b>${r.added} added.</b> ${bad.length ? bad.length + ' problem row(s):' : ''}</p>` + bad.map((x) => `<div class="small">Row ${x.row}: ${esc(x.error)}</div>`).join('');
       $('#go', m).disabled = true;
@@ -852,17 +855,17 @@ function studentActions(s) {
 function bindStudentActions(s, p) {
   const on = (id, fn) => { const b = $('#' + id); if (b) b.onclick = fn; };
   on('edit', async () => studentForm(await S('/classes'), s));
-  on('confirm', async () => { await act(() => S(`/students/${s.id}/confirm`, { body: {} }), 'Confirmed; parent invited'); render(); });
+  on('confirm', async () => { if (!confirm('Activate this student profile and notify the parent?')) return; await act(() => S(`/students/${s.id}/confirm`, { body: { confirm: true } }), 'Confirmed; parent invited'); render(); });
   on('left', () => modal(`<h2>Mark ${esc(s.name)} as left</h2><form class="form" id="lf">
     <div><label>Leaving date</label><input type="date" name="date" value="${today()}"></div>
     <div><label>Reason</label><select name="reason">${['transferred', 'left without notice', 'expelled', 'passed out', 'other'].map((r) => `<option>${r}</option>`).join('')}</select></div>
     <div class="full"><label>Note</label><input name="note"></div>
     <p class="full small muted">All attendance, fees and receipts stay on the profile. Unpaid balance stays on the Left with dues list.</p>
     <div class="full row"><button class="btn primary">Mark as left</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#lf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/left`, { body: formData(e.target) }), 'Marked as left'); closeModal(); render(); };
+    $('#lf', m).onsubmit = async (e) => { e.preventDefault(); if (!confirm('Mark ' + s.name + ' as a former student? Attendance, fees and receipts will be retained.')) return; await act(() => S(`/students/${s.id}/left`, { body: { ...formData(e.target), confirm: true } }), 'Marked as left'); closeModal(); render(); };
   }));
-  on('restore', async () => { await act(() => S(`/students/${s.id}/restore`, { body: {} }), 'Restored'); render(); });
-  on('del', async () => { if (!confirm('Delete permanently? Only for records added by mistake.')) return; await act(() => S(`/students/${s.id}`, { method: 'DELETE' }), 'Deleted'); go('/students'); });
+  on('restore', async () => { if (!confirm('Restore ' + s.name + ' to the active student list?')) return; await act(() => S(`/students/${s.id}/restore`, { body: { confirm: true } }), 'Restored'); render(); });
+  on('del', async () => { if (!confirm('Permanently delete ' + s.name + '? This is allowed only when no attendance or fee history exists.')) return; await act(() => S(`/students/${s.id}?confirm=1`, { method: 'DELETE' }), 'Deleted'); go('/students'); });
   on('cert', () => {
     const w = window.open('', '_blank');
     w.document.write(`<title>Leaving certificate</title><body style="font-family:serif;max-width:700px;margin:40px auto;line-height:1.8"><h1 style="text-align:center">${esc(ME.schoolName)}</h1><h2 style="text-align:center">School Leaving Certificate</h2>
@@ -1424,7 +1427,8 @@ route('/attendance/:id', async ({ id }) => {
     if (d.status === 'submitted') {
       if (ME.isAdmin) {
         const reason = prompt(`Change to ${STATUS[k]}. Reason?`); if (!reason) return;
-        await act(() => S('/attendance/correct', { body: { student_id: sid, date, status: k, reason } }), 'Corrected; parent told'); return render();
+        if (!confirm('Apply this attendance correction and notify the parent?')) return;
+        await act(() => S('/attendance/correct', { body: { student_id: sid, date, status: k, reason, confirm: true } }), 'Corrected; parent told'); return render();
       }
       const reason = prompt(`Request change to ${STATUS[k]}. Reason?`); if (!reason) return;
       await act(() => S('/change-requests', { body: { kind: 'attendance', student_id: sid, date, status: k, reason } }), 'Request sent to admin'); return;
@@ -1434,7 +1438,7 @@ route('/attendance/:id', async ({ id }) => {
   });
   const send = async (submit) => {
     try {
-      await S(`/attendance/${id}/${date}${submit ? '/submit' : ''}`, { method: submit ? 'POST' : 'PUT', body: { records: recs } });
+      await S(`/attendance/${id}/${date}${submit ? '/submit' : ''}`, { method: submit ? 'POST' : 'PUT', body: { records: recs, confirm: submit } });
       try { localStorage.removeItem(draftKey); } catch {}
       toast(submit ? 'Submitted — parents of absent and late students are being told' : 'Draft saved');
     } catch (e) {
