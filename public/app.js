@@ -27,6 +27,10 @@ const badge = (text, kind = '') => `<span class="badge ${kind}">${esc(text)}</sp
 
 let ME = null;
 let BILL = null;
+const isInstalledApp = () => {
+  try { return !!(window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true); }
+  catch { return navigator.standalone === true; }
+};
 
 // Payment accounts the admin has added (any company: Easypaisa, JazzCash, any bank…)
 let ACCOUNTS = null;
@@ -123,10 +127,11 @@ document.addEventListener('click', (event) => {
 
 async function render() {
   const path = currentPath();
-  // Public entry routes render immediately; private routes still verify the session first.
+  // Browser visitors see the public page; installed-app visitors go straight to sign-in.
+  if (!ME && path === '/' && isInstalledApp()) return go('/login');
   if (!ME && !['/', '/login', '/signup'].includes(path)) {
     try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
-    if (!ME) return go('/');
+    if (!ME) return go(isInstalledApp() ? '/login' : '/');
   }
   if (ME && ['/login', '/signup'].includes(path)) return go('/');
   if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
@@ -178,7 +183,10 @@ function view(html) {
     <aside class="side" id="side">
       <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
       <nav>${nav()}</nav>
-      <div class="muted small" style="padding:12px 10px">${esc(ME?.name || '')}${ME?.role && ME.role !== 'parent' ? ' · ' + esc(ME.subrole || ME.role) : ''}</div>
+      <div class="muted small" style="padding:12px 10px">
+        <div>${esc(ME?.name || '')}${ME?.role && ME.role !== 'parent' ? ' · ' + esc(ME.subrole || ME.role) : ''}</div>
+        ${ME?.userId ? `<div class="account-id-label">Account ID</div><code class="account-id-value">${esc(ME.userId)}</code>` : ''}
+      </div>
     </aside>
     <div class="main">
       <div class="top">
@@ -199,7 +207,8 @@ function view(html) {
     }
     try { await api('/api/auth/logout', { body: {} }); }
     catch { toast('Could not sign out from the server. Please try again.'); return; }
-      ME = null; BILL = null; go('/login');
+      ME = null; BILL = null;
+      go(isInstalledApp() ? '/login' : '/');
   };
   setupSearch();
   setupInstall();
@@ -233,9 +242,10 @@ function setupSearch() {
     if (q.value.trim().length < 2) return showRecent();
     t = setTimeout(async () => {
       const r = await S('/search?q=' + encodeURIComponent(q.value.trim())).catch(() => ({ students: [], staff: [] }));
-      box.innerHTML = r.students.map((s) => `<a href="/student/${s.id}" data-label="${esc(s.name)} (${esc(s.reg_no)})"><b>${esc(s.name)}</b> s/o ${esc(s.father_name)} <span class="muted small">· ${esc(s.class_name)} · ${esc(s.reg_no)}${s.status !== 'active' ? ' · ' + esc(s.status) : ''}</span></a>`).join('')
-        + r.staff.map((s) => `<a href="/staff/${s.id}" data-label="${esc(s.name)} (teacher)"><b>${esc(s.name)}</b> <span class="muted small">· teacher${s.subjects ? ' · ' + esc(s.subjects) : ''}${s.active ? '' : ' · former'}</span></a>`).join('')
-        || '<div class="muted" style="padding:10px 12px">No matches</div>';
+      const studentHtml = (r.students || []).map((x) => `<a href="/student/${x.id}" data-label="${esc(x.name)} (${esc(x.reg_no)})"><b>${esc(x.name)}</b> s/o ${esc(x.father_name)} <span class="muted small">· ${esc(x.class_name)} · ${esc(x.reg_no)}${x.status !== 'active' ? ' · ' + esc(x.status) : ''}</span></a>`).join('');
+      const staffHtml = (r.staff || []).map((x) => `<a href="/staff/${x.id}" data-label="${esc(x.name)} (teacher)"><b>${esc(x.name)}</b> <span class="muted small">· teacher${x.subjects ? ' · ' + esc(x.subjects) : ''}${x.active ? '' : ' · former'}${x.userId ? ' · ID ' + esc(x.userId) : ''}</span></a>`).join('');
+      const userHtml = (r.users || []).map((u) => `<div class="user-search-result"><b>${esc(u.name)}</b><span>${esc(u.accountType)} · ${u.active ? 'active' : 'inactive'}</span><code>${esc(u.userId)}</code></div>`).join('');
+      box.innerHTML = studentHtml + staffHtml + userHtml || '<div class="muted" style="padding:10px 12px">No matches</div>';
       box.classList.remove('hidden');
       $$('a', box).forEach((a) => a.onclick = () => {
         const r2 = recent().filter((x) => x.href !== a.getAttribute('href').slice(1));
@@ -295,14 +305,14 @@ function showAuthError(error, mode = 'login') {
   if (message) message.textContent = raw;
   if (!next) return;
   next.innerHTML = '';
-  if (mode === 'login' && /not registered|not linked|not found/i.test(raw)) {
-    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution workspace with this Google account.</p><a class="btn primary" href="/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
+  if (mode === 'login' && /main administrator profile|register a new institution/i.test(raw)) {
+    next.innerHTML = `<div class="auth-help"><b>This Google account is not registered as a main administrator.</b><p>${esc(raw)}</p><a class="btn primary" href="/signup">Register an institution</a></div>`;
   } else if (/not configured/i.test(raw)) {
     next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
   } else if (mode === 'signup') {
     next.innerHTML = '<div class="auth-help"><p>Already have an institution account? <a href="/login">Sign in instead</a>.</p></div>';
   } else {
-    next.innerHTML = '<div class="auth-help"><p>Use the Google account connected to your institution profile. If the problem continues, ask the institution administrator to check your account email.</p></div>';
+    next.innerHTML = `<div class="auth-help"><p>${esc(raw)}</p><p class="small muted">Teachers and parents do not create their own accounts. The institution administrator must add your profile and sign-in email.</p></div>`;
   }
 }
 async function mountGoogleButton(target, onCredential, buttonText = 'signin_with', mode = 'login') {
@@ -483,18 +493,36 @@ function landingPage() {
 }
 
 route('/login', async () => {
+  let selectedRole = 'main_admin';
   authPage(`
     <h1>Welcome back</h1>
-    <p class="muted small auth-description">Continue with the Google account linked to your institution.</p>
+    <p class="muted small auth-description">Choose your account type, then continue with its registered Google account.</p>
+    <div class="login-role-picker" id="login-role-picker" role="group" aria-label="Account type">
+      <button type="button" class="login-role-option active" data-login-role="main_admin" aria-pressed="true"><span class="role-symbol">⌂</span><b>Main admin</b><small>Institution control</small></button>
+      <button type="button" class="login-role-option" data-login-role="teacher" aria-pressed="false"><span class="role-symbol">▤</span><b>Teacher</b><small>Teaching workspace</small></button>
+      <button type="button" class="login-role-option" data-login-role="parent" aria-pressed="false"><span class="role-symbol">♡</span><b>Parent</b><small>Family workspace</small></button>
+    </div>
     <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
     <div id="authnext"></div>
-    <p class="small muted auth-switch">New here? <a href="/signup">Create an institution account</a></p>`);
+    <p class="small muted auth-switch">New institution? <a href="/signup">Register your institution</a></p>`);
+  $$('.login-role-option').forEach((button) => {
+    button.onclick = () => {
+      selectedRole = button.dataset.loginRole;
+      $$('.login-role-option').forEach((item) => {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      $('#authmsg').textContent = '';
+      $('#authnext').innerHTML = '';
+    };
+  });
   await mountGoogleButton($('#gbtn'), async (credential) => {
-    const r = await api('/api/auth/google', { body: { credential } });
+    const r = await api('/api/auth/google', { body: { credential, role: selectedRole } });
     if (r.choose) {
       $('#gbtn').classList.add('hidden');
-      $('#authmsg').textContent = 'Choose which institution you want to open:';
+      $('#authmsg').textContent = 'Choose the institution you want to open:';
       const choose = document.createElement('div');
       choose.className = 'auth-school-choices';
       choose.innerHTML = r.choose.map((item) => `<button class="btn" data-pick="${item.pick}">${esc(item.label)}</button>`).join('');
@@ -502,9 +530,9 @@ route('/login', async () => {
       $$('button[data-pick]', choose).forEach((button) => button.onclick = async () => {
         button.disabled = true;
         try {
-          await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
+          await api('/api/auth/google', { body: { credential, role: selectedRole, pick: Number(button.dataset.pick) } });
           await refreshMe();
-          if (!ME) throw new Error('Your session could not be created. Please retry sign-in.');
+          if (!ME) throw new Error('Your secure session could not be created. Please retry sign-in.');
           go('/');
           flushOutbox();
         } catch (error) { button.disabled = false; showAuthError(error, 'login'); }
@@ -522,6 +550,7 @@ route('/signup', async () => {
   authPage(`
     <h1 id="signup-heading">Let’s set up your institution</h1>
     <p id="signup-description" class="muted small auth-description">Create a private workspace for your organisation using your Google account.</p>
+    <div class="auth-help signup-policy"><b>Institution registration only</b><p>This creates the institution and its main administrator profile automatically. Teachers and parents are added later by the institution administrator.</p></div>
     <form id="signupForm" class="stack">
       <label for="signup-school">Institution name</label>
       <input id="signup-school" name="school_name" placeholder="e.g. Northstar Learning Centre" autocomplete="organization" required maxlength="120">
@@ -1743,13 +1772,14 @@ route('/owner', async () => {
 (async () => {
   const initialPath = currentPath();
   const isPublicEntry = ['/', '/login', '/signup'].includes(initialPath);
-  if (isPublicEntry) {
-    // Show the landing/auth screen immediately; session discovery must not block first paint.
+  if (isPublicEntry && !(initialPath === '/' && isInstalledApp())) {
+    // Keep the public website immediate while checking an existing browser session quietly.
     render();
     refreshMe().then(() => {
       if (ME) render();
     }).catch(() => {});
   } else {
+    // Installed apps verify an existing device session before choosing the entry screen.
     try { await refreshMe(); } catch {}
     render();
   }
