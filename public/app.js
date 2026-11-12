@@ -1101,7 +1101,7 @@ route('/staff/:id', async ({ id }) => {
   const t = d.staff;
   const cash = d.cashHeld.reduce((s, x) => s + x.amount, 0);
   view(`<div class="row between"><div><h1 style="margin:0">${esc(t.name)} ${t.active ? '' : badge('former', 'warn')}</h1><div class="muted">${esc(t.subrole || t.role)}${t.subjects ? ' · ' + esc(t.subjects) : ''}</div></div>
-  <div class="row">${ME.role === 'admin' && (!t.is_main || ME.isMainAdmin) ? `<button class="btn" id="edit">Edit</button>${t.is_main ? '' : t.active ? '<button class="btn danger" id="deact">Deactivate</button>' : '<button class="btn" id="react">Reactivate</button>'}` : ''}</div></div>
+  <div class="row">${ME.role === 'admin' && (!t.is_main || ME.isMainAdmin) ? `<button class="btn" id="edit">Edit</button>${t.is_main ? '' : t.active ? '<button class="btn danger" id="deact">Deactivate</button>' : '<button class="btn" id="react">Reactivate</button>'}` : ''}${ME.isMainAdmin && t.role === 'teacher' && t.active ? '<button class="btn primary" id="replace">Replace with new teacher</button>' : ''}</div></div>
   <div class="grid" style="margin-top:14px">
     <div class="stat"><div class="l">Phone</div>${esc(t.phone || '–')}</div><div class="stat"><div class="l">Email</div>${esc(t.email || '–')}</div>
     <div class="stat"><div class="l">Class teacher of</div>${esc(d.classTeacherOf.map((c) => c.name).join(', ') || '–')}</div>
