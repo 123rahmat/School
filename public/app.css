@@ -356,3 +356,8 @@ body:has(.landing-shell) { background: #081323; }
 .sync-status.queued { border-color:var(--info-line); background:var(--info-soft); }
 .landing-entry-actions .btn { min-width:180px; }
 @media (max-width:760px) { .sync-status { align-items:flex-start; flex-direction:column; gap:4px; } .sync-status strong { margin-left:0; } }
+
+.storage-meter { height: 10px; overflow: hidden; border-radius: 20px; background: var(--line); }
+.storage-meter span { display: block; height: 100%; border-radius: inherit; background: var(--brand); transition: width .2s ease; }
+.storage-request-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.storage-request-row small { display: block; margin-top: 3px; }
