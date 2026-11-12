@@ -1659,28 +1659,44 @@ route('/cash', async () => {
 // ---------- notices ----------
 function noticeItem(n) {
   const aud = { school: 'Whole school', class: 'Class ' + (n.target_name || ''), student: 'Parents of ' + (n.target_name || ''), teachers: 'All teachers', admins: 'Admins' }[n.audience];
-  return `<div class="list-item"><div class="row between"><b>${esc(n.title)}</b>${ME.role === 'admin' ? `<a href="#" data-deln="${n.id}" class="small">remove</a>` : ''}</div>
-  <div style="white-space:pre-wrap">${esc(n.body)}</div><div class="muted small">${esc(aud)} · ${esc(n.poster_name || '')} · ${fmtTime(n.created_at)}${n.read_count !== undefined ? ` · read by ${n.read_count}` : ''}</div></div>`;
+  return `<div class="list-item"><div class="row between"><b>${esc(n.title)}</b>${n.can_delete ? `<a href="#" data-deln="${n.id}" class="small">remove</a>` : ''}</div>
+  <div style="white-space:pre-wrap">${esc(n.body)}</div><div class="muted small">${esc(aud)}${n.subject ? ' · Subject: ' + esc(n.subject) : ''} · ${esc(n.poster_name || '')} · ${fmtTime(n.created_at)}${n.read_count !== undefined ? ` · read by ${n.read_count}` : ''}</div></div>`;
 }
 route('/notices', async () => {
   const [rows, classes] = await Promise.all([S('/notices'), ME.kind === 'staff' ? S('/classes') : []]);
   view(`<div class="row between"><h1>Notices</h1>${ME.kind === 'staff' ? '<button class="btn primary" id="new">New notice</button>' : ''}</div>
   <div class="card">${rows.map(noticeItem).join('') || '<span class="muted">No notices yet</span>'}</div>`);
   for (const n of rows) S(`/notices/${n.id}/read`, { body: {} }).catch(() => {});
-  $$('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice?')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE' }), 'Removed'); render(); });
+  $('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice for everyone? Teachers cannot edit or remove notices after posting; only the class teacher or authorized administrator can remove it.')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE', body: { confirm: true } }), 'Removed'); render(); });
   const nb = $('#new'); if (nb) nb.onclick = () => modal(`<h2>New notice</h2><form id="nf" class="form">
     <div><label>Send to</label><select name="audience" id="aud">
       ${ME.role === 'admin' || ME.subrole === 'office' ? '<option value="school">Whole school (all parents and staff)</option>' : ''}
       <option value="class">One class</option><option value="student">One student's parents</option>
       ${ME.role === 'admin' || ME.subrole === 'coordinator' ? '<option value="teachers">All teachers</option>' : ''}${ME.isMainAdmin ? '<option value="admins">Admins only</option>' : ''}</select></div>
-    <div id="tc"><label>Class</label><select name="target_class">${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+    <div id="tc"><label>Class</label><select name="target_class" id="notice-class">${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <div class="full" style="margin-top:8px"><label>Subject</label><select name="subject" id="notice-subject"><option value="">Class-wide notice</option></select><div class="small muted" id="notice-subject-help">Subject teachers must choose their own assigned subject. Class teachers and administrators may post class-wide notices.</div></div></div>
     <div id="ts" class="hidden"><label>Student (reg no or name)</label><input id="sq" placeholder="Type to search"><input type="hidden" name="target_student" id="sid"><div id="sres" class="small"></div></div>
     <div class="full"><label>Title</label><input name="title" required></div>
     <div class="full"><label>Message (English or Urdu)</label><textarea name="body" required dir="auto"></textarea></div>
     <p class="full small muted">Sent as an app notification. WhatsApp/SMS is a paid add-on.</p>
     <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    const sync = () => { const a = $('#aud', m).value; $('#tc', m).classList.toggle('hidden', a !== 'class'); $('#ts', m).classList.toggle('hidden', a !== 'student'); };
-    $('#aud', m).onchange = sync; sync();
+    const fillNoticeSubjects = () => {
+      const classId = $('#notice-class', m).value;
+      const cls = classes.find((x) => x.id === classId);
+      const ownSubjects = (cls?.subjects || []).filter((x) => x.teacher_id === ME.id);
+      const isClassTeacher = (ME.classTeacherOf || []).includes(classId);
+      const canManageClass = ME.isFullAdmin || ME.canManageNotices || isClassTeacher;
+      const options = canManageClass
+        ? '<option value="">Class-wide notice</option>' + (cls?.subjects || []).map((x) => '<option value="' + esc(x.subject) + '">' + esc(x.subject) + '</option>').join('')
+        : ownSubjects.map((x) => '<option value="' + esc(x.subject) + '">' + esc(x.subject) + '</option>').join('');
+      $('#notice-subject', m).innerHTML = options || '<option value="">No assigned subject</option>';
+      $('#notice-subject', m).required = !canManageClass;
+      $('#notice-subject-help', m).textContent = canManageClass
+        ? 'Optional: leave blank for the whole class, or select a subject.'
+        : 'You can post only to a subject assigned to you. The class teacher or administrator controls later removal.';
+    };
+    const sync = () => { const audience = $('#aud', m).value; $('#tc', m).classList.toggle('hidden', audience !== 'class'); $('#ts', m).classList.toggle('hidden', audience !== 'student'); if (audience === 'class') fillNoticeSubjects(); };
+    $('#aud', m).onchange = sync; $('#notice-class', m).onchange = fillNoticeSubjects; sync();
     $('#sq', m).oninput = async (e) => {
       const r = await S('/search?q=' + encodeURIComponent(e.target.value)).catch(() => ({ students: [] }));
       $('#sres', m).innerHTML = r.students.slice(0, 6).map((s) => `<a href="#" data-id="${s.id}">${esc(s.name)} (${esc(s.class_name)})</a>`).join(' · ');
@@ -1689,7 +1705,8 @@ route('/notices', async () => {
     $('#nf', m).onsubmit = async (e) => {
       e.preventDefault(); const b = formData(e.target);
       const target_id = b.audience === 'class' ? b.target_class : b.audience === 'student' ? b.target_student : null;
-      const r = await act(() => S('/notices', { body: { audience: b.audience, target_id, title: b.title, body: b.body } }));
+      if (!confirm('Send this notice to ' + (b.audience === 'class' ? classes.find((c) => c.id === target_id)?.name + (b.subject ? ' · ' + b.subject : '') : b.audience) + '? It will be visible to the selected audience.')) return;
+      const r = await act(() => S('/notices', { body: { audience: b.audience, target_id, subject: b.subject || null, title: b.title, body: b.body, confirm: true } }));
       toast(`Sent to ${r.recipients} people`); closeModal(); render();
     };
   });
