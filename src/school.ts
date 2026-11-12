@@ -536,7 +536,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   canVerify(a: Actor, p: Row) {
-    if (this.canFeesAll(a)) return true;
+    if (this.canFeesAll(a) && this.inClassScope(a, p.class_id)) return true;
     return a.classTeacherOf.has(p.class_id) && this.setting('teacher_verify_slips') === '1' && p.method !== 'cash_teacher';
   }
 
@@ -936,7 +936,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/classes/:id', (c) => {
       const a = c.get('actor');
       const cl = this.classOf(a, c.req.param('id'));
-      const feeAccess = this.canFeesAll(a) || a.classTeacherOf.has(cl.id);
+      const feeAccess = (this.canFeesAll(a) && this.inClassScope(a, cl.id)) || a.classTeacherOf.has(cl.id);
       const students = this.q("SELECT id, reg_no, name, father_name, status FROM students WHERE class_id=? AND status IN ('active','pending') ORDER BY name", cl.id);
       const month = pkt().month;
       const fees = feeAccess ? this.q(`SELECT v.*, s.name AS student_name FROM vouchers v JOIN students s ON s.id=v.student_id WHERE v.class_id=? AND v.month=?`, cl.id, month)
@@ -1120,7 +1120,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/students/:id', (c) => {
       const a = c.get('actor');
       const s = this.student(a, c.req.param('id'));
-      const feeAccess = this.canFeesAll(a) || a.classTeacherOf.has(s.class_id) || a.type === 'guardian';
+      const feeAccess = (this.canFeesAll(a) && this.inClassScope(a, s.class_id)) || a.classTeacherOf.has(s.class_id) || a.type === 'guardian';
       const month = c.req.query('month') || pkt().month;
       const vouchers = feeAccess ? this.q('SELECT * FROM vouchers WHERE student_id=? ORDER BY month DESC', s.id).map((v): Row => ({ ...v, total: this.voucherTotal(v), balance: this.voucherBalance(v), lines: this.q('SELECT label, amount FROM voucher_lines WHERE voucher_id=?', v.id) })) : null;
       const showPhone = this.isFullAdmin(a) || a.type === 'guardian';
@@ -1587,9 +1587,12 @@ export class SchoolDO extends DurableObject<Env> {
       const status = c.req.query('status') || 'submitted';
       let rows = this.q(`SELECT p.*, s.name AS student_name, s.reg_no, c.name AS class_name FROM payments p JOIN students s ON s.id=p.student_id JOIN classes c ON c.id=p.class_id
         WHERE p.status=? ORDER BY p.created_at DESC LIMIT 500`, status);
-      if (!this.canFeesAll(a)) {
+      if (!this.isFullAdmin(a)) {
         if (a.type === 'guardian') fail(403, 'No access');
-        rows = rows.filter((r) => a.classTeacherOf.has(r.class_id));
+        const allowed = a.role === 'subadmin' && this.canFeesAll(a)
+          ? this.scopedClassIds(a).filter((id) => this.canSetFees(a, id))
+          : [...a.classTeacherOf];
+        rows = rows.filter((r) => allowed.includes(r.class_id));
       }
       return c.json(rows.map((r) => ({ ...r, can_verify: this.canVerify(a, r), submitted_by_name: this.one('SELECT name FROM staff WHERE id=?', String(r.submitted_by).slice(2))?.name || (r.submitted_by.startsWith('g:') ? 'Parent' : '') })));
     });
@@ -1639,9 +1642,12 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/cash', (c) => {
       const a = c.get('actor');
       if (a.type !== 'staff') fail(403, 'No access');
-      const where = this.canFeesAll(a) ? '1=1' : 'p.held_by=?';
-      const rows = this.q(`SELECT p.id, p.amount, p.created_at, p.held_by, p.status, s.name AS student_name, c.name AS class_name FROM payments p JOIN students s ON s.id=p.student_id
-        JOIN classes c ON c.id=p.class_id WHERE p.method='cash_teacher' AND p.handover_id IS NULL AND p.status IN ('submitted','verified') AND ${where} ORDER BY p.created_at`, ...(this.canFeesAll(a) ? [] : [a.key]));
+      let rows = this.q(`SELECT p.id, p.amount, p.created_at, p.held_by, p.status, p.class_id, s.name AS student_name, c.name AS class_name FROM payments p JOIN students s ON s.id=p.student_id
+        JOIN classes c ON c.id=p.class_id WHERE p.method='cash_teacher' AND p.handover_id IS NULL AND p.status IN ('submitted','verified') ORDER BY p.created_at`);
+      if (!this.isFullAdmin(a)) {
+        if (this.canFeesAll(a)) { const allowed = this.scopedClassIds(a).filter((id) => this.canSetFees(a, id)); rows = rows.filter((r) => allowed.includes(r.class_id)); }
+        else rows = rows.filter((r) => r.held_by === a.key);
+      }
       const byTeacher: Row = {};
       for (const r of rows) {
         const t = (byTeacher[r.held_by] ||= { teacher_id: String(r.held_by).slice(2), name: this.one('SELECT name FROM staff WHERE id=?', String(r.held_by).slice(2))?.name, total: 0, items: [] });
@@ -1652,7 +1658,8 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/cash/handover', async (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only the accountant or admin can confirm a handover');
       const { teacher_id, amount } = await c.req.json<any>();
-      const items = this.q("SELECT * FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + teacher_id);
+      const items = this.q("SELECT * FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + teacher_id)
+        .filter((p) => this.isFullAdmin(a) || this.inClassScope(a, p.class_id));
       const total = items.reduce((t, p) => t + p.amount, 0);
       if (!items.length) fail(400, 'This teacher holds no cash');
       if (amount !== undefined && Number(amount) !== total) fail(400, `Amount does not match. The teacher holds ${money(total)}.`);
