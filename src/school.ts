@@ -199,12 +199,23 @@ export class SchoolDO extends DurableObject<Env> {
       throw error;
     }
     const used = this.storageUsed(), limit = ctx.storageLimitBytes;
-    const before = Math.max(0, used - file.size);
-    const threshold = [98, 95, 80].find((pct) => used / limit >= pct / 100 && before / limit < pct / 100);
-    if (threshold) {
-      const remaining = Math.max(0, 100 - used / limit * 100);
-      this.notifyAdmins(threshold >= 98 ? 'Storage almost full' : 'Storage warning',
-        threshold >= 98 ? `Only ${remaining.toFixed(1)}% storage remains. Add storage under Billing to avoid upload interruptions.` : `Storage has reached ${threshold}% of its limit.`,
+    const ratio = limit > 0 ? used / limit : 1;
+    const reached: number[] = [];
+    for (const pct of [80, 95, 98]) {
+      const key = `storage_warning_${pct}`;
+      if (ratio < (pct - 5) / 100) {
+        this.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', key, '0');
+      } else if (ratio >= pct / 100 && this.setting(key) !== '1') {
+        this.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', key, '1');
+        reached.push(pct);
+      }
+    }
+    if (reached.length) {
+      const remaining = Math.max(0, 100 - ratio * 100);
+      this.notifyAdmins(reached.includes(98) ? 'Storage almost full' : 'Storage usage warning',
+        reached.includes(98)
+          ? `Only ${remaining.toFixed(1)}% storage remains. Request another 5 GB block under Billing before uploads reach the limit.`
+          : `Storage has reached ${reached.join('% and ')}% of its allowance.`,
         { mainOnly: true });
     }
     return key;
