@@ -421,6 +421,8 @@ function view(html) {
   </div>`;
   const layout = $('.layout'), side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
   const mobileNav = () => window.matchMedia('(max-width: 860px)').matches;
+  menu.setAttribute('aria-expanded', String(!mobileNav()));
+  menu.setAttribute('aria-label', mobileNav() ? 'Open navigation' : 'Collapse navigation');
   const setNavOpen = (open) => {
     if (mobileNav()) {
       side.classList.toggle('open', open);
