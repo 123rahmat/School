@@ -759,49 +759,35 @@ route('/admin', async () => {
 });
 
 route('/login', async () => {
-  let selectedRole = 'main_admin';
-  authPage(`
-    <h1>Welcome back</h1>
-    <p class="muted small auth-description">Choose your account type, then continue with its registered Google account.</p>
-    <div class="login-role-picker" id="login-role-picker" role="group" aria-label="Account type">
-      <button type="button" class="login-role-option active" data-login-role="main_admin" aria-pressed="true"><span class="role-symbol">⌂</span><b>Main admin</b><small>Institution control</small></button>
-      <button type="button" class="login-role-option" data-login-role="teacher" aria-pressed="false"><span class="role-symbol">▤</span><b>Teacher / staff</b><small>Institution team access</small></button>
-      <button type="button" class="login-role-option" data-login-role="parent" aria-pressed="false"><span class="role-symbol">♡</span><b>Parent</b><small>Family workspace</small></button>
-    </div>
-    <div id="gbtn" class="google-button-slot"></div>
-    <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
-    <div id="authnext"></div>
-    <p class="small muted auth-switch">New institution? <a href="/signup">Register your institution</a></p>`);
-  $$('.login-role-option').forEach((button) => {
-    button.onclick = () => {
-      selectedRole = button.dataset.loginRole;
-      $$('.login-role-option').forEach((item) => {
-        const active = item === button;
-        item.classList.toggle('active', active);
-        item.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
-      $('#authmsg').textContent = '';
-      $('#authnext').innerHTML = '';
-    };
-  });
+  authPage([
+    '<h1>Welcome back</h1>',
+    '<p class="muted small auth-description">Continue with the Google account registered with your institution.</p>',
+    '<div id="gbtn" class="google-button-slot"></div>',
+    '<p id="authmsg" class="small muted" role="status" aria-live="polite"></p>',
+    '<div id="authnext"></div>',
+    '<p class="small muted auth-switch">New institution? <a href="/signup">Register your institution</a></p>',
+  ].join(''));
   await mountGoogleButton($('#gbtn'), async (credential) => {
-    const r = await api('/api/auth/google', { body: { credential, role: selectedRole } });
+    const r = await api('/api/auth/google', { body: { credential } });
     if (r.choose) {
       $('#gbtn').classList.add('hidden');
-      $('#authmsg').textContent = 'Choose the institution you want to open:';
+      $('#authmsg').textContent = 'Choose the institution account you want to open:';
       const choose = document.createElement('div');
       choose.className = 'auth-school-choices';
-      choose.innerHTML = r.choose.map((item) => `<button class="btn" data-pick="${item.pick}">${esc(item.label)}</button>`).join('');
+      choose.innerHTML = r.choose.map((item) => '<button class="btn" data-pick="' + item.pick + '">' + esc(item.label) + '</button>').join('');
       $('#authnext').replaceChildren(choose);
       $$('button[data-pick]', choose).forEach((button) => button.onclick = async () => {
         button.disabled = true;
         try {
-          await api('/api/auth/google', { body: { credential, role: selectedRole, pick: Number(button.dataset.pick) } });
+          await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
           await refreshMe();
           if (!ME) throw new Error('Your secure session could not be created. Please retry sign-in.');
           go('/');
           flushOutbox();
-        } catch (error) { button.disabled = false; showAuthError(error, 'login'); }
+        } catch (error) {
+          button.disabled = false;
+          showAuthError(error, 'login');
+        }
       });
       return;
     }
@@ -811,7 +797,6 @@ route('/login', async () => {
     flushOutbox();
   }, 'signin_with', 'login');
 });
-
 route('/signup', async () => {
   authPage(`
     <h1 id="signup-heading">Let’s set up your institution</h1>

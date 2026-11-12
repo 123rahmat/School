@@ -99,27 +99,72 @@ const requireSession = (kinds: string[]) => async (c: any, next: any) => {
 };
 
 // ---------- Google-only authentication ----------
+// Verify Google ID tokens locally against Google's rotating RSA signing keys.
+let googleJwksCache: { keys: JsonWebKey[]; expiresAt: number } | null = null;
+
+function decodeBase64Url(value: string): Uint8Array {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) fail(401, 'Google sign-in failed');
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4);
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+}
+
+function decodeJwtPart(value: string): any {
+  try { return JSON.parse(new TextDecoder().decode(decodeBase64Url(value))); }
+  catch { fail(401, 'Google sign-in failed'); }
+}
+
+async function googleSigningKeys(forceRefresh = false): Promise<JsonWebKey[]> {
+  if (!forceRefresh && googleJwksCache && googleJwksCache.expiresAt > Date.now()) return googleJwksCache.keys;
+  let response: Response;
+  try { response = await fetch('https://www.googleapis.com/oauth2/v3/certs', { headers: { accept: 'application/json' } }); }
+  catch { fail(503, 'Google verification is temporarily unavailable. Please retry.'); }
+  if (!response!.ok) fail(503, 'Google verification is temporarily unavailable. Please retry.');
+  const body: any = await response!.json().catch(() => null);
+  if (!body || !Array.isArray(body.keys)) fail(503, 'Google verification is temporarily unavailable. Please retry.');
+  const maxAge = Number(response!.headers.get('cache-control')?.match(/max-age=(\d+)/i)?.[1] || 3600);
+  googleJwksCache = { keys: body.keys, expiresAt: Date.now() + Math.max(60, Math.min(maxAge, 21600)) * 1000 };
+  return googleJwksCache.keys;
+}
+
 async function verifyGoogleIdentity(env: Env, credential: unknown) {
   if (!env.GOOGLE_CLIENT_ID) fail(503, 'Google sign-in is not configured yet');
   const idToken = String(credential || '');
   if (!idToken || idToken.length > 10000) fail(401, 'Google sign-in failed');
-
-  const response = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken));
-  const claims: any = await response.json().catch(() => ({}));
-  const expiresAt = Number(claims.exp) * 1000;
+  const parts = idToken.split('.');
+  if (parts.length !== 3) fail(401, 'Google sign-in failed');
+  const header = decodeJwtPart(parts[0]);
+  const claims = decodeJwtPart(parts[1]);
+  if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid) fail(401, 'Google sign-in failed');
+  const nowSeconds = Math.floor(Date.now() / 1000);
   const issuerOk = claims.iss === 'accounts.google.com' || claims.iss === 'https://accounts.google.com';
-  if (!response.ok || claims.aud !== env.GOOGLE_CLIENT_ID || !issuerOk ||
-      String(claims.email_verified) !== 'true' || !claims.email ||
-      !claims.sub || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+  if (!issuerOk || claims.aud !== env.GOOGLE_CLIENT_ID || (claims.azp && claims.azp !== env.GOOGLE_CLIENT_ID) ||
+      !Number.isFinite(Number(claims.exp)) || Number(claims.exp) <= nowSeconds ||
+      (claims.iat !== undefined && (!Number.isFinite(Number(claims.iat)) || Number(claims.iat) > nowSeconds + 60)) ||
+      (claims.nbf !== undefined && Number(claims.nbf) > nowSeconds) ||
+      String(claims.email_verified) !== 'true' || typeof claims.email !== 'string' || !claims.email.trim() ||
+      typeof claims.sub !== 'string' || !claims.sub) {
     fail(401, 'Google sign-in failed. Please choose a verified Google account.');
   }
-  return {
-    email: normId(claims.email),
-    name: String(claims.name || claims.given_name || claims.email).slice(0, 120),
-    googleSubject: String(claims.sub),
-  };
+  let jwks = await googleSigningKeys();
+  let jwk = jwks.find((key: any) => key.kid === header.kid && key.kty === 'RSA' && (!key.use || key.use === 'sig'));
+  if (!jwk) {
+    // Refresh once to handle Google's signing-key rotation.
+    jwks = await googleSigningKeys(true);
+    jwk = jwks.find((key: any) => key.kid === header.kid && key.kty === 'RSA' && (!key.use || key.use === 'sig'));
+  }
+  if (!jwk) fail(401, 'Google sign-in failed');
+  let publicKey: CryptoKey;
+  try { publicKey = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']); }
+  catch { fail(503, 'Google verification is temporarily unavailable. Please retry.'); }
+  const signedContent = new TextEncoder().encode(parts[0] + '.' + parts[1]);
+  const signature = decodeBase64Url(parts[2]);
+  let valid = false;
+  try { valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey!, signature, signedContent); }
+  catch { valid = false; }
+  if (!valid) fail(401, 'Google sign-in failed');
+  return { email: normId(claims.email), name: String(claims.name || claims.given_name || claims.email).slice(0, 120), googleSubject: claims.sub };
 }
-
 async function loginRows(env: Env, email: string) {
   return (await env.DB.prepare(
     'SELECT l.*, s.name AS school_name FROM logins l JOIN schools s ON s.id=l.school_id WHERE l.identifier=?'
@@ -158,12 +203,12 @@ app.post('/api/auth/logout', async (c) => {
 app.post('/api/auth/google', async (c) => {
   const { credential, pick, role } = await c.req.json<any>();
   const identity = await verifyGoogleIdentity(c.env, credential);
+  // The regular login page does not ask users to choose a role. Resolve it from school records.
+  // The dedicated /admin page still requests platform_owner explicitly.
   const requestedRole = role ? String(role) : '';
   const allowedRoles = new Set(['main_admin', 'teacher', 'parent', 'platform_owner']);
   if (requestedRole && !allowedRoles.has(requestedRole)) fail(400, 'Choose a valid account type.');
 
-  // The dedicated /admin entry requests platform_owner. Only the configured
-  // OWNER_EMAIL can obtain this role; institution administrators cannot.
   if (identity.email === normId(c.env.OWNER_EMAIL)) {
     if (requestedRole !== 'platform_owner') fail(403, 'This is the platform owner account. Sign in through the dedicated /admin page.');
     await createSession(c, '', 'owner', 'owner', identity.name || 'Owner');
@@ -172,44 +217,34 @@ app.post('/api/auth/google', async (c) => {
   if (requestedRole === 'platform_owner') fail(403, 'This Google account is not authorized for platform administration.');
 
   const allRows = await loginRows(c.env, identity.email);
-  let rows = allRows;
-  if (!rows.length) {
-    if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. To create a new institution, register a new institution account.');
+  if (!allRows.length) fail(403, 'No account is registered for this Google email. Create an institution account or ask your institution administrator to add your profile.');
+
+  const resolvedRows: any[] = [];
+  for (const row of allRows) {
+    const ctx = await ctxFor(c.env, row.school_id, row.kind, row.ref_id);
+    const profile = await callSchoolJson(c.env, ctx, '/me');
+    if (typeof profile.userId !== 'string' || !/^[a-f0-9]{32}$/.test(profile.userId)) continue;
+    const resolvedRole = row.kind === 'guardian' ? 'parent' : profile.isMainAdmin ? 'main_admin' : 'teacher';
+    if (!requestedRole || requestedRole === resolvedRole) resolvedRows.push({ ...row, resolved_role: resolvedRole });
+  }
+
+  if (!resolvedRows.length) {
+    if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. Register an institution only when you are creating a new institution.');
     if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
     if (requestedRole === 'parent') fail(403, 'No parent profile is registered for this Google email. Ask your institution administrator to add your email to your child’s guardian profile.');
-    fail(403, 'No account is registered for this Google email. Create an institution account or ask your institution administrator to add your profile.');
+    fail(403, 'This Google email is not linked to an active institution account. Ask your institution administrator to add it.');
   }
 
-  if (requestedRole) {
-    const matching: any[] = [];
-    for (const row of rows) {
-      let actualRole = row.kind === 'guardian' ? 'parent' : 'teacher';
-      if (row.kind === 'staff') {
-        const ctx = await ctxFor(c.env, row.school_id, 'staff', row.ref_id);
-        const profile = await callSchoolJson(c.env, ctx, '/me');
-        actualRole = profile.isMainAdmin ? 'main_admin' : 'teacher';
-      }
-      if (actualRole === requestedRole) matching.push(row);
-    }
-    rows = matching;
-    if (!rows.length) {
-      if (requestedRole === 'main_admin') {
-        if (allRows.length) fail(403, 'This Google email is already registered for another institution role. Choose Teacher / staff or Parent to match your profile; do not register a second institution.');
-        fail(403, 'No main administrator profile is registered for this Google email. Register an institution only when you are creating a new institution.');
-      }
-      if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
-      fail(403, 'No parent profile is registered for this Google email. Ask your institution administrator to add your email to your child’s guardian profile.');
-    }
-  }
-
-  if (rows.length > 1 && (pick === undefined || pick === null)) {
-    return c.json({ choose: rows.map((r, i) => ({
-      pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : requestedRole === 'main_admin' ? 'Main administrator' : 'Teacher / staff'}`,
+  if (resolvedRows.length > 1 && (pick === undefined || pick === null)) {
+    return c.json({ choose: resolvedRows.map((r, i) => ({
+      pick: i,
+      label: String(r.school_name) + ' — ' + (r.resolved_role === 'main_admin' ? 'Main administrator' : r.resolved_role === 'parent' ? 'Parent' : 'Teacher / staff'),
     })) });
   }
-  return finishLogin(c, rows, pick);
+  const selected = Number(pick ?? 0);
+  if (!Number.isInteger(selected) || selected < 0 || selected >= resolvedRows.length) fail(400, 'Choose a valid institution account.');
+  return finishLogin(c, resolvedRows, selected);
 });
-
 app.post('/api/signup/google', async (c) => {
   const { credential, school_name, admin_name, kind, phone } = await c.req.json<any>();
   const identity = await verifyGoogleIdentity(c.env, credential);
