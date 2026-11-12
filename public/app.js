@@ -48,6 +48,9 @@ const accountsHtml = (list) => list && list.length
 
 // ---------- API ----------
 async function api(path, opts = {}) {
+  if (path.startsWith('/api/') && !navigator.onLine) {
+    throw new Error('No internet connection. Connect to the internet to verify your Google account and securely contact the institution server.');
+  }
   const init = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin', cache: 'no-store' };
   if (opts.form) init.body = opts.form;
   else if (opts.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
@@ -62,6 +65,18 @@ async function api(path, opts = {}) {
   return data;
 }
 const S = (p, o) => api('/api/s' + p, o);
+
+let connectionRestoreTimer = null;
+let connectionRestoredUntil = 0;
+function connectionBannerHtml() {
+  if (!navigator.onLine) return `<div class="network-banner offline" role="status" aria-live="assertive"><span class="network-dot"></span><div><b>No internet connection</b><span>Google sign-in, session verification and server updates require internet. Attendance drafts can be saved on this device and synced after reconnection.</span></div></div>`;
+  if (connectionRestoredUntil > Date.now()) return `<div class="network-banner restored" role="status" aria-live="polite"><span class="network-dot"></span><div><b>Connection restored</b><span>Checking your secure session and syncing saved attendance changes.</span></div></div>`;
+  return '';
+}
+function updateConnectionBanner() {
+  const slot = $('#connection-notice-slot');
+  if (slot) slot.innerHTML = connectionBannerHtml();
+}
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -186,6 +201,7 @@ function nav() {
 function view(html) {
   const owner = ME && ME.kind === 'owner';
   $('#app').innerHTML = `
+  <div id="connection-notice-slot">${connectionBannerHtml()}</div>
   <div class="layout">
     <aside class="side" id="side">
       <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
@@ -292,6 +308,7 @@ function authPage(inner) {
   document.body.classList.add('auth-screen');
   $('#app').innerHTML = `
     <main class="auth-page">
+      <div id="connection-notice-slot">${connectionBannerHtml()}</div>
       <div class="auth-frame">
         <a class="auth-home" href="/" aria-label="Back to home">← Back to home</a>
         <div class="auth-logo-stage" aria-label="Institution Manager">
@@ -326,6 +343,11 @@ function showAuthError(error, mode = 'login') {
   }
 }
 async function mountGoogleButton(target, onCredential, buttonText = 'signin_with', mode = 'login') {
+  if (!navigator.onLine) {
+    showAuthError(new Error('No internet connection. Connect to the internet to verify your Google account and continue securely.'), mode);
+    target.innerHTML = '<p class="small muted">Connect to the internet to enable Google sign-in.</p>';
+    return;
+  }
   let cfg;
   try {
     cfg = await api('/api/config');
@@ -362,7 +384,13 @@ async function mountGoogleButton(target, onCredential, buttonText = 'signin_with
     if (!window.google?.accounts?.id) throw new Error('Google Identity Services loaded without its sign-in interface.');
     google.accounts.id.initialize({
       client_id: cfg.googleClientId,
-      callback: ({ credential }) => Promise.resolve(onCredential(credential)).catch((error) => showAuthError(error, mode)),
+      callback: ({ credential }) => {
+        if (!navigator.onLine) {
+          showAuthError(new Error('Your device went offline. Reconnect to the internet and sign in again so Google can verify your account.'), mode);
+          return;
+        }
+        return Promise.resolve(onCredential(credential)).catch((error) => showAuthError(error, mode));
+      },
     });
     google.accounts.id.renderButton(target, { theme: 'outline', size: 'large', text: buttonText, shape: 'rectangular', width: 320 });
   } catch (error) {
@@ -408,6 +436,7 @@ function landingPage() {
   document.title = 'Institution Manager | Education management in one workspace';
   $('#app').innerHTML = `
   <div class="landing-shell">
+    <div id="connection-notice-slot">${connectionBannerHtml()}</div>
     <header class="landing-nav">
       <a class="landing-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
       <nav aria-label="Main navigation">
@@ -1152,7 +1181,7 @@ function syncStatusHtml() {
   const items = outbox(), count = items.length;
   const blocked = items.filter(x => x.blocked);
   const links = blocked.slice(0, 3).map(x => `<a href="/attendance/${encodeURIComponent(x.classId)}?date=${encodeURIComponent(x.date)}">Review ${esc(x.date)}</a>`).join(' · ');
-  if (!navigator.onLine) return `<div class="sync-status offline" role="status"><b>Offline mode</b><span>Previously opened records may be available. Attendance changes are saved on this device and queued until the connection returns.</span>${count ? `<strong>${count} attendance item(s) waiting</strong>` : ''}${links}</div>`;
+  if (!navigator.onLine) return '';
   if (blocked.length) return `<div class="sync-status offline" role="status"><b>Attendance needs review</b><span>${blocked.length} queued item(s) were not accepted. Check the affected dates before trying again.</span>${links}</div>`;
   if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
   return '';
@@ -1186,8 +1215,28 @@ async function flushOutbox() {
     flushingOutbox = false;
   }
 }
-window.addEventListener('online', () => { flushOutbox(); });
-window.addEventListener('offline', () => { if (ME) render(); });
+window.addEventListener('online', async () => {
+  connectionRestoredUntil = Date.now() + 9000;
+  updateConnectionBanner();
+  clearTimeout(connectionRestoreTimer);
+  connectionRestoreTimer = setTimeout(() => {
+    connectionRestoredUntil = 0;
+    updateConnectionBanner();
+  }, 9000);
+  try {
+    // Re-check the server cookie before restoring the workspace; never trust the UI hint alone.
+    await refreshMe();
+    await render();
+    await flushOutbox();
+  } catch {
+    updateConnectionBanner();
+  }
+});
+window.addEventListener('offline', () => {
+  connectionRestoredUntil = 0;
+  clearTimeout(connectionRestoreTimer);
+  updateConnectionBanner();
+});
 setInterval(flushOutbox, 60000);
 
 route('/attendance/:id', async ({ id }) => {
