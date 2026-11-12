@@ -909,14 +909,19 @@ export class SchoolDO extends DurableObject<Env> {
       if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Teacher replacement takes effect today. Future-dated handovers are not activated automatically yet.');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + oldId)?.n || 0);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
+      const classIds = [...new Set(Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids.map(String) : [])];
+      const subjectIds = [...new Set(Array.isArray(b.transfer_subject_ids) ? b.transfer_subject_ids.map(String) : [])];
+      const timetableIds = [...new Set(Array.isArray(b.transfer_timetable_ids) ? b.transfer_timetable_ids.map(String) : [])];
+      const validClasses = new Set(this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', oldId).map((r) => r.id));
+      const validSubjects = new Set(this.q('SELECT id FROM class_subjects WHERE teacher_id=?', oldId).map((r) => r.id));
+      const validPeriods = new Set(this.q('SELECT id FROM timetable_slots WHERE teacher_id=?', oldId).map((r) => r.id));
+      if (classIds.some((id) => !validClasses.has(id)) || subjectIds.some((id) => !validSubjects.has(id)) || timetableIds.some((id) => !validPeriods.has(id))) fail(400, 'One or more selected teaching assignments no longer belong to this teacher. Refresh and review again.');
       const newId = this.replaceTeacherProfile(a, old, { name, email, phone, subjects: b.subjects || null }, effective, {
-        classes: b.transfer_classes !== false,
-        subjects: b.transfer_subjects !== false,
-        timetable: b.transfer_timetable !== false,
+        classIds, subjectIds, timetableIds,
       });
       await this.syncLogin('staff', oldId, [], true);
       await this.syncLogin('staff', newId, [email]);
-      this.audit(a, 'staff.replace', 'staff', oldId, { replacement_id: newId, effective, cash, transfer_classes: b.transfer_classes !== false, transfer_subjects: b.transfer_subjects !== false });
+      this.audit(a, 'staff.replace', 'staff', oldId, { replacement_id: newId, effective, cash, transfer_class_ids: classIds, transfer_subject_ids: subjectIds, transfer_timetable_ids: timetableIds });
       return c.json({ ok: true, old_id: oldId, new_id: newId, old_name: old.name, new_name: name, cash });
     });
 
