@@ -953,20 +953,26 @@ export class SchoolDO extends DurableObject<Env> {
         if (changes.class_id) this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, changes.class_id.new, this.currentSession().id, pkt().date);
         if (changes.parent_email) {
           const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
-          const gid = this.guardianFor(n.parent_phone, n.parent_email, n.father_name);
-          this.run('UPDATE students SET guardian_id=? WHERE id=?', gid, s.id);
+          const duplicate = this.one('SELECT id FROM guardians WHERE email=? AND id<>? LIMIT 1', n.parent_email, n.guardian_id);
+          if (duplicate) fail(409, 'This Google email is already attached to a different parent account. Ask the Main Admin to resolve the duplicate account before changing it.');
+          // Update the existing guardian identity in place. This keeps the same
+          // parent ID and all sibling links instead of silently creating a new account.
+          this.run('UPDATE guardians SET email=?, name=?, phone=? WHERE id=?', n.parent_email, n.father_name, n.parent_phone || null, n.guardian_id);
+          this.run('UPDATE students SET parent_email=? WHERE guardian_id=?', n.parent_email, n.guardian_id);
         } else if (changes.parent_phone) {
           const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
           this.run('UPDATE guardians SET phone=? WHERE id=?', n.parent_phone || null, n.guardian_id);
+          this.run('UPDATE students SET parent_phone=? WHERE guardian_id=?', n.parent_phone || null, n.guardian_id);
         }
         this.run('UPDATE students SET search_key=? WHERE id=?', skeleton((b.name ?? s.name) + ' ' + (b.father_name ?? s.father_name)), s.id);
         this.audit(a, 'student.edit', 'student', s.id, { changes, reason: b.reason || null });
       });
       const n = this.one('SELECT * FROM students WHERE id=?', s.id)!;
-      if (n.guardian_id !== oldGid || changes.parent_email) {
-        if (n.guardian_id !== oldGid) await this.syncLogin('guardian', oldGid, [], true);
-        await this.syncGuardian(oldGid);
+      if (n.guardian_id !== oldGid) {
+        await this.syncLogin('guardian', oldGid, [], true);
         await this.syncGuardian(n.guardian_id);
+      } else if (changes.parent_email) {
+        await this.syncLogin('guardian', oldGid, [n.parent_email], true);
       }
       return c.json(n);
     });
