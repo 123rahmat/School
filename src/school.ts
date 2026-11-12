@@ -64,6 +64,7 @@ export class SchoolDO extends DurableObject<Env> {
         'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_at TEXT',
         'ALTER TABLE class_substitutions ADD COLUMN bonus_paid_by TEXT',
         'ALTER TABLE class_substitutions ADD COLUMN bonus_note TEXT',
+        'ALTER TABLE notices ADD COLUMN subject TEXT',
         'ALTER TABLE guardians ADD COLUMN public_id TEXT',
       ]) { try { this.sql.exec(alter); } catch { /* already there */ } }
       // Give existing accounts a stable 128-bit hexadecimal public ID; these IDs are safe to share for lookup.
@@ -1893,12 +1894,22 @@ export class SchoolDO extends DurableObject<Env> {
       if (aud === 'school' && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && a.scopeAll))) fail(403, 'School-wide notices require a full admin or an all-school notice permission');
       if (aud === 'teachers' && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && a.scopeAll))) fail(403, 'Only a full admin or all-school notice manager can notify all teachers');
       if (aud === 'admins' && !a.isMain) fail(403, 'Only the Main Admin can send notices to administrators');
+      let subject: string | null = null;
       if (aud === 'class') {
         const classId = String(b.target_id || '');
         this.classOf(a, classId);
-        const isSubjectTeacher = !!this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, a.id);
+        const assignedSubject = this.one('SELECT subject FROM class_subjects WHERE class_id=? AND teacher_id=? AND lower(subject)=lower(?)', classId, a.id, String(b.subject || '').trim());
+        const hasAnySubject = !!this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, a.id);
         const mayManage = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, classId));
-        if (!mayManage && !a.classTeacherOf.has(classId) && !isSubjectTeacher) fail(403, 'You can only post a notice to a class you teach');
+        if (!mayManage && !a.classTeacherOf.has(classId)) {
+          if (!hasAnySubject) fail(403, 'You can only post a notice to a class where you teach a subject');
+          if (!String(b.subject || '').trim() || !assignedSubject) fail(403, 'Subject teachers must select one of their assigned subjects for the class notice');
+        }
+        if (String(b.subject || '').trim()) {
+          const validSubject = this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?)', classId, String(b.subject).trim());
+          if (!validSubject) fail(400, 'That subject is not assigned to this class');
+          subject = String(b.subject).trim();
+        }
       }
       if (aud === 'student') {
         if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, String(this.one('SELECT class_id FROM students WHERE id=?', b.target_id)?.class_id || '')))) fail(403, 'Only an administrator can send a notice to an individual student');
@@ -1906,7 +1917,7 @@ export class SchoolDO extends DurableObject<Env> {
       }
       if (!['school', 'class', 'student', 'teachers', 'admins'].includes(aud)) fail(400, 'Choose an audience');
       const id = 'nt_' + rid(10);
-      this.run('INSERT INTO notices (id, audience, target_id, title, body, posted_by, poster_name, created_at) VALUES (?,?,?,?,?,?,?,?)', id, aud, b.target_id || null, b.title, b.body, a.key, a.name, now());
+      this.run('INSERT INTO notices (id, audience, target_id, title, body, subject, posted_by, poster_name, created_at) VALUES (?,?,?,?,?,?,?,?,?)', id, aud, b.target_id || null, b.title, b.body, subject, a.key, a.name, now());
       // App notification to everyone in the audience.
       const keys = new Set<string>();
       if (aud === 'school') for (const g of this.q("SELECT DISTINCT guardian_id FROM students WHERE status='active'")) keys.add('g:' + g.guardian_id);
@@ -2172,7 +2183,7 @@ export class SchoolDO extends DurableObject<Env> {
     const classId = String(n.target_id || '');
     if (a.classTeacherOf.has(classId)) return true;
     if (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, classId)) return true;
-    return n.posted_by === a.key && a.teaches.has(classId);
+    return false;
   }
 
   noticesFor(a: Actor, onlyStudent?: string): Row[] {
