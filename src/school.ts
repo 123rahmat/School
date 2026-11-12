@@ -277,7 +277,13 @@ export class SchoolDO extends DurableObject<Env> {
     if (date > pkt().date) fail(400, 'Cannot mark attendance for a future date');
     if (this.one('SELECT 1 FROM holidays WHERE date=?', date)) fail(400, 'This date is a holiday');
     const day = this.one('SELECT * FROM attendance_days WHERE class_id=? AND date=?', classId, date);
-    if (day?.status === 'submitted') fail(409, 'Attendance is already submitted. Send a change request to the admin.');
+    if (day?.status === 'submitted') {
+      // A queued offline submit may be retried after the server committed it but
+      // the response was lost. Treat the same submitter's retry as an acknowledgement,
+      // without repeating audit entries or parent notifications.
+      if (submit && day.submitted_by === a.key) return this.attendanceSheet(a, classId, date);
+      fail(409, 'Attendance is already submitted. Send a change request to the admin.');
+    }
     const valid = new Set(this.q("SELECT id FROM students WHERE class_id=? AND status IN ('active','pending')", classId).map((r) => r.id));
     const t = now();
     this.tx(() => {
