@@ -1696,6 +1696,9 @@ export class SchoolDO extends DurableObject<Env> {
         const r = this.one('SELECT * FROM results WHERE file_key=? AND deleted_at IS NULL', key); if (!r) fail(404, 'Not found');
         if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
         if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
+      } else if (kind === 'syllabus') {
+        const doc = this.one('SELECT * FROM syllabus_documents WHERE file_key=? AND deleted_at IS NULL', key); if (!doc) fail(404, 'Not found');
+        this.classOf(a, doc.class_id);
       } else fail(404, 'Not found');
       const o = await this.env.FILES.get(key); if (!o) fail(404, 'File missing');
       this.audit(a, 'file.download', kind, key);
