@@ -1440,7 +1440,12 @@ export class SchoolDO extends DurableObject<Env> {
       const month = c.req.query('month') || pkt().month;
       const cls = c.req.query('class_id');
       let classes: string[] | null = null;
-      if (!this.canFeesAll(a)) { classes = [...a.classTeacherOf]; if (!classes.length) fail(403, 'No access'); }
+      if (!this.isFullAdmin(a)) {
+        classes = a.role === 'subadmin' && this.canFeesAll(a)
+          ? this.scopedClassIds(a).filter((id) => this.canSetFees(a, id))
+          : [...a.classTeacherOf];
+        if (!classes.length) fail(403, 'No access');
+      }
       let rows = this.q(`SELECT v.*, s.name, s.reg_no, s.parent_phone, c.name AS class_name, s.status AS student_status FROM vouchers v JOIN students s ON s.id=v.student_id
         JOIN classes c ON c.id=v.class_id WHERE v.month=? AND v.status IN ('unpaid','partial','carried')`, month);
       if (classes) rows = rows.filter((r) => classes!.includes(r.class_id));
@@ -1452,18 +1457,28 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.get('/fees/defaulters', (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
-      const rows = this.q(`SELECT s.id, s.name, s.reg_no, s.status, c.name AS class_name, COUNT(*) AS months FROM vouchers v JOIN students s ON s.id=v.student_id JOIN classes c ON c.id=s.class_id
+      let rows = this.q(`SELECT s.id, s.name, s.reg_no, s.status, s.class_id, c.name AS class_name, COUNT(*) AS months FROM vouchers v JOIN students s ON s.id=v.student_id JOIN classes c ON c.id=s.class_id
         WHERE v.status IN ('unpaid','partial','carried') GROUP BY s.id HAVING COUNT(*)>=? ORDER BY months DESC`, this.num('defaulter_months') || 2);
+      if (!this.isFullAdmin(a)) { const allowed = this.scopedClassIds(a).filter((id) => this.canSetFees(a, id)); rows = rows.filter((r) => allowed.includes(r.class_id)); }
       return c.json(rows.map((r) => ({ ...r, balance: this.latestVoucher(r.id) ? this.voucherBalance(this.latestVoucher(r.id)!) : 0 })));
     });
     app.get('/fees/report', (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
       const month = c.req.query('month') || pkt().month;
-      const v = this.q('SELECT * FROM vouchers WHERE month=?', month);
+      let v = this.q('SELECT * FROM vouchers WHERE month=?', month);
+      const allowed = this.isFullAdmin(a) ? null : this.scopedClassIds(a).filter((id) => this.canSetFees(a, id));
+      if (allowed) v = v.filter((x) => allowed.includes(x.class_id));
       const expected = v.reduce((t, x) => t + x.current - x.discount + x.fine, 0);
-      const daily = this.q(`SELECT substr(datetime(verified_at, '+5 hours'),1,10) AS day, method, SUM(amount) AS amount, COUNT(*) AS n FROM payments
-        WHERE status='verified' AND substr(datetime(verified_at, '+5 hours'),1,7)=? GROUP BY day, method ORDER BY day`, month);
-      return c.json({ month, expected, collected: daily.reduce((t, x) => t + x.amount, 0), vouchers: v.length, paid: v.filter((x) => x.status === 'paid').length, daily });
+      let daily = this.q(`SELECT substr(datetime(verified_at, '+5 hours'),1,10) AS day, method, SUM(amount) AS amount, COUNT(*) AS n, class_id FROM payments
+        WHERE status='verified' AND substr(datetime(verified_at, '+5 hours'),1,7)=? GROUP BY day, method, class_id ORDER BY day`, month);
+      if (allowed) daily = daily.filter((x) => allowed.includes(x.class_id));
+      const dailySummary: Row[] = [];
+      for (const p of daily) {
+        const existing = dailySummary.find((x) => x.day === p.day && x.method === p.method);
+        if (existing) { existing.amount += p.amount; existing.n += p.n; }
+        else dailySummary.push({ day: p.day, method: p.method, amount: p.amount, n: p.n });
+      }
+      return c.json({ month, expected, collected: dailySummary.reduce((t, x) => t + x.amount, 0), vouchers: v.length, paid: v.filter((x) => x.status === 'paid').length, daily: dailySummary });
     });
     app.post('/fees/remind', async (c) => {
       const a = c.get('actor');
