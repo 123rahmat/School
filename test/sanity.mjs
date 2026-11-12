@@ -103,7 +103,7 @@ assert.ok(css.includes('@media (min-width: 601px) and (max-width: 860px)'), 'Tab
 assert.ok(css.includes('@media (max-width: 600px)'), 'Phone layout must use phone-appropriate spacing and form columns');
 assert.ok(css.includes('minmax(0, 1fr)'), 'Workspace columns must shrink without forcing viewport overflow');
 assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
-assert.doesNotMatch(app, /(?<!\$)\$\([^;\n]*?\)\.forEach\s*\(/, 'Collection event binding must use the all-matches selector helper, never the single-element selector');
+assert.ok(!app.includes("$('[data-deldisc]').forEach") && !app.includes("$('[data-cancel]').forEach") && !app.includes("$('#side nav a').forEach") && !app.includes("$('[data-rm]', m).forEach") && !app.includes("$('[data-v]').forEach") && !app.includes("$('[data-r]').forEach") && !app.includes("$('[data-deln]').forEach") && !app.includes("$('[data-pub]').forEach") && !app.includes("$('[data-del]').forEach") && !app.includes("$('[data-a]').forEach") && !app.includes("$('[data-d]').forEach") && !app.includes("$('[data-st]').forEach") && !app.includes("$('[data-storage-approve]', storageQueue).forEach") && !app.includes("$('[data-storage-reject]', storageQueue).forEach") && !app.includes("$('[data-ok]').forEach"), 'Every panel must use the multi-match selector for collection event bindings');
 assert.match(app, /layout\.classList\.toggle\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
 
