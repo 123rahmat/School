@@ -100,10 +100,11 @@ function query() { return Object.fromEntries(new URLSearchParams((location.hash.
 
 async function render() {
   const path = currentPath();
-  if (!ME && !['/login', '/signup'].includes(path)) {
+  if (!ME && !['/', '/login', '/signup'].includes(path)) {
     try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
-    if (!ME) return go('/login');
+    if (!ME) return go('/');
   }
+  if (ME && ['/login', '/signup'].includes(path)) return go('/');
   if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -213,11 +214,17 @@ function setupSearch() {
 }
 
 let installEvt = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; setupInstall(); });
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; setupInstall(); setupLandingInstall(); });
 function setupInstall() {
-  const b = $('#install'); if (!b || !installEvt) return;
+  const b = $('#install'); if (!b) return;
   b.classList.remove('hidden');
-  b.onclick = async () => { installEvt.prompt(); await installEvt.userChoice; installEvt = null; b.classList.add('hidden'); };
+  b.onclick = async () => {
+    if (!installEvt) return showInstallHelp();
+    const prompt = installEvt;
+    installEvt = null;
+    try { await prompt.prompt(); await prompt.userChoice; } catch { showInstallHelp(); }
+    setupInstall();
+  };
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
@@ -229,12 +236,30 @@ async function refreshMe() {
 
 // ---------- sign in / sign up ----------
 function authPage(inner) {
-  $('#app').innerHTML = `<div class="auth"><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div></div>`;
+  $('#app').innerHTML = `<div class="auth"><a class="auth-home" href="#/" aria-label="Back to home">← School Manager</a><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div></div>`;
 }
-async function mountGoogleButton(target, onCredential, buttonText = 'signin_with') {
+function showAuthError(error, mode = 'login') {
+  const message = $('#authmsg');
+  const next = $('#authnext');
+  const raw = String(error?.message || 'Google sign-in failed. Please try again.');
+  if (message) message.textContent = raw;
+  if (!next) return;
+  next.innerHTML = '';
+  if (mode === 'login' && /not registered|not linked|not found/i.test(raw)) {
+    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new school or academy? Create an institution account with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to a school or academy? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
+  } else if (/not configured/i.test(raw)) {
+    next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
+  } else if (mode === 'signup') {
+    next.innerHTML = '<div class="auth-help"><p>Already have an institution account? <a href="#/login">Sign in instead</a>.</p></div>';
+  } else {
+    next.innerHTML = '<div class="auth-help"><p>Use the Google account email your institution has registered. If the problem continues, ask the institution administrator to check your account email.</p></div>';
+  }
+}
+async function mountGoogleButton(target, onCredential, buttonText = 'signin_with', mode = 'login') {
   const cfg = await api('/api/config').catch(() => ({}));
   if (!cfg.googleClientId) {
-    target.innerHTML = '<p class="small muted">Google sign-in is not configured yet. Add your Google OAuth Web Client ID in Cloudflare Worker settings.</p>';
+    showAuthError(new Error('Google sign-in is not configured yet.'), mode);
+    target.innerHTML = '<p class="small muted">Google sign-in is temporarily unavailable.</p>';
     return;
   }
   try {
@@ -242,6 +267,7 @@ async function mountGoogleButton(target, onCredential, buttonText = 'signin_with
       await new Promise((resolve, reject) => {
         const existing = document.querySelector('script[data-google-identity]');
         if (existing) {
+          if (window.google?.accounts?.id) return resolve();
           existing.addEventListener('load', resolve, { once: true });
           existing.addEventListener('error', reject, { once: true });
           return;
@@ -252,73 +278,207 @@ async function mountGoogleButton(target, onCredential, buttonText = 'signin_with
         script.defer = true;
         script.dataset.googleIdentity = '1';
         script.onload = resolve;
-        script.onerror = () => reject(new Error('Google sign-in could not load. Please check your connection.'));
+        script.onerror = () => reject(new Error('Google sign-in could not load. Check your connection, browser content blockers and Google OAuth origin settings.'));
         document.head.appendChild(script);
       });
     }
+    if (!window.google?.accounts?.id) throw new Error('Google Identity Services loaded without its sign-in interface.');
     google.accounts.id.initialize({
       client_id: cfg.googleClientId,
-      callback: ({ credential }) => Promise.resolve(onCredential(credential)).catch((error) => {
-        const message = $('#authmsg');
-        if (message) message.textContent = error.message || 'Google sign-in failed.';
-      }),
+      callback: ({ credential }) => Promise.resolve(onCredential(credential)).catch((error) => showAuthError(error, mode)),
     });
     google.accounts.id.renderButton(target, { theme: 'outline', size: 'large', text: buttonText, shape: 'rectangular', width: 320 });
   } catch (error) {
-    const message = $('#authmsg');
-    if (message) message.textContent = error.message || 'Google sign-in could not be loaded.';
+    showAuthError(error, mode);
   }
+}
+
+function showInstallHelp() {
+  const isApple = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isAndroid = /android/i.test(navigator.userAgent);
+  const steps = isApple
+    ? 'Open this page in Safari, tap Share, then choose Add to Home Screen.'
+    : isAndroid
+      ? 'Open your browser menu and choose Install app or Add to Home screen.'
+      : 'In Chrome or Edge, use the install icon in the address bar or the browser menu and choose Install School Manager.';
+  modal(`<h2>Install School Manager</h2><p class="muted">You can use School Manager in your browser without installing anything.</p><div class="card"><b>To install on this device</b><p>${esc(steps)}</p></div><div class="row"><a class="btn primary" href="#/login" data-close>Use in browser</a><button class="btn" data-close>Close</button></div>`);
+}
+function setupLandingInstall() {
+  const b = $('#landing-install');
+  if (!b) return;
+  b.onclick = async () => {
+    if (!installEvt) return showInstallHelp();
+    const prompt = installEvt;
+    installEvt = null;
+    try {
+      await prompt.prompt();
+      await prompt.userChoice;
+    } catch { showInstallHelp(); }
+    setupLandingInstall();
+  };
+}
+async function loadLandingContact() {
+  const target = $('#landing-contact-email');
+  if (!target) return;
+  const cfg = await api('/api/config').catch(() => ({}));
+  if (cfg.contactEmail) {
+    target.innerHTML = `<a href="mailto:${esc(cfg.contactEmail)}">${esc(cfg.contactEmail)}</a>`;
+  } else {
+    target.textContent = 'Public support email is not configured yet. You can still create an account or sign in above.';
+  }
+}
+function landingPage() {
+  document.title = 'School Manager | Education management in one workspace';
+  $('#app').innerHTML = `
+  <div class="landing-shell">
+    <header class="landing-nav">
+      <a class="landing-brand" href="#/" aria-label="School Manager home"><img src="/icon.svg" alt=""><span>School Manager</span></a>
+      <nav aria-label="Main navigation">
+        <a href="#features">Features</a><a href="#institutions">Who it serves</a><a href="#how-it-works">How it works</a><a href="#contact">Contact</a>
+      </nav>
+      <div class="landing-nav-actions"><a class="btn" href="#/login">Sign in</a><a class="btn primary" href="#/signup">Create account</a></div>
+    </header>
+    <main>
+      <section class="landing-hero">
+        <div class="landing-hero-copy">
+          <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
+          <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
+          <p class="landing-lead">School Manager brings everyday institution operations into one organised workspace: student records, staff, classes, attendance, fees, parent communication, results and reports.</p>
+          <div class="landing-actions"><a class="btn primary" href="#/signup">Create an institution account</a><a class="btn" href="#/login">Sign in</a></div>
+          <div class="landing-secondary-actions"><button class="btn" id="landing-install" type="button">Install app</button><a href="#/login">Prefer the browser? Use in browser</a></div>
+          <p class="landing-note">Start with a 14-day trial for up to 50 students. No password, email code or phone login is used.</p>
+        </div>
+        <div class="landing-preview" aria-label="Illustration of an education management dashboard">
+          <div class="preview-top"><span class="preview-mark">SM</span><div><b>Institution overview</b><small>Daily operations at a glance</small></div><span class="preview-live">WORKSPACE</span></div>
+          <div class="preview-stats"><div><small>Students</small><b>Records</b><span>Admissions and profiles</span></div><div><small>Attendance</small><b>Daily</b><span>Class-by-class tracking</span></div><div><small>Finance</small><b>Fees</b><span>Vouchers and receipts</span></div></div>
+          <div class="preview-panel"><div class="preview-panel-head"><b>Keep the day organised</b><span>OVERVIEW</span></div><div class="preview-row"><span><i class="preview-dot blue"></i>Classes and sections</span><b>Organised</b></div><div class="preview-row"><span><i class="preview-dot green"></i>Attendance records</span><b>Trackable</b></div><div class="preview-row"><span><i class="preview-dot violet"></i>Parent communication</span><b>Connected</b></div><div class="preview-progress"><span></span></div><small>One workspace for your institution's routine work</small></div>
+          <div class="preview-footer"><span>Student records</span><span>Fees</span><span>Results</span><span>Notices</span></div>
+        </div>
+      </section>
+      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Works in the browser</span><span>Installable on supported devices</span></section>
+      <section class="landing-section" id="institutions">
+        <div class="landing-section-heading"><div class="landing-eyebrow">WHO IT SERVES</div><h2>Made for the people who keep an education institution moving.</h2><p>Give each institution its own workspace, then give each person the tools and access appropriate to their role.</p></div>
+        <div class="landing-card-grid three">
+          <article class="landing-card"><div class="landing-card-icon">01</div><h3>School and academy administrators</h3><p>Manage admissions, staff, classes, fee plans, reports, notices and day-to-day operations from one place.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">02</div><h3>Teachers and office teams</h3><p>Work with assigned classes, student information, attendance, notices and the tasks permitted by your role.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">03</div><h3>Parents and guardians</h3><p>See linked children, attendance, fee information, published results, notices and school messages.</p></article>
+        </div>
+      </section>
+      <section class="landing-section landing-features" id="features">
+        <div class="landing-section-heading"><div class="landing-eyebrow">WHAT THE SYSTEM DOES</div><h2>The essential work, connected.</h2><p>Keep records in one place and reduce repeated manual work across the institution.</p></div>
+        <div class="landing-card-grid">
+          <article class="landing-card"><div class="landing-card-icon">A</div><h3>Student admissions and profiles</h3><p>Create student records, assign registration numbers, import spreadsheets, manage guardians and keep a record of changes.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">B</div><h3>Staff and responsibilities</h3><p>Add teachers and office staff, assign roles, manage class teachers and subject responsibilities, and revoke access when needed.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">C</div><h3>Classes, sections and subjects</h3><p>Organise learning groups, assign class teachers and connect subjects with the teachers who teach them.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">D</div><h3>Attendance and registers</h3><p>Record daily attendance, review and submit registers, manage corrections and view monthly attendance summaries.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">E</div><h3>Fees and payment records</h3><p>Set fee heads and class plans, generate vouchers, record discounts, track arrears and manage submitted payment slips.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">F</div><h3>Receipts and collection reports</h3><p>Verify payments, issue numbered receipts, track cash handovers and review collection and outstanding-fee reports.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">G</div><h3>Notices and parent communication</h3><p>Share notices with the right audience, keep student-related message threads and track notification reads.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">H</div><h3>Results and documents</h3><p>Upload result documents for individual students or groups, control publication and keep files access-protected.</p></article>
+          <article class="landing-card"><div class="landing-card-icon">I</div><h3>Reports, history and backups</h3><p>Review dashboards, audit important actions, monitor storage and export institution data for backup.</p></article>
+        </div>
+      </section>
+      <section class="landing-section landing-workflow" id="how-it-works">
+        <div class="landing-section-heading"><div class="landing-eyebrow">GET STARTED</div><h2>A clear path from registration to daily use.</h2></div>
+        <div class="landing-steps">
+          <article><span>01</span><div><h3>Create the institution workspace</h3><p>Register the institution and create its main administrator profile using a verified Google account.</p></div></article>
+          <article><span>02</span><div><h3>Set up classes and staff</h3><p>Add teachers, create classes and sections, and assign class teachers and subjects.</p></div></article>
+          <article><span>03</span><div><h3>Add students and guardians</h3><p>Enter records individually or import a spreadsheet. Add the Google email each staff member or guardian will use.</p></div></article>
+          <article><span>04</span><div><h3>Run everyday operations</h3><p>Record attendance, manage fees, communicate with families, publish results and review reports.</p></div></article>
+        </div>
+      </section>
+      <section class="landing-section landing-security" id="security">
+        <div><div class="landing-eyebrow">ACCESS AND PRIVACY</div><h2>People see the information their role allows.</h2><p>Each institution has its own data space. Teachers work with assigned classes, guardians see only linked children, and administrative access is controlled by roles. Files are delivered through permission-checked routes.</p><p class="small muted">Sign-in uses verified Google accounts. Password login, email OTP and phone-based login are not enabled.</p></div>
+        <div class="security-points"><div><b>Google account sign-in</b><span>Verified email identity</span></div><div><b>Institution data separation</b><span>Independent institution workspaces</span></div><div><b>Role-based permissions</b><span>Access checked by the backend</span></div><div><b>Private file access</b><span>Downloads checked against user permissions</span></div></div>
+      </section>
+      <section class="landing-cta">
+        <div><div class="landing-eyebrow">READY TO GET ORGANISED?</div><h2>Start with your institution's workspace.</h2><p>Create your account and complete the guided setup. You can also sign in to an existing account.</p></div>
+        <div class="landing-actions"><a class="btn primary" href="#/signup">Create account</a><a class="btn" href="#/login">Sign in</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
+      </section>
+    </main>
+    <footer class="landing-footer" id="contact">
+      <div><a class="landing-brand" href="#/"><img src="/icon.svg" alt=""><span>School Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
+      <div><b>Explore</b><a href="#features">Features</a><a href="#institutions">Who it serves</a><a href="#how-it-works">How it works</a></div>
+      <div><b>Account</b><a href="#/signup">Create account</a><a href="#/login">Sign in</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
+      <div><b>Contact us</b><p class="small muted">For product enquiries, onboarding and support:</p><p id="landing-contact-email" class="small muted">Loading contact details…</p><p class="small muted">Contact details are published by the platform team.</p></div>
+      <div class="landing-copyright">© <span id="landing-year"></span> School Manager. All rights reserved. <span>Use in browser · Install when supported</span></div>
+    </footer>
+  </div>`;
+  const year = $('#landing-year');
+  if (year) year.textContent = String(new Date().getFullYear());
+  ['landing-install','landing-install-bottom','landing-install-footer'].forEach((id) => {
+    const b = $('#' + id);
+    if (b) b.onclick = () => {
+      const original = $('#landing-install');
+      if (original) original.click();
+      else showInstallHelp();
+    };
+  });
+  setupLandingInstall();
+  loadLandingContact();
 }
 
 route('/login', async () => {
   authPage(`
-    <h1>Sign in to School Manager</h1>
-    <p class="muted small">Use the Google account email registered by your school. Email codes, phone sign-in and passwords are not used.</p>
-    <div id="gbtn" style="margin-top:18px"></div>
+    <h1>Welcome back</h1>
+    <p class="muted small">Sign in with the Google account email registered by your school or academy. No passwords, email codes or phone sign-in.</p>
+    <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
-    <p class="small muted" style="margin-top:16px">Starting a new school? <a href="#/signup">Create a school account</a></p>`);
+    <div id="authnext"></div>
+    <p class="small muted auth-switch">New here? <a href="#/signup">Create an institution account</a></p>`);
   await mountGoogleButton($('#gbtn'), async (credential) => {
     const r = await api('/api/auth/google', { body: { credential } });
     if (r.choose) {
       $('#gbtn').classList.add('hidden');
-      $('#authmsg').textContent = 'This Google email is linked to more than one school. Choose a school:';
+      $('#authmsg').textContent = 'Choose which institution you want to open:';
       const choose = document.createElement('div');
-      choose.className = 'stack';
+      choose.className = 'auth-school-choices';
       choose.innerHTML = r.choose.map((item) => `<button class="btn" data-pick="${item.pick}">${esc(item.label)}</button>`).join('');
-      $('#authmsg').after(choose);
-      $$('button[data-pick]', choose).forEach((button) => button.onclick = async () => {
-        const picked = await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
-        await refreshMe();
-        go('/');
+      $('#authnext').replaceChildren(choose);
+      $('button[data-pick]', choose).forEach((button) => button.onclick = async () => {
+        button.disabled = true;
+        try {
+          await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
+          await refreshMe();
+          if (!ME) throw new Error('Your session could not be created. Please retry sign-in.');
+          go('/');
+        } catch (error) { button.disabled = false; showAuthError(error, 'login'); }
       });
       return;
     }
     await refreshMe();
+    if (!ME) throw new Error('Google verified your account, but the School session was not created. Please retry.');
     go('/');
-  }, 'signin_with');
+  }, 'signin_with', 'login');
 });
 
 route('/signup', async () => {
   authPage(`
-    <h1>Start a school account</h1>
-    <p class="muted small">Create your administrator account using a verified Google email. That same Google account will be your only sign-in method.</p>
+    <h1>Create your institution account</h1>
+    <p class="muted small">Register your school or academy. Your verified Google account becomes the main administrator sign-in.</p>
     <form id="signupForm" class="stack">
-      <input name="school_name" placeholder="School or academy name" required maxlength="120">
-      <select name="kind" style="width:100%;margin-bottom:10px"><option value="school">School</option><option value="academy">Academy</option></select>
-      <input name="admin_name" placeholder="Administrator name" required maxlength="120">
-      <input name="phone" placeholder="Contact phone (optional)" inputmode="tel">
+      <label for="signup-school">Institution name</label>
+      <input id="signup-school" name="school_name" placeholder="e.g. Green Valley School" autocomplete="organization" required maxlength="120">
+      <label for="signup-kind">Institution type</label>
+      <select id="signup-kind" name="kind" required><option value="school">School</option><option value="academy">Academy</option></select>
+      <label for="signup-admin">Your name</label>
+      <input id="signup-admin" name="admin_name" placeholder="Administrator name" autocomplete="name" required maxlength="120">
+      <label for="signup-phone">Contact phone (optional)</label>
+      <input id="signup-phone" name="phone" placeholder="03xx xxxxxxx" autocomplete="tel" inputmode="tel">
     </form>
-    <div id="gbtn" style="margin-top:16px"></div>
+    <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
-    <p class="small muted" style="margin-top:16px">Already registered? <a href="#/login">Sign in with Google</a></p>`);
+    <div id="authnext"></div>
+    <p class="small muted auth-switch">Already registered? <a href="#/login">Sign in instead</a></p>`);
   await mountGoogleButton($('#gbtn'), async (credential) => {
     const form = $('#signupForm');
     if (!form.reportValidity()) return;
     const details = formData(form);
     const r = await api('/api/signup/google', { body: { ...details, credential } });
     await refreshMe();
+    if (!ME) throw new Error('Your institution was created, but the sign-in session was not established. Please sign in with the same Google account.');
     go('/setup');
-  }, 'signup_with');
+  }, 'signup_with', 'signup');
 });
 
 route('/setup', async () => {
@@ -339,6 +499,7 @@ route('/setup', async () => {
 
 // ---------- home ----------
 route('/', async () => {
+  if (!ME) return landingPage();
   if (ME.kind === 'guardian') return parentHome();
   if (!ME.isAdmin) return teacherHome();
   const d = await S('/dashboard');
