@@ -53,9 +53,38 @@ async function newOtp(env: Env, identifier: string, purpose: string, payload?: a
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
   await env.DB.prepare('INSERT OR REPLACE INTO otps (identifier, code_hash, expires_at, attempts, purpose, payload) VALUES (?,?,?,?,?,?)')
     .bind(identifier, await sha256(identifier + ':' + code), Date.now() + OTP_MINUTES * 60000, 0, purpose, payload ? JSON.stringify(payload) : null).run();
-  // Production: send `code` by email (e.g. Resend / MailChannels) or SMS here.
-  console.log(`[otp] ${identifier}: ${code}`);
+  console.log(`[otp] ${identifier}: ${env.DEV_OTP === '1' ? code : '******'}`);
+  const sent = await deliverCode(env, identifier, code).catch((e) => { console.error('code delivery failed', e); return false; });
+  if (!sent && env.DEV_OTP !== '1') fail(503, identifier.includes('@') ? 'Could not send the email. Please try again in a minute.' : 'Could not send the SMS. Please sign in with email or ask the school.');
   return env.DEV_OTP === '1' ? { devCode: code } : {};
+}
+
+/** Send a sign-in code: email through Resend, phone through Twilio (WhatsApp or SMS). Returns false when no provider is set. */
+async function deliverCode(env: Env, identifier: string, code: string): Promise<boolean> {
+  const text = `Your School Manager sign-in code is ${code}. It expires in ${OTP_MINUTES} minutes. Do not share it.`;
+  if (identifier.includes('@')) {
+    if (!env.RESEND_API_KEY) return false;
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST', headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: env.EMAIL_FROM || 'School Manager <onboarding@resend.dev>', to: [identifier], subject: `Sign-in code: ${code}`, text }),
+    });
+    if (!r.ok) throw new Error('resend ' + r.status + ' ' + (await r.text()));
+    return true;
+  }
+  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN || !(env.TWILIO_SMS_FROM || env.TWILIO_WHATSAPP_FROM)) return false;
+  const to = '+92' + identifier.replace(/^0/, '');
+  const form = new URLSearchParams({ Body: text });
+  if (env.TWILIO_WHATSAPP_FROM) { form.set('To', 'whatsapp:' + to); form.set('From', 'whatsapp:' + env.TWILIO_WHATSAPP_FROM); }
+  else {
+    form.set('To', to);
+    if (env.TWILIO_SMS_FROM!.startsWith('MG')) form.set('MessagingServiceSid', env.TWILIO_SMS_FROM!); else form.set('From', env.TWILIO_SMS_FROM!);
+  }
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: 'POST', headers: { authorization: 'Basic ' + btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`), 'content-type': 'application/x-www-form-urlencoded' },
+    body: form,
+  });
+  if (!r.ok) throw new Error('twilio ' + r.status + ' ' + (await r.text()));
+  return true;
 }
 
 async function checkOtp(env: Env, identifier: string, code: string, purpose: string, consume = true) {
@@ -124,20 +153,46 @@ app.post('/api/auth/verify', async (c) => {
     const token = await createSession(c, '', 'owner', 'owner', 'Owner');
     return c.json({ ok: true, kind: 'owner', token });
   }
-  const rows = (await c.env.DB.prepare(
-    'SELECT l.*, s.name AS school_name FROM logins l JOIN schools s ON s.id=l.school_id WHERE l.identifier=?').bind(id).all()).results as any[];
+  const rows = await loginRows(c.env, id);
   if (rows.length > 1 && (pick === undefined || pick === null)) {
     await checkOtp(c.env, id, code, 'login', false);
     return c.json({ choose: rows.map((r, i) => ({ pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : 'Staff'}` })) });
   }
   await checkOtp(c.env, id, code, 'login');
+  return finishLogin(c, rows, pick);
+});
+
+async function loginRows(env: Env, id: string) {
+  return (await env.DB.prepare('SELECT l.*, s.name AS school_name FROM logins l JOIN schools s ON s.id=l.school_id WHERE l.identifier=?').bind(id).all()).results as any[];
+}
+
+app.get('/api/config', (c) => c.json({ googleClientId: c.env.GOOGLE_CLIENT_ID || null }));
+
+/** Sign in with Google: the ID token is checked with Google, then the verified email is looked up like a code sign-in.
+ *  The platform owner always uses the email code, as a second step for the account that controls every school. */
+app.post('/api/auth/google', async (c) => {
+  if (!c.env.GOOGLE_CLIENT_ID) fail(400, 'Google sign-in is not set up');
+  const { credential, pick } = await c.req.json<any>();
+  const r = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(String(credential || '')));
+  const t: any = await r.json().catch(() => ({}));
+  if (!r.ok || t.aud !== c.env.GOOGLE_CLIENT_ID || String(t.email_verified) !== 'true' || !t.email || Number(t.exp) * 1000 < Date.now()) fail(401, 'Google sign-in failed');
+  const id = normId(t.email);
+  if (id === normId(c.env.OWNER_EMAIL)) fail(400, 'The owner signs in with the email code');
+  const rows = await loginRows(c.env, id);
+  if (!rows.length) fail(403, `${t.email} is not registered with any school. Ask your school admin to add it.`);
+  if (rows.length > 1 && (pick === undefined || pick === null))
+    return c.json({ choose: rows.map((r, i) => ({ pick: i, label: `${r.school_name} — ${r.kind === 'guardian' ? 'Parent' : 'Staff'}` })) });
+  return finishLogin(c, rows, pick);
+});
+
+async function finishLogin(c: any, rows: any[], pick: any) {
   const r = rows[Number(pick ?? 0)];
   if (!r) fail(400, 'This email or phone is not registered with any school');
   const ctx = await ctxFor(c.env, r.school_id, r.kind, r.ref_id);
   const me = await callSchoolJson(c.env, ctx, '/me');
   const token = await createSession(c, r.school_id, r.kind, r.ref_id, me.name);
   return c.json({ ok: true, kind: r.kind, token });
-});
+}
 
 app.post('/api/auth/logout', async (c) => {
   const s = await loadSession(c);

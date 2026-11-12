@@ -18,11 +18,18 @@ const fmtTime = (iso) => {
 const fmtDate = (d) => (d ? new Date(d + (d.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 const STATUS = { P: 'Present', A: 'Absent', L: 'Late', V: 'Leave' };
 const PAY_STATUS = { submitted: 'warn', verified: 'ok', rejected: 'bad', cancelled: 'bad' };
-const VOUCHER_STATUS = { paid: 'ok', partial: 'warn', unpaid: 'bad', carried: 'info' };
+const VOUCHER_STATUS = { paid: 'ok', partial: 'warn', unpaid: 'bad', carried: 'info', settled: 'ok' };
 const badge = (text, kind = '') => `<span class="badge ${kind}">${esc(text)}</span>`;
 
 let ME = null;
 let BILL = null;
+
+// Payment accounts the admin has added (any company: Easypaisa, JazzCash, any bank…)
+let ACCOUNTS = null;
+async function loadAccounts(force) { if (!ACCOUNTS || force) ACCOUNTS = await S('/payment-accounts').catch(() => []); return ACCOUNTS; }
+const accountsHtml = (list) => list && list.length
+  ? `<div class="stack">${list.map((a) => `<div class="card" style="margin:0;padding:10px 12px"><b>${esc(a.company)}</b><div>Account name: ${esc(a.title || '–')}</div><div>Number: <b style="user-select:all">${esc(a.number)}</b>${a.branch ? `<div class="small muted">${esc(a.branch)}</div>` : ''}</div></div>`).join('')}</div>`
+  : '<p class="small muted">The school has not added payment accounts yet. Please ask the school office.</p>';
 
 // ---------- API ----------
 async function api(path, opts = {}) {
@@ -231,7 +238,29 @@ route('/login', async () => {
     <form id="f1"><input name="identifier" placeholder="Email or phone (03xx…)" required autofocus><button class="btn primary">Send code</button></form>
     <form id="f2" class="hidden"><p class="muted small" id="msg"></p><input name="code" inputmode="numeric" placeholder="6-digit code" required><button class="btn primary">Sign in</button></form>
     <div id="choose" class="hidden stack"></div>
+    <div id="gbtn" style="margin-top:14px"></div>
     <p class="small muted" style="margin-top:16px">New school? <a href="#/signup">Start a free 14-day trial</a></p>`);
+  const cfg = await api('/api/config').catch(() => ({}));
+  if (cfg.googleClientId) {
+    const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
+    s.onload = () => {
+      google.accounts.id.initialize({ client_id: cfg.googleClientId, callback: async ({ credential }) => {
+        const go2 = async (pick) => {
+          const r = await act(() => api('/api/auth/google', { body: { credential, pick } }));
+          if (r.choose) {
+            $('#f1').classList.add('hidden'); $('#choose').classList.remove('hidden');
+            $('#choose').innerHTML = '<p>Choose where to sign in:</p>' + r.choose.map((c) => `<button class="btn" data-pick="${c.pick}">${esc(c.label)}</button>`).join('');
+            $$('#choose button').forEach((b) => b.onclick = () => go2(Number(b.dataset.pick)));
+            return;
+          }
+          await refreshMe(); go('/');
+        };
+        go2();
+      } });
+      google.accounts.id.renderButton($('#gbtn'), { theme: 'outline', size: 'large', text: 'signin_with', width: 300 });
+    };
+    document.head.appendChild(s);
+  }
   let identifier = '';
   $('#f1').onsubmit = async (e) => {
     e.preventDefault();
@@ -293,6 +322,7 @@ route('/setup', async () => {
       <li><a href="#/classes">Create classes</a> and pick a class teacher for each.</li>
       <li><a href="#/students">Add students</a> one by one, or import a CSV file from Excel.</li>
       <li><a href="#/fees/setup">Set the fee for each class</a>.</li>
+      <li><a href="#/settings?tab=payments">Add your payment accounts</a> (Easypaisa, JazzCash, bank…) so parents know where to pay.</li>
       <li><a href="#/settings">Check settings</a>: fee due date, late fine, attendance deadline.</li>
     </ol>
     <a class="btn primary" href="#/">Go to dashboard</a>
@@ -548,20 +578,29 @@ function bindCalendar(s) {
 
 function feesTab(p, s) {
   const isParent = ME.kind === 'guardian';
-  const current = p.vouchers.find((v) => v.status !== 'carried');
+  const current = p.vouchers.find((v) => v.status !== 'carried' && v.status !== 'settled');
+  const unpaidMonths = p.vouchers.filter((v) => ['unpaid', 'partial', 'carried'].includes(v.status)).length;
+  const canOwnFee = ME.role === 'admin' || (ME.settings.teacher_set_fees === '1' && ME.classTeacherOf.includes(s.class_id));
   return `
+  ${current ? `<div class="grid" style="margin-bottom:12px"><div class="stat"><div class="l">Total due now</div><div class="n">${money(Math.max(0, current.balance))}</div></div>
+    <div class="stat"><div class="l">Months unpaid</div><div class="n" style="color:${unpaidMonths >= 2 ? 'var(--bad)' : 'inherit'}">${unpaidMonths}</div></div>
+    <div class="stat"><div class="l">Late fine on latest voucher</div><div class="n">${money(current.fine)}</div></div></div>` : ''}
+  ${unpaidMonths >= 2 ? `<div class="banner bad">Fee for ${unpaidMonths} months is pending. Older months are added to the latest voucher automatically, so one payment clears everything.</div>` : ''}
   ${p.reminderPause ? `<div class="banner info">Fee reminders paused: ${esc(p.reminderPause.reason)}</div>` : ''}
   <div class="row" style="margin-bottom:12px">
     ${current && current.balance > 0 && isParent ? `<button class="btn primary" id="pay-slip" data-v="${current.id}" data-b="${current.balance}">Upload payment slip</button>` : ''}
     ${current && current.balance > 0 && !isParent && (ME.classTeacherOf.includes(s.class_id) || ME.canFees) ? `<button class="btn primary" id="pay-cash" data-v="${current.id}" data-b="${current.balance}">Fee received (cash)</button>` : ''}
     ${current && current.balance > 0 && ME.canFees ? `<button class="btn" id="pay-office" data-v="${current.id}" data-b="${current.balance}">Record office payment</button>` : ''}
     ${ME.canFees ? '<button class="btn" id="disc">Add discount</button>' : ''}
+    ${canOwnFee ? '<button class="btn" id="ownfee">Set this student\'s fee</button>' : ''}
     ${!isParent ? `<button class="btn" id="pause">${p.reminderPause ? 'Resume reminders' : 'Pause reminders'}</button>` : ''}
   </div>
   ${p.discounts && p.discounts.length ? `<p class="small">Discounts: ${p.discounts.map((d) => `${esc(d.kind)} ${money(d.amount)}/month ${ME.canFees ? `<a href="#" data-deldisc="${d.id}">remove</a>` : ''}`).join(' · ')}</p>` : ''}
   <h3>Vouchers</h3>
-  <div class="table-wrap"><table><thead><tr><th>Month</th><th>No.</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
-  ${p.vouchers.map((v) => `<tr><td>${esc(v.month)}</td><td>${v.number}</td><td class="num">${money(v.total)}</td><td class="num">${money(v.paid)}</td><td class="num">${v.status === 'carried' ? '→ next' : money(v.balance)}</td><td>${fmtDate(v.due_date)}</td><td>${badge(v.status, VOUCHER_STATUS[v.status])}</td><td><a href="#/voucher/${v.id}">Print</a></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No vouchers yet</td></tr>'}
+  <div class="table-wrap"><table><thead><tr><th>Month</th><th>No.</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Fine</th><th class="num">Balance</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>
+  ${p.vouchers.map((v) => `<tr><td>${esc(v.month)}</td><td>${v.number}</td><td class="num">${money(v.total)}</td><td class="num">${money(v.paid)}</td>
+    <td class="num">${money(v.fine)}${ME.canFees && ['unpaid', 'partial'].includes(v.status) ? ` <a href="#" data-fine="${v.id}" class="small">change</a>` : ''}</td>
+    <td class="num">${v.status === 'carried' ? '→ next' : v.status === 'settled' ? '–' : money(v.balance)}</td><td>${fmtDate(v.due_date)}</td><td>${badge(v.status, VOUCHER_STATUS[v.status])}</td><td><a href="#/voucher/${v.id}">Print</a></td></tr>`).join('') || '<tr><td colspan="9" class="muted">No vouchers yet</td></tr>'}
   </tbody></table></div>
   <h3>Payments</h3>
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Method</th><th class="num">Amount</th><th>Txn ID</th><th>Status</th><th></th></tr></thead><tbody>
@@ -574,9 +613,9 @@ function bindFees(s, p) {
   const payDialog = (method, v, bal) => {
     const parent = method === 'slip', office = method === 'office';
     modal(`<h2>${parent ? 'Upload payment slip' : office ? 'Record office payment' : 'Fee received in cash'}</h2>
-    ${parent && ME.kind === 'guardian' ? `<p class="small muted">Pay to the school's Easypaisa/JazzCash account, then upload the confirmation.</p>` : ''}
+    ${parent ? `<p class="small">Pay to one of the school's accounts below, then upload the transaction ID and slip.</p>${accountsHtml(ACCOUNTS)}` : ''}
     <form id="pf" class="form">
-      ${parent ? `<div><label>Paid by</label><select name="method"><option value="easypaisa">Easypaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank deposit</option></select></div>` : ''}
+      ${parent ? `<div><label>Paid by</label><select name="method"><option value="easypaisa">Easypaisa</option><option value="jazzcash">JazzCash</option><option value="bank">Bank / other</option></select></div>` : ''}
       ${office ? `<div><label>Method</label><select name="method"><option value="office_cash">Cash at office</option><option value="bank">Bank deposit</option><option value="easypaisa">Easypaisa</option><option value="jazzcash">JazzCash</option></select></div>` : ''}
       <div><label>Amount</label><input name="amount" type="number" min="1" value="${bal}" required></div>
       ${parent || office ? `<div><label>Transaction ID${parent ? ' *' : ''}</label><input name="txn_id" ${parent ? 'required' : ''}></div>` : ''}
@@ -595,8 +634,36 @@ function bindFees(s, p) {
       };
     });
   };
-  const b = (id, m) => { const el = $('#' + id); if (el) el.onclick = () => payDialog(m, el.dataset.v, el.dataset.b); };
+  const b = (id, m) => { const el = $('#' + id); if (el) el.onclick = async () => { await loadAccounts(); payDialog(m, el.dataset.v, el.dataset.b); }; };
   b('pay-slip', 'slip'); b('pay-cash', 'cash'); b('pay-office', 'office');
+  loadAccounts();
+  // Student's own fee (replaces the class amount for this student)
+  const ownFee = $('#ownfee'); if (ownFee) ownFee.onclick = async () => {
+    const f = await S(`/students/${s.id}/fee`);
+    modal(`<h2>Fee for ${esc(s.name)}</h2><p class="small muted">Leave a box empty to use the class fee. Enter 0 to remove that fee for this student. This month's unpaid voucher is updated at once.</p>
+    <form id="of" class="stack"><div class="table-wrap"><table><thead><tr><th>Fee</th><th class="num">Class amount</th><th class="num">This student</th></tr></thead><tbody>
+    ${f.heads.map((h) => `<tr><td>${esc(h.name)}</td><td class="num">${money(h.class_amount)}</td><td class="num"><input type="number" min="0" style="width:120px" data-h="${h.head_id}" value="${h.student_amount ?? ''}" placeholder="class fee"></td></tr>`).join('')}
+    </tbody></table></div><p>Monthly fee now: <b>${money(f.monthly)}</b></p>
+    <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+      $('#of', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const heads = $$('input[data-h]', m).map((i) => ({ head_id: i.dataset.h, amount: i.value === '' ? null : Number(i.value) }));
+        await act(() => S(`/students/${s.id}/fee`, { body: { heads } }), 'Student fee saved'); closeModal(); render();
+      };
+    });
+  };
+  // Add, change or waive the late fine on one voucher
+  $$('[data-fine]').forEach((a) => a.onclick = (e) => {
+    e.preventDefault();
+    const v = p.vouchers.find((x) => x.id === a.dataset.fine);
+    modal(`<h2>Late fine — ${esc(v.month)}</h2><p>Current fine: <b>${money(v.fine)}</b>${v.fine_locked ? ' (set by hand)' : ''}</p>
+    <form id="ff" class="form"><div><label>Fine amount (0 = waive)</label><input type="number" min="0" name="amount" value="${v.fine}" required></div>
+    <div><label>Reason (parent is told)</label><input name="reason" required></div>
+    <div class="full row"><button class="btn primary">Save fine</button>${v.fine_locked ? '<button type="button" class="btn" id="auto">Back to automatic fine</button>' : ''}<button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+      $('#ff', m).onsubmit = async (ev) => { ev.preventDefault(); await act(() => S(`/vouchers/${v.id}/fine`, { body: formData(ev.target) }), 'Fine updated'); closeModal(); render(); };
+      const au = $('#auto', m); if (au) au.onclick = async () => { await act(() => S(`/vouchers/${v.id}/fine`, { body: { auto: true } }), 'Automatic fine restored'); closeModal(); render(); };
+    });
+  });
   const d = $('#disc'); if (d) d.onclick = () => modal(`<h2>Add discount</h2><form id="df" class="form">
     <div><label>Kind</label><select name="kind"><option>sibling</option><option>scholarship</option><option>staff child</option><option>custom</option></select></div>
     <div><label>Amount per month</label><input type="number" name="amount" min="1" required></div><div class="full"><label>Note</label><input name="note"></div>
@@ -634,7 +701,8 @@ route('/voucher/:id', async ({ id }) => {
     <tr><td><b>Total</b></td><td class="num"><b>${money(d.voucher.total)}</b></td></tr>
     ${d.voucher.paid ? `<tr><td>Paid</td><td class="num">${money(d.voucher.paid)}</td></tr><tr><td><b>Balance</b></td><td class="num"><b>${money(d.voucher.balance)}</b></td></tr>` : ''}</tbody></table></div>`;
   view(`<div class="row no-print"><button class="btn primary" onclick="print()">Print (3 copies)</button><button class="btn" onclick="history.back()">Back</button></div>
-  ${copy('Parent copy')}${copy('School copy')}${copy('Bank copy')}`);
+  ${copy('Parent copy')}${copy('School copy')}${copy('Bank copy')}
+  ${d.accounts && d.accounts.length ? `<div class="card"><b>Pay to:</b> ${d.accounts.map((a) => `${esc(a.company)} — ${esc(a.title)} — <b>${esc(a.number)}</b>`).join(' · ')}</div>` : ''}`);
 });
 
 route('/receipt/:id', async ({ id }) => {
@@ -869,7 +937,7 @@ route('/register/:id/:month', async ({ id, month }) => {
 });
 
 // ---------- fees ----------
-const feeTabs = (active) => `<div class="tabs">${[['/fees', 'Overview'], ['/fees/unpaid', 'Unpaid list'], ['/fees/slips', 'Slips waiting'], ...(ME.canFees ? [['/fees/defaulters', 'Long-term defaulters'], ['/fees/report', 'Reports'], ['/fees/setup', 'Fee setup']] : [])]
+const feeTabs = (active) => `<div class="tabs">${[['/fees', 'Overview'], ['/fees/unpaid', 'Unpaid list'], ['/fees/slips', 'Slips waiting'], ...(ME.canFees ? [['/fees/defaulters', 'Long-term defaulters'], ['/fees/report', 'Reports']] : []), ...(ME.canFees || ME.settings.teacher_set_fees === '1' ? [['/fees/setup', 'Fee setup']] : [])]
   .map(([h, l]) => `<a href="#${h}" class="${active === h ? 'active' : ''}">${l}</a>`).join('')}</div>`;
 
 route('/fees', async () => {
@@ -947,14 +1015,14 @@ route('/fees/setup', async () => {
   const d = await S('/fees/setup');
   const amount = (c, h) => d.plans.find((p) => p.class_id === c && p.head_id === h)?.amount ?? '';
   view(`<h1>Fee setup</h1>${feeTabs('/fees/setup')}
-  <p class="muted">Monthly heads are added to every monthly voucher. Set the amount for each class.</p>
+  <p class="muted">Set each class's monthly fee. Saving also updates this month's vouchers that are not paid yet. For one student's own amount, open the student → Fees → <i>Set this student's fee</i>.</p>
   <div class="table-wrap"><table><thead><tr><th>Class</th>${d.heads.map((h) => `<th class="num">${esc(h.name)}${h.monthly ? '' : ' <span class="muted small">(one-off)</span>'}</th>`).join('')}</tr></thead><tbody>
-  ${d.classes.map((c) => `<tr><td>${esc(c.name)}</td>${d.heads.map((h) => `<td class="num"><input type="number" min="0" style="width:110px" data-c="${c.id}" data-h="${h.id}" value="${amount(c.id, h.id)}" ${ME.role === 'admin' ? '' : 'disabled'}></td>`).join('')}</tr>`).join('') || '<tr><td class="muted">Create classes first</td></tr>'}
+  ${d.classes.map((c) => `<tr><td>${esc(c.name)}</td>${d.heads.map((h) => `<td class="num"><input type="number" min="0" style="width:110px" data-c="${c.id}" data-h="${h.id}" value="${amount(c.id, h.id)}" ${d.editable.includes(c.id) ? '' : 'disabled'}></td>`).join('')}</tr>`).join('') || '<tr><td class="muted">Create classes first</td></tr>'}
   </tbody></table></div>
-  ${ME.role === 'admin' ? `<div class="row" style="margin-top:12px"><button class="btn primary" id="save">Save fee plan</button></div>
-  <div class="card" style="margin-top:16px"><h3 style="margin-top:0">Add a fee head</h3><div class="row"><input id="hn" placeholder="e.g. Computer lab"><label class="row" style="margin:0"><input type="checkbox" id="hm" checked> Monthly</label><button class="btn" id="addh">Add</button></div></div>` : ''}`);
+  ${d.editable.length ? '<div class="row" style="margin-top:12px"><button class="btn primary" id="save">Save fee plan</button></div>' : ''}
+  ${ME.role === 'admin' ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Add a fee head</h3><div class="row"><input id="hn" placeholder="e.g. Computer lab"><label class="row" style="margin:0"><input type="checkbox" id="hm" checked> Monthly</label><button class="btn" id="addh">Add</button></div></div>` : ''}`);
   const s = $('#save'); if (s) s.onclick = async () => {
-    const plans = $$('input[data-c]').filter((i) => i.value !== '').map((i) => ({ class_id: i.dataset.c, head_id: i.dataset.h, amount: Number(i.value) }));
+    const plans = $$('input[data-c]').filter((i) => i.value !== '' && !i.disabled).map((i) => ({ class_id: i.dataset.c, head_id: i.dataset.h, amount: Number(i.value) }));
     await act(() => S('/fees/plans', { body: { plans } }), 'Fee plan saved');
   };
   const ah = $('#addh'); if (ah) ah.onclick = async () => { await act(() => S('/fees/heads', { body: { name: $('#hn').value, monthly: $('#hm').checked } }), 'Added'); render(); };
@@ -1122,7 +1190,7 @@ route('/notifications', async () => {
 // ---------- settings ----------
 route('/settings', async () => {
   const tab = query().tab || 'general';
-  const tabs = [['general', 'General'], ['holidays', 'Holidays'], ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
+  const tabs = [['general', 'General'], ...(ME.role === 'admin' ? [['payments', 'Payment accounts']] : []), ['holidays', 'Holidays'], ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
   let body = '';
   if (tab === 'general') {
     const { settings: s, schoolName } = await S('/settings');
@@ -1130,11 +1198,15 @@ route('/settings', async () => {
     const t = (k, label) => `<label class="row" style="margin:0"><input type="checkbox" name="${k}" value="1" ${s[k] === '1' ? 'checked' : ''}> ${label}</label>`;
     body = `<form id="sf" class="card form">
       <div class="full"><label>School name</label><input name="schoolName" value="${esc(schoolName)}"></div>
-      ${f('voucher_day', 'Voucher day of month')}${f('due_day', 'Fee due day of month')}${f('fine_fixed', 'Late fine (fixed, Rs)')}${f('fine_per_day', 'Late fine per day (Rs)')}
+      ${f('voucher_day', 'Voucher day of month')}${f('due_day', 'Fee due day of month')}<div class="full"><h3 style="margin-bottom:4px">Late fee fine (optional)</h3><p class="small muted" style="margin:0">Off unless you turn it on. Added automatically after the due date, every month a voucher stays unpaid. You can also add, change or waive a fine on any single voucher from the student's Fees tab.</p></div>
+      <div class="full">${t('fine_enabled', 'Charge a late fine automatically')}</div>
+      ${f('fine_fixed', 'Fine once after due date (Rs)')}${f('fine_per_day', 'Fine per day late (Rs)')}${f('fine_per_month', 'Fine for each month late (Rs)')}${f('fine_max', 'Maximum fine per voucher (Rs, 0 = no limit)')}
+      ${f('defaulter_months', 'Flag as long-term unpaid after (months)')}
+      <div class="full"><h3 style="margin-bottom:0">Other</h3></div>
       ${f('reminder_days_before', 'Fee reminder: days before due date')}${f('attendance_deadline_hour', 'Attendance deadline (hour, 24h)', 'number', 'Class teachers are reminded after this hour')}
       ${f('cash_alert_days', 'Alert when cash held longer than (days)')}${f('low_attendance_percent', 'Low attendance warning below (%)')}
       ${f('reg_prefix', 'Registration number prefix', 'text', 'Empty = current year, e.g. 2026-0001')}
-      <div class="full stack">${t('teacher_add_students', 'Class teachers can add students to their own class (admin confirms)')}${t('teacher_verify_slips', 'Class teachers can verify payment slips for their class')}
+      <div class="full stack">${t('teacher_set_fees', 'Class teachers can set the fee for their own class and its students')}${t('teacher_add_students', 'Class teachers can add students to their own class (admin confirms)')}${t('teacher_verify_slips', 'Class teachers can verify payment slips for their class')}
       ${t('phone_messages', 'Queue WhatsApp/SMS for parents and teachers, sent from the admin\'s own phone')}${t('teacher_upload_results', 'Class teachers can upload results for their class')}${t('absence_alerts', 'Alert parents of absence and late arrival')}${t('result_fee_hold', 'Hide results until fees are cleared')}</div>
       ${ME.isMainAdmin ? '<div class="full"><button class="btn primary">Save settings</button></div>' : '<p class="full muted small">Only the main admin can change settings.</p>'}</form>`;
   }
@@ -1169,6 +1241,28 @@ route('/settings', async () => {
   }
   if (tab === 'data') body = `<div class="card stack"><p>Download every record of your school as one file at any time. Your data is never deleted for non-payment.</p><a class="btn primary" href="/api/export">Download full backup (JSON)</a>
     <p class="small muted">To close your account permanently, download the backup first, then write to the platform owner from Billing.</p></div>`;
+  if (tab === 'payments') {
+    const list = await loadAccounts(true);
+    const row = (a = {}) => `<div class="card form acct" style="margin-bottom:10px">
+      <div><label>Company / service</label><input name="company" list="companies" placeholder="Easypaisa, JazzCash, Meezan Bank…" value="${esc(a.company)}"></div>
+      <div><label>Account holder name</label><input name="title" value="${esc(a.title)}"></div>
+      <div><label>Account / mobile number / IBAN</label><input name="number" value="${esc(a.number)}"></div>
+      <div><label>Branch or note (optional)</label><input name="branch" value="${esc(a.branch)}"></div>
+      <div class="full"><button type="button" class="btn small danger rm">Remove</button></div></div>`;
+    body = `<p class="muted">Add every account parents can pay into. Parents see these when paying and on every printed voucher. You can change them any time.</p>
+    <datalist id="companies"><option>Easypaisa</option><option>JazzCash</option><option>SadaPay</option><option>NayaPay</option><option>HBL</option><option>Meezan Bank</option><option>UBL</option><option>MCB</option><option>Allied Bank</option><option>Bank Alfalah</option><option>Bank Islami</option></datalist>
+    <div id="accts">${(list.length ? list : [{}]).map(row).join('')}</div>
+    <div class="row"><button class="btn" id="addacct">Add another account</button>${ME.role === 'admin' ? '<button class="btn primary" id="saveacct">Save accounts</button>' : ''}</div>`;
+    setTimeout(() => {
+      const bindRm = () => $$('.acct .rm').forEach((b) => b.onclick = () => b.closest('.acct').remove());
+      bindRm();
+      $('#addacct').onclick = () => { $('#accts').insertAdjacentHTML('beforeend', row()); bindRm(); };
+      $('#saveacct').onclick = async () => {
+        const accounts = $$('.acct').map((el) => Object.fromEntries($$('input', el).map((i) => [i.name, i.value.trim()]))).filter((a) => a.company && a.number);
+        await act(() => S('/payment-accounts', { body: { accounts } }), 'Payment accounts saved'); await loadAccounts(true); render();
+      };
+    });
+  }
   if (tab === 'audit') {
     const rows = await S('/audit').catch(() => []);
     body = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small" style="max-width:420px;overflow-wrap:anywhere">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>`;
@@ -1176,7 +1270,7 @@ route('/settings', async () => {
   view(`<h1>Settings</h1><div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings?tab=${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>${body}`);
   const sf = $('#sf'); if (sf) sf.onsubmit = async (e) => {
     e.preventDefault(); const b = formData(e.target);
-    const settings = {}; for (const k of Object.keys(ME.settings)) settings[k] = b[k] ?? '0';
+    const settings = {}; for (const k of Object.keys(ME.settings)) if (k !== 'payment_accounts') settings[k] = b[k] ?? '0';
     await act(() => S('/settings', { body: { settings, schoolName: b.schoolName } }), 'Saved'); await refreshMe(); render();
   };
   const hf = $('#hf'); if (hf) hf.onsubmit = async (e) => { e.preventDefault(); await act(() => S('/holidays', { body: formData(e.target) }), 'Added'); render(); };

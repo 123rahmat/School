@@ -48,6 +48,8 @@ export class SchoolDO extends DurableObject<Env> {
     this.sql = state.storage.sql;
     state.blockConcurrencyWhile(async () => {
       for (const stmt of SCHOOL_SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) this.sql.exec(stmt);
+      // Columns added after the first release (older school databases get them here).
+      for (const alter of ['ALTER TABLE vouchers ADD COLUMN fine_locked INTEGER NOT NULL DEFAULT 0']) { try { this.sql.exec(alter); } catch { /* already there */ } }
     });
     this.app = this.routes();
   }
@@ -326,6 +328,51 @@ export class SchoolDO extends DurableObject<Env> {
 
   // ---------- fees ----------
   voucherTotal(v: Row) { return v.current - v.discount + v.arrears + v.fine; }
+
+  /** The monthly fee lines for one student: the class plan, with the student's own amounts replacing it where set. */
+  feeLines(s: Row): Row[] {
+    const plan = this.q('SELECT h.id AS head_id, h.name, p.amount FROM fee_plans p JOIN fee_heads h ON h.id=p.head_id WHERE p.class_id=? AND h.monthly=1', s.class_id);
+    const own = new Map(this.q('SELECT head_id, amount FROM student_fee_overrides WHERE student_id=?', s.id).map((o) => [o.head_id, o.amount]));
+    const lines: Row[] = plan.map((l) => ({ ...l, amount: own.has(l.head_id) ? own.get(l.head_id) : l.amount, custom: own.has(l.head_id) }));
+    for (const [hid, amt] of own) if (!plan.some((l) => l.head_id === hid)) {
+      const h = this.one('SELECT name, monthly FROM fee_heads WHERE id=?', hid);
+      if (h?.monthly) lines.push({ head_id: hid, name: h.name, amount: amt, custom: true });
+    }
+    return lines.filter((l) => l.amount > 0);
+  }
+
+  /** After a fee change, update this month's voucher if nothing has been paid on it yet. */
+  refreshOpenVoucher(studentId: string) {
+    const s = this.one('SELECT * FROM students WHERE id=?', studentId); if (!s) return;
+    const v = this.one("SELECT * FROM vouchers WHERE student_id=? AND status='unpaid' AND paid=0 ORDER BY month DESC LIMIT 1", studentId);
+    if (!v || v.month !== pkt().month) return;
+    const lines = this.feeLines(s);
+    const current = lines.reduce((t, l) => t + l.amount, 0);
+    const discount = Math.min(current, this.q('SELECT amount FROM student_discounts WHERE student_id=?', s.id).reduce((t, d) => t + d.amount, 0));
+    this.run("DELETE FROM voucher_lines WHERE voucher_id=? AND label NOT IN ('Arrears')", v.id);
+    for (const l of lines) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', v.id, l.name, l.amount);
+    if (discount) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', v.id, 'Discount', -discount);
+    this.run('UPDATE vouchers SET current=?, discount=? WHERE id=?', current, discount, v.id);
+  }
+
+  canSetFees(a: Actor, classId: string) {
+    return this.isFullAdmin(a) || (this.setting('teacher_set_fees') === '1' && a.classTeacherOf.has(classId));
+  }
+
+  /** Optional late fine set by the admin: fixed + per day + per month late, capped. Off unless the admin turns it on. */
+  autoFine(v: Row, date: string): number {
+    if (this.setting('fine_enabled') !== '1' || v.fine_locked) return v.fine;
+    const late = Math.round((Date.parse(date) - Date.parse(v.due_date)) / 864e5);
+    if (late <= 0) return 0;
+    let fine = this.num('fine_fixed') + this.num('fine_per_day') * late + this.num('fine_per_month') * Math.ceil(late / 30);
+    const max = this.num('fine_max');
+    if (max > 0) fine = Math.min(fine, max);
+    return fine;
+  }
+
+  unpaidMonths(studentId: string): number {
+    return Number(this.one("SELECT COUNT(*) AS n FROM vouchers WHERE student_id=? AND status IN ('unpaid','partial','carried')", studentId)!.n);
+  }
   voucherBalance(v: Row) { return this.voucherTotal(v) - v.paid; }
 
   generateVouchers(a: Actor, month: string, studentIds?: string[]) {
@@ -342,7 +389,7 @@ export class SchoolDO extends DurableObject<Env> {
     this.tx(() => {
       for (const s of students) {
         if (this.one('SELECT 1 FROM vouchers WHERE student_id=? AND month=?', s.id, month)) continue;
-        const lines = this.q('SELECT h.name, p.amount FROM fee_plans p JOIN fee_heads h ON h.id=p.head_id WHERE p.class_id=? AND h.monthly=1 AND p.amount>0', s.class_id);
+        const lines = this.feeLines(s);
         if (!lines.length && !heads.length) continue;
         const current = lines.reduce((t, l) => t + l.amount, 0);
         const discount = Math.min(current, this.q('SELECT amount FROM student_discounts WHERE student_id=?', s.id).reduce((t, d) => t + d.amount, 0));
@@ -359,6 +406,14 @@ export class SchoolDO extends DurableObject<Env> {
         if (arrears) this.run('INSERT INTO voucher_lines VALUES (?,?,?)', id, 'Arrears', arrears);
         this.notifyParentOf(s.id, 'Fee voucher issued', `${money(current - discount + arrears)} for ${month}, due ${due}.`, `#/student/${s.id}`);
         created++;
+        // Students who have not paid for several months are flagged automatically.
+        const months = this.unpaidMonths(s.id);
+        if (months >= (this.num('defaulter_months') || 2)) {
+          const msg = `${s.name}: fee for ${months} months is pending. Total due ${money(current - discount + arrears)}.`;
+          this.notifyParentOf(s.id, 'Fee pending for ' + months + ' months', `fee for ${months} months is pending. Total due ${money(current - discount + arrears)}. Please pay to avoid further fines.`);
+          this.notifyClassTeacher(s.class_id, 'Long-term unpaid', msg, `#/student/${s.id}?tab=fees`);
+          this.notifyAdmins('Long-term unpaid', msg, { subrole: 'accountant', link: '#/fees/defaulters' });
+        }
       }
     });
     this.audit(a, 'vouchers.generate', 'month', month, { created });
@@ -366,7 +421,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   latestVoucher(studentId: string): Row | null {
-    return this.one("SELECT * FROM vouchers WHERE student_id=? AND status!='carried' ORDER BY month DESC LIMIT 1", studentId);
+    return this.one("SELECT * FROM vouchers WHERE student_id=? AND status NOT IN ('carried','settled') ORDER BY month DESC LIMIT 1", studentId);
   }
 
   applyVerified(p: Row) {
@@ -375,6 +430,8 @@ export class SchoolDO extends DurableObject<Env> {
     const status = paid >= this.voucherTotal(v) ? 'paid' : 'partial';
     const receipt = Number(this.one('SELECT COALESCE(MAX(receipt_no),0) AS n FROM payments')!.n) + 1;
     this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', paid, status, v.id);
+    // Older months carried into this voucher are settled once the arrears are covered.
+    if (paid >= v.arrears) this.run("UPDATE vouchers SET status='settled' WHERE student_id=? AND status='carried' AND month<?", v.student_id, v.month);
     this.run("UPDATE payments SET status='verified', receipt_no=?, verified_at=? WHERE id=?", receipt, now(), p.id);
     this.notifyParentOf(p.student_id, 'Payment received', `${money(p.amount)} received. Receipt #${receipt}. Balance ${money(this.voucherTotal(v) - paid)}.`, `#/receipt/${p.id}`);
     this.notifyClassTeacher(p.class_id, 'Fee paid', `Receipt #${receipt}: ${money(p.amount)} for ${this.one('SELECT name FROM students WHERE id=?', p.student_id)!.name}.`);
@@ -408,17 +465,15 @@ export class SchoolDO extends DurableObject<Env> {
 
       // Late fines and fee reminders (once a day at 9 AM or later).
       if (t.hour >= 9 && !ran('fees-daily:' + t.date)) {
-        const fixed = this.num('fine_fixed'), perDay = this.num('fine_per_day'), before = this.num('reminder_days_before') || 3;
+        const before = this.num('reminder_days_before') || 3;
         for (const v of this.q("SELECT * FROM vouchers WHERE status IN ('unpaid','partial')")) {
           const late = Math.round((Date.parse(t.date) - Date.parse(v.due_date)) / 864e5);
-          if (late > 0 && (fixed || perDay)) {
-            const fine = fixed + perDay * late;
-            if (fine !== v.fine) this.run('UPDATE vouchers SET fine=? WHERE id=?', fine, v.id);
-          }
+          const fine = this.autoFine(v, t.date);
+          if (fine !== v.fine) { this.run('UPDATE vouchers SET fine=? WHERE id=?', fine, v.id); v.fine = fine; }
           if (this.one('SELECT 1 FROM reminder_pauses WHERE student_id=?', v.student_id)) continue;
           const remind = late === -before || late === 0 || (late > 0 && late % 7 === 0);
           if (remind) {
-            const bal = this.voucherBalance({ ...v, fine: late > 0 ? fixed + perDay * late : v.fine });
+            const bal = this.voucherBalance(v);
             this.notifyParentOf(v.student_id, late < 0 ? 'Fee due soon' : late === 0 ? 'Fee due today' : 'Fee overdue', `${money(bal)} for ${v.month} (due ${v.due_date}).`, `#/student/${v.student_id}`);
             this.run('UPDATE vouchers SET last_reminder=? WHERE id=?', now(), v.id);
           }
@@ -545,7 +600,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/settings', async (c) => {
       const a = c.get('actor'); this.requireMain(a);
       const b = await c.req.json<any>();
-      for (const [k, v] of Object.entries(b.settings || {})) if (k in DEFAULT_SETTINGS) this.run('INSERT OR REPLACE INTO settings VALUES (?,?)', k, String(v));
+      for (const [k, v] of Object.entries(b.settings || {})) if (k in DEFAULT_SETTINGS && k !== 'payment_accounts') this.run('INSERT OR REPLACE INTO settings VALUES (?,?)', k, String(v));
       if (b.schoolName) this.run("INSERT OR REPLACE INTO meta VALUES ('school_name', ?)", b.schoolName);
       this.audit(a, 'settings.update', null, null, b);
       return c.json({ ok: true });
@@ -978,8 +1033,13 @@ export class SchoolDO extends DurableObject<Env> {
 
     // ----- fees -----
     app.get('/fees/setup', (c) => {
-      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
-      return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans: this.q('SELECT * FROM fee_plans'), classes: this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name') });
+      const a = c.get('actor');
+      let classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name');
+      if (!this.canFeesAll(a)) {
+        classes = classes.filter((x) => this.canSetFees(a, x.id));
+        if (!classes.length) fail(403, 'No access');
+      }
+      return c.json({ heads: this.q('SELECT * FROM fee_heads'), plans: this.q('SELECT * FROM fee_plans'), classes, editable: classes.filter((x) => this.canSetFees(a, x.id)).map((x) => x.id) });
     });
     app.post('/fees/heads', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -988,10 +1048,71 @@ export class SchoolDO extends DurableObject<Env> {
       this.audit(a, 'fee_head.add', null, null, b); return c.json({ ok: true });
     });
     app.post('/fees/plans', async (c) => {
+      const a = c.get('actor');
+      const b = await c.req.json<any>();
+      const plans = b.plans || [];
+      for (const p of plans) if (!this.canSetFees(a, p.class_id)) fail(403, 'You cannot set fees for this class');
+      const changed = new Set<string>();
+      for (const p of plans) {
+        const amt = Math.max(0, Math.round(Number(p.amount) || 0));
+        const old = this.one('SELECT amount FROM fee_plans WHERE class_id=? AND head_id=?', p.class_id, p.head_id);
+        if (old?.amount === amt) continue;
+        this.run('INSERT OR REPLACE INTO fee_plans VALUES (?,?,?)', p.class_id, p.head_id, amt);
+        changed.add(p.class_id);
+      }
+      if (b.update_current !== false) for (const cid of changed) for (const s of this.q("SELECT id FROM students WHERE class_id=? AND status='active'", cid)) this.refreshOpenVoucher(s.id);
+      this.audit(a, 'fee_plan.update', null, null, b); return c.json({ ok: true, classesChanged: changed.size });
+    });
+    app.get('/students/:id/fee', (c) => {
+      const a = c.get('actor'); const s = this.student(a, c.req.param('id'), 'fees');
+      const plan = this.q('SELECT h.id AS head_id, h.name, COALESCE(p.amount,0) AS class_amount FROM fee_heads h LEFT JOIN fee_plans p ON p.head_id=h.id AND p.class_id=? WHERE h.monthly=1', s.class_id);
+      const own = new Map(this.q('SELECT head_id, amount FROM student_fee_overrides WHERE student_id=?', s.id).map((o) => [o.head_id, o.amount]));
+      return c.json({ heads: plan.map((h) => ({ ...h, student_amount: own.has(h.head_id) ? own.get(h.head_id) : null })), canEdit: this.canSetFees(a, s.class_id),
+        monthly: this.feeLines(s).reduce((t, l) => t + l.amount, 0) });
+    });
+    app.post('/students/:id/fee', async (c) => {
+      const a = c.get('actor'); const s = this.student(a, c.req.param('id'), 'fees');
+      if (!this.canSetFees(a, s.class_id)) fail(403, 'You cannot change fees for this student');
+      const b = await c.req.json<any>();
+      for (const l of b.heads || []) {
+        if (l.amount === null || l.amount === '' || l.amount === undefined) this.run('DELETE FROM student_fee_overrides WHERE student_id=? AND head_id=?', s.id, l.head_id);
+        else this.run('INSERT OR REPLACE INTO student_fee_overrides VALUES (?,?,?)', s.id, l.head_id, Math.max(0, Math.round(Number(l.amount))));
+      }
+      this.refreshOpenVoucher(s.id);
+      this.audit(a, 'student.fee', 'student', s.id, b);
+      return c.json({ ok: true });
+    });
+    app.post('/vouchers/:id/fine', async (c) => {
+      const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'Only the admin or accountant can change a fine');
+      const v = this.one('SELECT * FROM vouchers WHERE id=?', c.req.param('id')); if (!v) fail(404, 'Not found');
+      this.student(a, v!.student_id, 'fees');
+      if (!['unpaid', 'partial'].includes(v!.status)) fail(400, 'Only an unpaid voucher can be changed');
+      const b = await c.req.json<any>();
+      if (b.auto) { this.run('UPDATE vouchers SET fine_locked=0 WHERE id=?', v!.id); this.run('UPDATE vouchers SET fine=? WHERE id=?', this.autoFine({ ...v!, fine_locked: 0 }, pkt().date), v!.id); }
+      else {
+        const amt = Math.max(0, Math.round(Number(b.amount) || 0));
+        if (!b.reason) fail(400, 'A reason is required');
+        this.run('UPDATE vouchers SET fine=?, fine_locked=1 WHERE id=?', amt, v!.id);
+        if (amt !== v!.fine) this.notifyParentOf(v!.student_id, amt > v!.fine ? 'Late fine added' : 'Fine reduced', `Fine for ${v!.month} is now ${money(amt)}. ${b.reason}`);
+      }
+      const n = this.one('SELECT * FROM vouchers WHERE id=?', v!.id)!;
+      if (n.status === 'partial' && n.paid >= this.voucherTotal(n)) this.run("UPDATE vouchers SET status='paid' WHERE id=?", n.id);
+      this.audit(a, 'voucher.fine', 'student', v!.student_id, { voucher: v!.id, old: v!.fine, new: n.fine, reason: b.reason || 'automatic' });
+      return c.json({ ok: true, fine: n.fine });
+    });
+    app.get('/payment-accounts', (c) => { try { return c.json(JSON.parse(this.setting('payment_accounts') || '[]')); } catch { return c.json([]); } });
+    app.post('/payment-accounts', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
-      for (const p of b.plans || []) this.run('INSERT OR REPLACE INTO fee_plans VALUES (?,?,?)', p.class_id, p.head_id, Math.max(0, Math.round(Number(p.amount) || 0)));
-      this.audit(a, 'fee_plan.update', null, null, b); return c.json({ ok: true });
+      const list = (Array.isArray(b.accounts) ? b.accounts : []).slice(0, 10).map((x: any) => ({
+        company: String(x.company || '').trim().slice(0, 60),   // Easypaisa, JazzCash, Meezan Bank, UBL, SadaPay… any service
+        title: String(x.title || '').trim().slice(0, 80),       // account holder name
+        number: String(x.number || '').trim().slice(0, 40),     // account number / mobile number / IBAN
+        branch: String(x.branch || '').trim().slice(0, 80),     // optional: branch or note
+      })).filter((x: any) => x.company && x.number);
+      this.run("INSERT OR REPLACE INTO settings VALUES ('payment_accounts', ?)", JSON.stringify(list));
+      this.audit(a, 'payment_accounts.update', null, null, list);
+      return c.json({ ok: true, accounts: list });
     });
     app.post('/fees/generate', async (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
@@ -1004,7 +1125,7 @@ export class SchoolDO extends DurableObject<Env> {
       const s = this.student(a, v!.student_id, 'fees');
       return c.json({ voucher: { ...v, total: this.voucherTotal(v!), balance: this.voucherBalance(v!) }, lines: this.q('SELECT * FROM voucher_lines WHERE voucher_id=?', v!.id),
         student: { name: s.name, father_name: s.father_name, reg_no: s.reg_no, class_name: this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name },
-        school: this.one("SELECT value FROM meta WHERE key='school_name'")?.value });
+        school: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, accounts: JSON.parse(this.setting('payment_accounts') || '[]') });
     });
     app.get('/fees/unpaid', (c) => {
       const a = c.get('actor');
@@ -1024,7 +1145,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/fees/defaulters', (c) => {
       const a = c.get('actor'); if (!this.canFeesAll(a)) fail(403, 'No access');
       const rows = this.q(`SELECT s.id, s.name, s.reg_no, s.status, c.name AS class_name, COUNT(*) AS months FROM vouchers v JOIN students s ON s.id=v.student_id JOIN classes c ON c.id=s.class_id
-        WHERE v.status IN ('unpaid','partial','carried') AND v.paid < v.current - v.discount + v.fine + v.arrears GROUP BY s.id HAVING COUNT(*)>=2 ORDER BY months DESC`);
+        WHERE v.status IN ('unpaid','partial','carried') GROUP BY s.id HAVING COUNT(*)>=? ORDER BY months DESC`, this.num('defaulter_months') || 2);
       return c.json(rows.map((r) => ({ ...r, balance: this.latestVoucher(r.id) ? this.voucherBalance(this.latestVoucher(r.id)!) : 0 })));
     });
     app.get('/fees/report', (c) => {

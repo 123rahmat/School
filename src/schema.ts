@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS change_requests (
 
 CREATE TABLE IF NOT EXISTS fee_heads (id TEXT PRIMARY KEY, name TEXT NOT NULL, monthly INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS fee_plans (class_id TEXT NOT NULL, head_id TEXT NOT NULL, amount INTEGER NOT NULL, PRIMARY KEY (class_id, head_id));
+-- A student's own fee for a head, replacing the class amount (0 removes that head for the student).
+CREATE TABLE IF NOT EXISTS student_fee_overrides (student_id TEXT NOT NULL, head_id TEXT NOT NULL, amount INTEGER NOT NULL, PRIMARY KEY (student_id, head_id));
 CREATE TABLE IF NOT EXISTS student_discounts (
   id TEXT PRIMARY KEY, student_id TEXT NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT
 );
@@ -138,7 +140,13 @@ CREATE INDEX IF NOT EXISTS audit_entity ON audit_log(entity, entity_id);
 export const DEFAULT_SETTINGS: Record<string, string> = {
   voucher_day: '1',
   due_day: '10',
+  fine_enabled: '0',
   fine_fixed: '0',
+  fine_per_month: '0',
+  fine_max: '0',
+  teacher_set_fees: '0',
+  defaulter_months: '2',
+  payment_accounts: '[]',
   fine_per_day: '0',
   attendance_deadline_hour: '10',
   teacher_add_students: '0',

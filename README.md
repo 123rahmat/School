@@ -50,9 +50,20 @@ fees but not message threads. The platform owner sees billing and usage only, ne
 Also: storage tracking with 80%/95% warnings and upload stop when full, photo compression, audit log, full
 JSON backup export (available even when paused), Pakistan time display.
 
-**Not built yet (later, per the plan):** Sign in with Google, real email/SMS/WhatsApp delivery (codes are shown
-on screen in test mode), automatic reading of slip amounts, timetable and substitution, homework diary,
-teacher leave and salary, own-device mode.
+**Fees, extra controls.** Payment accounts: the admin adds any number of accounts (Easypaisa, JazzCash, any bank or
+wallet) with company, holder name and number, and can change them any time; parents see them when paying and on
+every printed voucher. Each class's fee is set by the admin (or the class teacher, if allowed), and any single
+student can have their own amount per fee head; changes update this month's unpaid vouchers at once. Unpaid months
+carry into the next voucher automatically, the parent, class teacher and accountant are told when a student
+reaches 2+ unpaid months (configurable), and one payment clears all months. Late fines are optional and off by
+default: the admin can turn on a fine once after the due date, per day, and/or per month late, with a maximum,
+and can add, change or waive the fine on any single voucher with a reason.
+
+**WhatsApp / SMS from the admin's own phone.** Alerts are queued with the text ready; the admin taps WhatsApp or SMS
+to send from their own number, at no cost.
+
+**Not built yet (later, per the plan):** automatic reading of slip amounts, timetable and substitution, homework
+diary, teacher leave and salary, own-device mode.
 
 ## Run it locally
 
@@ -104,9 +115,35 @@ npx wrangler r2 bucket create school-files
 npx wrangler d1 migrations apply DB --remote
 ```
 
-Before going live, edit `wrangler.toml`: set `OWNER_EMAIL` to your email, `PAYMENT_ACCOUNTS` to your Easypaisa
-and JazzCash numbers, and `DEV_OTP = "0"`. Then connect an email/SMS provider in `newOtp()` in `src/index.ts`
-so codes are delivered, and deploy:
+Before going live, edit `wrangler.toml`: set `OWNER_EMAIL` to your email, `PAYMENT_ACCOUNTS` to your own Easypaisa
+and JazzCash numbers (where schools pay *you*), and `DEV_OTP = "0"`.
+
+Sign-in codes are delivered by these providers. Add the keys as secrets (never in `wrangler.toml`):
+
+- Email codes, via [Resend](https://resend.com) (free tier, verify your domain first):
+
+```bash
+npx wrangler secret put RESEND_API_KEY
+```
+
+  Also set `EMAIL_FROM = "School Manager <login@yourdomain.pk>"` under `[vars]`.
+
+- Phone codes for parents, via [Twilio](https://twilio.com) SMS, or WhatsApp if you set `TWILIO_WHATSAPP_FROM`:
+
+```bash
+npx wrangler secret put TWILIO_ACCOUNT_SID
+```
+
+```bash
+npx wrangler secret put TWILIO_AUTH_TOKEN
+```
+
+  Also set `TWILIO_SMS_FROM` (a number or Messaging Service SID) under `[vars]`.
+
+- Sign in with Google: create an OAuth Web client in Google Cloud Console, add your site as an authorised
+  JavaScript origin, and set `GOOGLE_CLIENT_ID` under `[vars]`. The button appears on the sign-in page.
+
+With `DEV_OTP = "0"`, a code that cannot be delivered shows an error instead of appearing on screen. Then deploy:
 
 ```bash
 npm run deploy

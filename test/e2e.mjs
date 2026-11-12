@@ -133,6 +133,37 @@ ok(unpaid.length === 2 && unpaid.every((r) => r.class_name === '8-A'), 'class te
 ok((await S(adminA, 'POST', `/payments/${pay.json.id}/cancel`, { reason: 'Bank reversed' })).status === 200, 'main admin cancels receipt with reason');
 ok((await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0].status === 'unpaid', 'voucher back to unpaid after cancellation');
 
+console.log('Payment accounts, own fees, fines, months unpaid');
+await S(adminA, 'POST', '/payment-accounts', { accounts: [{ company: 'Meezan Bank', title: 'Alpha School', number: 'PK36MEZN0001', branch: 'Mall Road' }, { company: 'Easypaisa', title: 'Principal', number: '03001112233' }] });
+const accts = (await S(parent1, 'GET', '/payment-accounts')).json;
+ok(accts.length === 2 && accts[0].company === 'Meezan Bank', 'parent sees school payment accounts (any company)');
+ok((await S(tok1, 'POST', '/payment-accounts', { accounts: [] })).status === 403, 'teacher cannot change payment accounts');
+ok((await S(tok1, 'POST', `/students/${s1.id}/fee`, { heads: [{ head_id: tuition.id, amount: 100 }] })).status === 403, 'teacher cannot set fees unless allowed');
+await S(adminA, 'POST', '/settings', { settings: { teacher_set_fees: '1' } });
+ok((await S(tok1, 'POST', `/students/${s1.id}/fee`, { heads: [{ head_id: tuition.id, amount: 2000 }] })).status === 200, 'class teacher sets own student fee when allowed');
+ok((await S(tok1, 'POST', '/fees/plans', { plans: [{ class_id: c8.id, head_id: tuition.id, amount: 1 }] })).status === 403, 'class teacher cannot set another class fee');
+const af = (await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0];
+ok(af.total === 2000, "student's own fee updates this month's unpaid voucher");
+await S(adminA, 'POST', `/students/${s1.id}/fee`, { heads: [{ head_id: tuition.id, amount: null }] });
+ok((await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0].total === 3000, 'back to class fee');
+await S(adminA, 'POST', '/fees/plans', { plans: [{ class_id: c7.id, head_id: tuition.id, amount: 3200 }] });
+ok((await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0].total === 3200, 'class fee change updates unpaid vouchers');
+ok((await S(tok1, 'POST', `/vouchers/${af.id}/fine`, { amount: 300, reason: 'late' })).status === 403, 'teacher cannot set fines');
+ok((await S(adminA, 'POST', `/vouchers/${af.id}/fine`, { amount: 300 })).status === 400, 'fine needs a reason');
+await S(adminA, 'POST', `/vouchers/${af.id}/fine`, { amount: 300, reason: 'Paid late' });
+ok((await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0].total === 3500, 'admin adds a manual fine');
+await S(adminA, 'POST', `/vouchers/${af.id}/fine`, { amount: 0, reason: 'Waived' });
+ok((await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers[0].fine === 0, 'admin waives the fine');
+const nextMonth = new Date(Date.now() + 5 * 3600e3 + 32 * 864e5).toISOString().slice(0, 7);
+await S(adminA, 'POST', '/fees/generate', { month: nextMonth });
+const two = (await S(adminA, 'GET', `/students/${s1.id}`)).json.vouchers;
+ok(two[0].month === nextMonth && two[0].arrears === 3200 && two[0].total === 6400, 'unpaid month carried into next voucher automatically');
+ok((await S(parent1, 'GET', '/notifications')).json.some((n) => /2 months/.test(n.title)), 'parent warned about 2 months pending');
+ok((await S(adminA, 'GET', '/fees/defaulters')).json.some((r) => r.id === s1.id), 'student on long-term unpaid list');
+const full = await S(adminA, 'POST', '/payments', { voucher_id: two[0].id, method: 'office_cash', amount: 6400 });
+ok(full.status === 200, 'one payment clears both months');
+ok(!(await S(adminA, 'GET', '/fees/defaulters')).json.some((r) => r.id === s1.id), 'student off the unpaid list once paid');
+
 console.log('Notices, threads, results');
 ok((await S(tok2, 'POST', '/notices', { audience: 'class', target_id: c7.id, title: 'Maths test', body: 'Monday' })).status === 200, 'subject teacher posts to a class they teach');
 ok((await S(tok1, 'POST', '/notices', { audience: 'class', target_id: c8.id, title: 'x', body: 'y' })).status === 403, 'teacher cannot post to a class they do not teach');
@@ -157,7 +188,7 @@ ok((await S(tokLv, 'GET', '/me')).status === 401, "a removed user's old session 
 const p3 = await login(phone(2));
 await S(adminA, 'POST', `/students/${s3.id}/left`, { reason: 'transferred' });
 ok((await S(p3, 'GET', '/me')).status === 401, 'parent signed out once no child is active');
-ok((await S(adminA, 'GET', `/students/${s3.id}`)).json.vouchers.length === 1, 'history kept after leaving');
+ok((await S(adminA, 'GET', `/students/${s3.id}`)).json.vouchers.length >= 1, 'history kept after leaving');
 await S(adminA, 'POST', `/students/${s3.id}/restore`, {});
 ok((await S(adminA, 'GET', '/students')).json.some((s) => s.id === s3.id), 'student restored');
 await api(parent1, 'POST', '/api/auth/logout');
