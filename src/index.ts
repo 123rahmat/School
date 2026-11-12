@@ -165,7 +165,12 @@ app.post('/api/auth/google', async (c) => {
   }
 
   let rows = await loginRows(c.env, identity.email);
-  if (!rows.length) fail(403, 'No account is registered for this Google email. To create a new workspace, register an institution. Teachers and parents must be added by their institution administrator.');
+  if (!rows.length) {
+    if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. To create a new institution, register a new institution account.');
+    if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
+    if (requestedRole === 'parent') fail(403, 'No parent profile is registered for this Google email. Ask your institution administrator to add your email to your child’s guardian profile.');
+    fail(403, 'No account is registered for this Google email. Create an institution account or ask your institution administrator to add your profile.');
+  }
 
   if (requestedRole) {
     const matching: any[] = [];
