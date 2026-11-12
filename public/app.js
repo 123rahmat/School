@@ -270,8 +270,23 @@ async function refreshMe() {
 
 // ---------- sign in / sign up ----------
 function authPage(inner) {
-  $('#app').innerHTML = `<div class="auth-shell"><aside class="auth-story"><a class="auth-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><div class="auth-story-copy"><div class="landing-eyebrow">ONE WORKSPACE. CLEARER OPERATIONS.</div><h2>Make room for better learning.</h2><p>Bring student records, staff, attendance, fees, communication and results together in one private institution workspace.</p><ul><li>One secure Google sign-in</li><li>Personal access for every role</li><li>Works in browser or as an installed app</li></ul></div><div class="auth-story-foot">Private institution workspaces · Built for education teams</div></aside><main class="auth"><a class="auth-home" href="/" aria-label="Back to home">← Back to home</a><img class="logo" src="/icon.svg" alt=""><div class="card">${inner}</div><p class="auth-assurance">Your account is verified with Google. Your password is never shared with this platform.</p></main></div>`;
+  document.body.classList.add('auth-screen');
+  $('#app').innerHTML = `
+    <main class="auth-page">
+      <div class="auth-frame">
+        <a class="auth-home" href="/" aria-label="Back to home">← Back to home</a>
+        <div class="auth-logo-stage" aria-label="Institution Manager">
+          <span class="auth-logo-orbit orbit-one"></span>
+          <span class="auth-logo-orbit orbit-two"></span>
+          <span class="auth-logo-glow"></span>
+          <img class="auth-logo" src="/icon.svg" alt="Institution Manager">
+        </div>
+        <div class="auth card">${inner}</div>
+        <p class="auth-assurance">Secure sign-in · Your account stays yours</p>
+      </div>
+    </main>`;
 }
+
 function showAuthError(error, mode = 'login') {
   const message = $('#authmsg');
   const next = $('#authnext');
@@ -469,7 +484,7 @@ function landingPage() {
 route('/login', async () => {
   authPage(`
     <h1>Welcome back</h1>
-    <p class="muted small">Use the Google account connected to your institution profile. Your access is personal and protected; passwords, email codes and phone login are not used.</p>
+    <p class="muted small auth-description">Continue with the Google account linked to your institution.</p>
     <div id="gbtn" class="google-button-slot"></div>
     <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
     <div id="authnext"></div>
@@ -505,7 +520,7 @@ route('/login', async () => {
 route('/signup', async () => {
   authPage(`
     <h1 id="signup-heading">Let’s set up your institution</h1>
-    <p id="signup-description" class="muted small">Tell us about your organisation. Your verified Google account becomes its main administrator sign-in.</p>
+    <p id="signup-description" class="muted small auth-description">Create a private workspace for your organisation using your Google account.</p>
     <form id="signupForm" class="stack">
       <label for="signup-school">Institution name</label>
       <input id="signup-school" name="school_name" placeholder="e.g. Northstar Learning Centre" autocomplete="organization" required maxlength="120">
