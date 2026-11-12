@@ -698,7 +698,7 @@ export class SchoolDO extends DurableObject<Env> {
         outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
     });
 
-    app.get('/dashboard', (c) => { this.requireAdmin(c.get('actor')); return c.json(this.dashboard(c.get('actor'))); });
+    app.get('/dashboard', (c) => { const a = c.get('actor'); if (!this.isFullAdmin(a)) this.requirePermission(a, 'dashboard.view'); return c.json(this.dashboard(a)); });
 
     // ----- settings -----
     app.get('/settings', (c) => {
@@ -743,7 +743,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/staff/:id', (c) => {
       const a = c.get('actor');
       const id = c.req.param('id');
-      if (!this.isAdmin(a) && a.id !== id) fail(403, 'You can only view your own profile');
+      if (!this.isFullAdmin(a) && a.id !== id && !this.hasPermission(a, 'staff.view')) fail(403, 'You can only view your own profile unless staff directory access is granted');
       const s = this.one('SELECT * FROM staff WHERE id=?', id);
       if (!s) fail(404, 'Not found');
       return c.json({
@@ -753,7 +753,7 @@ export class SchoolDO extends DurableObject<Env> {
         submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
         notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
         cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
-        history: this.isAdmin(a) ? this.q("SELECT * FROM audit_log WHERE entity='staff' AND entity_id=? ORDER BY created_at DESC LIMIT 50", id) : [],
+        history: this.isFullAdmin(a) ? this.q("SELECT * FROM audit_log WHERE entity='staff' AND entity_id=? ORDER BY created_at DESC LIMIT 50", id) : [],
       });
     });
     app.patch('/staff/:id', async (c) => {
@@ -840,7 +840,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (a.type === 'guardian') fail(403, 'No access');
       const rows = this.q(`SELECT c.*, t.name AS class_teacher_name, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id AND s.status='active') AS students
         FROM classes c LEFT JOIN staff t ON t.id=c.class_teacher_id WHERE c.active=1 ORDER BY c.grade, c.name`);
-      return c.json(rows.filter((r) => this.isAdmin(a) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
+      return c.json(rows.filter((r) => this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, r.id) && ['classes.view','students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage'].some((p) => this.hasPermission(a, p))) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
     });
     app.post('/classes', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -1025,7 +1025,7 @@ export class SchoolDO extends DurableObject<Env> {
       const status = c.req.query('status') || 'active';
       const cls = c.req.query('class_id');
       let sql = `SELECT s.id, s.reg_no, s.name, s.father_name, s.class_id, c.name AS class_name, s.status, s.left_date, s.created_at,
-        ${this.isAdmin(a) ? 's.parent_phone' : "'' AS parent_phone"} FROM students s JOIN classes c ON c.id=s.class_id WHERE ${w}`;
+        ${this.isFullAdmin(a) ? 's.parent_phone' : "'' AS parent_phone"} FROM students s JOIN classes c ON c.id=s.class_id WHERE ${w}`;
       const params: any[] = [...p];
       if (status !== 'all') { sql += ' AND s.status=?'; params.push(status); }
       if (cls) { sql += ' AND s.class_id=?'; params.push(cls); }
@@ -1075,10 +1075,10 @@ export class SchoolDO extends DurableObject<Env> {
       const feeAccess = this.canFeesAll(a) || a.classTeacherOf.has(s.class_id) || a.type === 'guardian';
       const month = c.req.query('month') || pkt().month;
       const vouchers = feeAccess ? this.q('SELECT * FROM vouchers WHERE student_id=? ORDER BY month DESC', s.id).map((v): Row => ({ ...v, total: this.voucherTotal(v), balance: this.voucherBalance(v), lines: this.q('SELECT label, amount FROM voucher_lines WHERE voucher_id=?', v.id) })) : null;
-      const showPhone = this.isAdmin(a) || a.type === 'guardian';
+      const showPhone = this.isFullAdmin(a) || a.type === 'guardian';
       const att = this.monthAttendance([s.id], month);
       const counted = att.length, present = att.filter((r) => r.status === 'P' || r.status === 'L').length;
-      const fullAdmin = this.isAdmin(a);
+      const fullAdmin = this.isFullAdmin(a);
       const hold = this.setting('result_fee_hold') === '1' && a.type === 'guardian' && (vouchers || []).some((v: Row) => v.balance > 0 && v.status !== 'carried');
       return c.json({
         student: { ...s, parent_phone: showPhone ? s.parent_phone : null, parent_email: showPhone ? s.parent_email : null, class_name: this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name },
@@ -1221,12 +1221,12 @@ export class SchoolDO extends DurableObject<Env> {
         if (s.name.toLowerCase().includes(lower) || s.father_name.toLowerCase().includes(lower) || s.reg_no.toLowerCase().includes(lower) || s.class_name.toLowerCase().replace(/\s/g, '') === lower.replace(/\s/g, '')) return true;
         if (digits.length >= 4 && s.parent_phone.endsWith(digits)) return true;
         return sk.split(' ').every((part) => s.search_key.split(' ').some((x: string) => x.startsWith(part)));
-      }).slice(0, 20).map((s) => ({ ...s, parent_phone: this.isAdmin(a) ? s.parent_phone : undefined, search_key: undefined }));
+      }).slice(0, 20).map((s) => ({ ...s, parent_phone: this.isFullAdmin(a) ? s.parent_phone : undefined, search_key: undefined }));
       const staffRows = this.q('SELECT id, public_id, name, email, phone, subjects, search_key, active, role, is_main FROM staff');
       const staff = staffRows.filter((s) =>
         s.name.toLowerCase().includes(lower) || (s.subjects || '').toLowerCase().includes(lower) || (digits.length >= 4 && (s.phone || '').endsWith(digits)) ||
         sk.split(' ').every((part) => String(s.search_key).split(' ').some((x: string) => x.startsWith(part)))
-      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined, userId: this.isFullAdmin(a) ? s.public_id : undefined }));
+      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isFullAdmin(a) ? s.phone : undefined, userId: this.isFullAdmin(a) ? s.public_id : undefined }));
       let users: Row[] = [];
       if (this.isFullAdmin(a)) {
         const staffUsers = staffRows.filter((u) =>
