@@ -1043,39 +1043,50 @@ const offlineIdentity = () => ME ? [ME.schoolName || 'platform', ME.id || ME.kin
 const OUTBOX = () => 'att-outbox-v2:' + offlineIdentity();
 const DRAFT_PREFIX = () => 'att-draft-v2:' + offlineIdentity() + ':';
 const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX()) || '[]'); } catch { return []; } };
-const saveOutbox = (items) => { try { localStorage.setItem(OUTBOX(), JSON.stringify(items)); } catch { toast('This device could not save the offline queue. Check device storage.'); } };
+const saveOutbox = (items, key = OUTBOX()) => { try { localStorage.setItem(key, JSON.stringify(items)); } catch { toast('This device could not save the offline queue. Check device storage.'); } };
 function syncStatusHtml() {
   if (!ME) return '';
-  const count = outbox().length;
-  if (!navigator.onLine) return `<div class="sync-status offline" role="status"><b>Offline mode</b><span>Previously opened records may be available. Attendance changes are saved on this device and queued for sync.</span>${count ? `<strong>${count} attendance item(s) waiting</strong>` : ''}</div>`;
+  const items = outbox(), count = items.length;
+  const blocked = items.filter(x => x.blocked);
+  const links = blocked.slice(0, 3).map(x => `<a href="#/attendance/${encodeURIComponent(x.classId)}?date=${encodeURIComponent(x.date)}">Review ${esc(x.date)}</a>`).join(' · ');
+  if (!navigator.onLine) return `<div class="sync-status offline" role="status"><b>Offline mode</b><span>Previously opened records may be available. Attendance changes are saved on this device and queued until the connection returns.</span>${count ? `<strong>${count} attendance item(s) waiting</strong>` : ''}${links}</div>`;
+  if (blocked.length) return `<div class="sync-status offline" role="status"><b>Attendance needs review</b><span>${blocked.length} queued item(s) were not accepted. Check the affected dates before trying again.</span>${links}</div>`;
   if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
   return '';
 }
 function clearPrivateOfflineData() {
-  try {
-    for (const key of Object.keys(localStorage)) {
-      if (key.startsWith('att-draft-v2:' + offlineIdentity() + ':') || key === OUTBOX()) localStorage.removeItem(key);
-    }
-  } catch {}
+  // Keep identity-scoped unsynced attendance and drafts so sign-out never discards work.
+  // Private GET responses are cleared to prevent another account on this device seeing them.
   if (navigator.serviceWorker?.controller) navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_PRIVATE_CACHES' });
 }
+let flushingOutbox = false;
 async function flushOutbox() {
-  if (!ME || !navigator.onLine) return;
-  const items = outbox(); if (!items.length) return;
+  if (flushingOutbox || !ME || !navigator.onLine) return;
+  const queueKey = OUTBOX();
+  const items = (() => { try { return JSON.parse(localStorage.getItem(queueKey) || '[]'); } catch { return []; } })();
+  if (!items.length) return;
+  flushingOutbox = true;
   const left = [];
-  for (const it of items) {
-    try {
-      await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records }, quiet: true });
-      toast(it.submit ? 'Queued attendance submitted to the server' : 'Queued attendance draft synced');
-    } catch (e) {
-      // Preserve every failed item. A 401 needs sign-in; a 409/400 needs an explicit human review.
-      left.push({ ...it, lastError: e.message, blocked: !!e.status && e.status < 500, lastTriedAt: new Date().toISOString() });
-      if (e.status === 401) break;
+  try {
+    for (const it of items) {
+      if (it.blocked) { left.push(it); continue; }
+      try {
+        await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records }, quiet: true });
+        toast(it.submit ? 'Queued attendance submitted to the server' : 'Queued attendance draft synced');
+      } catch (e) {
+        // Keep every failed item under the identity that created it. Retry network/server
+        // errors; hold validation, permission and conflict errors for explicit review.
+        left.push({ ...it, lastError: e.message, blocked: !!e.status && e.status < 500, lastTriedAt: new Date().toISOString() });
+        if (e.status === 401) break;
+      }
     }
+    try { localStorage.setItem(queueKey, JSON.stringify(left)); } catch {}
+    if (left.length && left.some(x => x.blocked)) toast('Some queued attendance needs review. Open the affected date.');
+    if (!left.length) render();
+    if (!ME) go('/login');
+  } finally {
+    flushingOutbox = false;
   }
-  saveOutbox(left);
-  if (left.length && left.some(x => x.blocked)) toast('Some offline attendance needs review. Open Attendance and check the affected date.');
-  if (!left.length) render();
 }
 window.addEventListener('online', () => { flushOutbox(); });
 window.addEventListener('offline', () => { if (ME) render(); });
