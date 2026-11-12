@@ -1006,9 +1006,9 @@ export class SchoolDO extends DurableObject<Env> {
     // ----- search -----
     app.get('/search', (c) => {
       const a = c.get('actor');
-      if (a.type === 'guardian') return c.json({ students: [], staff: [] });
+      if (a.type === 'guardian') return c.json({ students: [], staff: [], users: [] });
       const raw = String(c.req.query('q') || '').trim();
-      if (raw.length < 2) return c.json({ students: [], staff: [] });
+      if (raw.length < 2) return c.json({ students: [], staff: [], users: [] });
       const lower = raw.toLowerCase(), sk = skeleton(raw), digits = raw.replace(/\D/g, '');
       const [w, p] = this.studentScope(a, 's');
       const cand = this.q(`SELECT s.id, s.reg_no, s.name, s.father_name, s.status, s.parent_phone, s.search_key, c.name AS class_name FROM students s
@@ -1018,11 +1018,35 @@ export class SchoolDO extends DurableObject<Env> {
         if (digits.length >= 4 && s.parent_phone.endsWith(digits)) return true;
         return sk.split(' ').every((part) => s.search_key.split(' ').some((x: string) => x.startsWith(part)));
       }).slice(0, 20).map((s) => ({ ...s, parent_phone: this.isAdmin(a) ? s.parent_phone : undefined, search_key: undefined }));
-      const staff = this.q('SELECT id, name, phone, subjects, search_key, active FROM staff').filter((s) =>
+      const staffRows = this.q('SELECT id, public_id, name, email, phone, subjects, search_key, active, role, is_main FROM staff');
+      const staff = staffRows.filter((s) =>
         s.name.toLowerCase().includes(lower) || (s.subjects || '').toLowerCase().includes(lower) || (digits.length >= 4 && (s.phone || '').endsWith(digits)) ||
         sk.split(' ').every((part) => String(s.search_key).split(' ').some((x: string) => x.startsWith(part)))
-      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined }));
-      return c.json({ students, staff });
+      ).slice(0, 10).map((s) => ({ id: s.id, name: s.name, subjects: s.subjects, active: s.active, phone: this.isAdmin(a) ? s.phone : undefined, userId: this.isAdmin(a) ? s.public_id : undefined }));
+      let users: Row[] = [];
+      if (this.isAdmin(a)) {
+        const staffUsers = staffRows.filter((u) =>
+          String(u.public_id || '').toLowerCase().includes(lower) ||
+          String(u.name || '').toLowerCase().includes(lower) ||
+          String(u.email || '').toLowerCase().includes(lower) ||
+          (digits.length >= 4 && String(u.phone || '').endsWith(digits))
+        ).map((u) => ({
+          userId: u.public_id, name: u.name, email: u.email,
+          accountType: u.is_main ? 'Main administrator' : (u.role === 'teacher' ? 'Teacher' : 'Staff / administrator'),
+          active: !!u.active,
+        }));
+        const guardianUsers = this.q('SELECT public_id, name, email, phone FROM guardians').filter((u) =>
+          String(u.public_id || '').toLowerCase().includes(lower) ||
+          String(u.name || '').toLowerCase().includes(lower) ||
+          String(u.email || '').toLowerCase().includes(lower) ||
+          (digits.length >= 4 && String(u.phone || '').endsWith(digits))
+        ).map((u) => ({
+          userId: u.public_id, name: u.name || 'Parent', email: u.email,
+          accountType: 'Parent / guardian', active: !!this.one("SELECT 1 FROM students WHERE guardian_id=(SELECT id FROM guardians WHERE public_id=?) AND status='active' LIMIT 1", u.public_id),
+        }));
+        users = [...staffUsers, ...guardianUsers].slice(0, 20);
+      }
+      return c.json({ students, staff, users });
     });
 
     // ----- attendance -----
