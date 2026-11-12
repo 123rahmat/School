@@ -498,7 +498,7 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   // ---------- daily automation ----------
-  runCron(ctx: Ctx) {
+  async runCron(ctx: Ctx) {
     const t = pkt();
     const paused = ctx.schoolStatus === 'paused';
     const ran = (k: string) => { if (this.one('SELECT 1 FROM meta WHERE key=?', k)) return true; this.run('INSERT INTO meta VALUES (?,?)', k, now()); return false; };
@@ -629,7 +629,7 @@ export class SchoolDO extends DurableObject<Env> {
       this.notifyAdmins(b.title, b.body, { mainOnly: b.mainOnly, link: '#/billing' });
       return c.json({ ok: true });
     });
-    app.post('/internal/cron', (c) => c.json(this.runCron(JSON.parse(c.req.header('x-ctx')!))));
+    app.post('/internal/cron', async (c) => c.json(await this.runCron(JSON.parse(c.req.header('x-ctx')!))));
 
     // Everything else: resolve the actor first.
     app.use('*', async (c, next) => {
