@@ -1538,7 +1538,10 @@ const offlineIdentity = () => ME ? [ME.schoolId || 'platform', ME.id || ME.kind,
 const OUTBOX = () => 'att-outbox-v2:' + offlineIdentity();
 const DRAFT_PREFIX = () => 'att-draft-v2:' + offlineIdentity() + ':';
 const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX()) || '[]'); } catch { return []; } };
-const saveOutbox = (items, key = OUTBOX()) => { try { localStorage.setItem(key, JSON.stringify(items)); } catch { toast('This device could not save the offline queue. Check device storage.'); } };
+const saveOutbox = (items, key = OUTBOX()) => {
+  try { localStorage.setItem(key, JSON.stringify(items)); updateConnectionBanner(); }
+  catch { toast('This device could not save the offline queue. Check device storage.'); }
+};
 function syncStatusHtml() {
   if (!ME) return '';
   const attendanceItems = outbox(), attendanceCount = attendanceItems.length;
