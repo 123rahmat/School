@@ -47,7 +47,7 @@ assert.match(app, /credentials: 'same-origin'/, 'API requests must use same-orig
 assert.match(app, /cache: 'no-store'/, 'API requests must not be served from a browser cache');
 assert.match(app, /attendance drafts and submissions are saved on the device/i, 'Offline capability must be described accurately');
 
-assert.match(sw, /const VERSION = 'v7'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v8'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
