@@ -775,7 +775,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (email === normId(old.email)) fail(400, 'A replacement teacher must use their own Google account email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email)) fail(409, 'This Google email already belongs to an active staff account');
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(effective) || effective < pkt().date) fail(400, 'Choose today or a future replacement date');
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(effective) || effective !== pkt().date) fail(400, 'Teacher replacement takes effect today. Future-dated handovers are not activated automatically yet.');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND method='cash_teacher' AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + oldId)?.n || 0);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${old.name} still holds ${money(cash)} in cash. Confirm the cash handover or settle it before replacement.` }, 409);
       const newId = this.replaceTeacherProfile(a, old, { name, email, phone, subjects: b.subjects || null }, effective, {
