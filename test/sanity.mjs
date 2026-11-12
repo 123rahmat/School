@@ -42,6 +42,7 @@ assert.match(app, /window\.addEventListener\('online', async/, 'Reconnect must r
 assert.match(app, /window\.addEventListener\('offline'/, 'The app must show offline state when connectivity is lost');
 assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
 assert.ok(worker.includes("!/^[a-f0-9]{32}$/.test(me.userId)"), 'Server must validate the permanent hexadecimal profile ID before issuing a session');
+assert.match(worker, /new main administrator profile was created without its secure account ID/, 'Institution signup must validate the new main administrator ID');
 assert.match(school, /publicId: s!\.public_id/, 'Staff accounts must expose their assigned account ID');
 assert.match(school, /publicId: g!\.public_id/, 'Parent accounts must expose their assigned account ID');
 assert.match(school, /lower\(hex\(randomblob\(16\)\)\)/, 'Account IDs must be generated as opaque hexadecimal values');
