@@ -117,6 +117,14 @@ CREATE TABLE IF NOT EXISTS results (
 CREATE TABLE IF NOT EXISTS files (
   key TEXT PRIMARY KEY, size INTEGER NOT NULL, kind TEXT NOT NULL, uploaded_by TEXT NOT NULL, content_type TEXT, created_at TEXT NOT NULL, deleted_at TEXT
 );
+CREATE INDEX IF NOT EXISTS files_deleted_created ON files(deleted_at, created_at);
+CREATE TABLE IF NOT EXISTS file_upload_reservations (
+  id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, size INTEGER NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS file_reservations_created ON file_upload_reservations(created_at);
+CREATE INDEX IF NOT EXISTS vouchers_status_due ON vouchers(status, due_date);
+CREATE INDEX IF NOT EXISTS payments_status_verified ON payments(status, verified_at);
+CREATE INDEX IF NOT EXISTS audit_created ON audit_log(created_at);
 
 -- Messages the admin sends from their own phone via WhatsApp or SMS (no paid gateway).
 CREATE TABLE IF NOT EXISTS phone_outbox (
