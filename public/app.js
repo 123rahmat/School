@@ -1567,7 +1567,7 @@ route('/fees', async () => {
   </div>
   ${ME.canFees ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Generate vouchers</h3><p class="small muted">Vouchers are created automatically on day ${esc(ME.settings.voucher_day)} of each month. You can also create them now; students who already have one are skipped.</p>
   <div class="row"><input type="month" id="gm" value="${thisMonth()}"><button class="btn primary" id="gen">Generate</button></div></div>` : ''}`);
-  const g = $('#gen'); if (g) g.onclick = async () => { const r = await act(() => S('/fees/generate', { body: { month: $('#gm').value } })); toast(`${r.created} voucher(s) created`); render(); };
+  const g = $('#gen'); if (g) g.onclick = async () => { const month = $('#gm').value; if (!confirm('Generate monthly fee vouchers for ' + month + ' for every class you are authorized to manage? Existing vouchers will be skipped.')) return; const r = await act(() => S('/fees/generate', { body: { month, confirm:true } })); toast(`${r.created} voucher(s) created`); render(); };
 });
 
 route('/fees/unpaid', async () => {
@@ -1600,8 +1600,8 @@ route('/fees/slips', async () => {
   <td>${esc(p.txn_id || '')}</td><td>${p.slip_key ? `<a target="_blank" href="/files/${esc(p.slip_key.split('/').slice(1).join('/'))}">View</a>` : ''}</td>
   <td class="row">${p.status === 'submitted' && p.can_verify ? `<button class="btn small primary" data-v="${p.id}">Verify</button><button class="btn small danger" data-r="${p.id}">Reject</button>` : p.receipt_no ? `<a href="/receipt/${p.id}">#${p.receipt_no}</a>` : esc(p.reason || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Nothing here</td></tr>'}
   </tbody></table></div><p class="small muted">Check each slip against the institution's Easypaisa/JazzCash account before verifying. Duplicate transaction IDs are blocked automatically.</p>`);
-  $$('[data-v]').forEach((b) => b.onclick = async () => { const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: {} })); toast(`Verified — receipt #${r.receipt}`); render(); });
-  $$('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason } }), 'Rejected'); render(); });
+  $('[data-v]').forEach((b) => b.onclick = async () => { if (!confirm('Verify this submitted payment slip and issue an official receipt? Check the amount and transaction reference first.')) return; const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: { confirm:true } })); toast(`Verified — receipt #${r.receipt}`); render(); });
+  $('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; if (!confirm('Reject this payment slip and send the reason to the parent?')) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason, confirm:true } }), 'Rejected'); render(); });
 });
 
 route('/fees/defaulters', async () => {
@@ -1639,9 +1639,10 @@ route('/fees/setup', async () => {
   ${ME.role === 'admin' ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Add a fee head</h3><div class="row"><input id="hn" placeholder="e.g. Computer lab"><label class="row" style="margin:0"><input type="checkbox" id="hm" checked> Monthly</label><button class="btn" id="addh">Add</button></div></div>` : ''}`);
   const s = $('#save'); if (s) s.onclick = async () => {
     const plans = $$('input[data-c]').filter((i) => i.value !== '' && !i.disabled).map((i) => ({ class_id: i.dataset.c, head_id: i.dataset.h, amount: Number(i.value) }));
-    await act(() => S('/fees/plans', { body: { plans } }), 'Fee plan saved');
+    if (!confirm('Save the new class fee plan amounts? This may update current unpaid vouchers for those classes.')) return;
+    await act(() => S('/fees/plans', { body: { plans, confirm:true } }), 'Fee plan saved');
   };
-  const ah = $('#addh'); if (ah) ah.onclick = async () => { await act(() => S('/fees/heads', { body: { name: $('#hn').value, monthly: $('#hm').checked } }), 'Added'); render(); };
+  const ah = $('#addh'); if (ah) ah.onclick = async () => { const name = $('#hn').value.trim(); if (!name) return toast('Enter a fee head name.'); if (!confirm('Add the shared fee head "' + name + '" to the institution fee structure?')) return; await act(() => S('/fees/heads', { body: { name, monthly: $('#hm').checked, confirm:true } }), 'Added'); render(); };
 });
 
 route('/cash', async () => {
@@ -1652,7 +1653,7 @@ route('/cash', async () => {
   <h2>Recent handovers</h2><div class="table-wrap"><table><tbody>${d.handovers.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.name)}</td><td class="num">${money(h.amount)}</td></tr>`).join('') || '<tr><td class="muted">None</td></tr>'}</tbody></table></div>`);
   $$('[data-t]').forEach((b) => b.onclick = async () => {
     if (!confirm(`Confirm you received ${money(b.dataset.a)} from this teacher?`)) return;
-    await act(() => S('/cash/handover', { body: { teacher_id: b.dataset.t, amount: Number(b.dataset.a) } }), 'Handover confirmed; receipts issued'); render();
+    await act(() => S('/cash/handover', { body: { teacher_id: b.dataset.t, amount: Number(b.dataset.a), confirm:true } }), 'Handover confirmed; receipts issued'); render();
   });
 });
 
@@ -1749,6 +1750,7 @@ route('/results', async () => {
     <div class="full row"><button class="btn primary">Upload</button><button type="button" class="btn" data-close>Cancel</button></div><div class="full" id="out"></div></form>`, (m) => {
     $('#uf', m).onsubmit = async (e) => {
       e.preventDefault();
+      if (!confirm('Upload these result PDFs into the institution result records? They remain hidden from parents until an administrator publishes them.')) return;
       const r = await act(() => S('/results', { form: new FormData(e.target) }));
       $('#out', m).innerHTML = r.results.map((x) => `<div class="small">${x.ok ? '✓' : '⚠'} ${esc(x.file)} ${x.ok ? '→ ' + esc(x.student) : '— ' + esc(x.error)}</div>`).join('') + '<button type="button" class="btn" data-close>Done</button>';
       $$('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
@@ -1760,8 +1762,7 @@ route('/results', async () => {
     const q = prompt('Registration number of the student?'); if (!q) return;
     const r = await S('/search?q=' + encodeURIComponent(q)); const s = r.students.find((x) => x.reg_no === q) || r.students[0];
     if (!s) return toast('No student found');
-    if (!confirm(`Assign to ${s.name} (${s.reg_no}, ${s.class_name})?`)) return;
-    if (!confirm(`Assign this result to ${s.name} (${s.reg_no})? The student and parent will see it after publication.`)) return;
+    if (!confirm(`Assign this result to ${s.name} (${s.reg_no}, ${s.class_name})? The student and parent will see it after publication.`)) return;
     await act(() => S(`/results/${b.dataset.assign}/assign`, { body: { student_id: s.id, confirm:true } }), 'Assigned'); render();
   });
 });
@@ -1916,7 +1917,8 @@ route('/settings', async () => {
       $('#addacct').onclick = () => { $('#accts').insertAdjacentHTML('beforeend', row()); bindRm(); };
       $('#saveacct').onclick = async () => {
         const accounts = $$('.acct').map((el) => Object.fromEntries($$('input', el).map((i) => [i.name, i.value.trim()]))).filter((a) => a.company && a.number);
-        await act(() => S('/payment-accounts', { body: { accounts } }), 'Payment accounts saved'); await loadAccounts(true); render();
+        if (!confirm('Save these institution payment account details? Parents will see the updated accounts on payment screens and vouchers.')) return;
+        await act(() => S('/payment-accounts', { body: { accounts, confirm:true } }), 'Payment accounts saved'); await loadAccounts(true); render();
       };
     });
   }
