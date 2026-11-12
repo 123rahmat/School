@@ -1236,12 +1236,21 @@ route('/classes', async () => {
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#cf', m).onsubmit = async (e) => {
       e.preventDefault(); const b = formData(e.target);
-      if (c) await act(() => S('/classes/' + c.id, { method: 'PATCH', body: b }), 'Saved'); else await act(() => S('/classes', { body: b }), 'Class added');
+      if (c) {
+        const teacherChanged = String(b.class_teacher_id || '') !== String(c.class_teacher_id || '');
+        if (teacherChanged && !confirm('Change the permanent class teacher for ' + c.name + '? Current teacher assignments and future responsibilities will change.')) return;
+        b.confirm = true;
+        await act(() => S('/classes/' + c.id, { method: 'PATCH', body: b }), 'Saved');
+      } else await act(() => S('/classes', { body: b }), 'Class added');
       closeModal(); render();
     };
     if (c) {
-      $('#addsub', m).onclick = async () => { await act(() => S(`/classes/${c.id}/subjects`, { body: { subject: $('#subj', m).value, teacher_id: $('#subt', m).value } }), 'Subject added'); closeModal(); render(); };
-      $$('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
+      $('#addsub', m).onclick = async () => {
+        const subject = $('#subj', m).value, teacher_id = $('#subt', m).value;
+        if (!subject.trim() || !confirm('Assign ' + teacher_id + ' to teach ' + subject + ' in ' + c.name + '?')) return;
+        await act(() => S(`/classes/${c.id}/subjects`, { body: { subject, teacher_id, confirm: true } }), 'Subject added'); closeModal(); render();
+      };
+      $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject teacher assignment? Historical attendance and subject history remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
   });
   if ($('#add')) $('#add').onclick = () => form(null);
@@ -1250,9 +1259,10 @@ route('/classes', async () => {
 
 route('/class/:id', async ({ id }) => {
   const d = await S('/classes/' + id);
-  const staff = ME.role === 'admin' ? await S('/staff') : [];
+  const staff = (ME.isFullAdmin || ME.canManageAttendance) ? await S('/staff') : [];
   view(`<div class="row between"><div><h1 style="margin:0">Class ${esc(d.class.name)}</h1><div class="muted">Class teacher: ${esc(d.class.class_teacher_name || '–')}${d.class.room ? ' · Room ' + esc(d.class.room) : ''}</div></div>
-  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.role === 'admin' ? '<button class="btn" id="rep">Replace teacher</button>' : ''}</div></div>
+  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button>' : ''}${d.canManageSubstitution ? '<button class="btn primary" id="substitute">Assign substitute</button>' : ''}</div></div>
+  ${d.substitution ? `<div class="banner info">Substitute today: <b>${esc(d.substitution.substitute_teacher_name)}</b> (${esc(d.substitution.reason)}).${d.canManageSubstitution ? ` <button class="btn small" id="remove-substitute">Remove assignment</button>` : ''}</div>` : ''}
   <h2>Subject teachers</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)}: ${esc(s.teacher_name || '–')}`).join(' · ') || '<span class="muted">None</span>'}</div>
   <h2>Today: ${badge(d.today.status, d.today.status === 'submitted' ? 'ok' : 'warn')}</h2>
   <div class="table-wrap"><table><thead><tr><th>Reg</th><th>Student</th><th>Today</th>${d.fees ? '<th class="num">Fee this month</th><th>Status</th>' : ''}</tr></thead><tbody>
@@ -1267,8 +1277,37 @@ route('/class/:id', async ({ id }) => {
     <label class="full row"><input type="checkbox" name="subjects_too" value="1"> Also hand over the old teacher's subject periods in this class</label>
     <p class="full small muted">Past attendance and notices keep the old teacher's name.</p>
     <div class="full row"><button class="btn primary">Replace</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#rf', m).onsubmit = async (e) => { e.preventDefault(); const b = formData(e.target); await act(() => S(`/classes/${id}/replace-teacher`, { body: { ...b, subjects_too: !!b.subjects_too } }), 'Teacher replaced'); closeModal(); render(); };
+    $('#rf', m).onsubmit = async (e) => {
+      e.preventDefault(); const b = formData(e.target);
+      if (!confirm('Replace the permanent class teacher for ' + d.class.name + '? Historical attendance and notices will keep the previous teacher name.')) return;
+      await act(() => S(`/classes/${id}/replace-teacher`, { body: { ...b, subjects_too: !!b.subjects_too, confirm: true } }), 'Teacher replaced'); closeModal(); render();
+    };
   });
+  const subBtn = $('#substitute');
+  if (subBtn) subBtn.onclick = () => modal(`<h2>Assign substitute teacher</h2>
+    <p class="small muted">The substitute can mark attendance for this class on the selected date. Their existing timetable is checked for clashes.</p>
+    <form id="subf" class="form">
+      <div><label>Date *</label><input type="date" name="date" min="${today()}" value="${today()}" required></div>
+      <div><label>Substitute teacher *</label><select name="substitute_teacher_id" required>${staff.filter((t) => t.active && ['teacher','subadmin','admin'].includes(t.role) && t.id !== d.class.class_teacher_id).map((t) => `<option value="${t.id}">${esc(t.name)} — ${esc(t.role)}</option>`).join('')}</select></div>
+      <div class="full"><label>Reason for substitution *</label><input name="reason" required placeholder="Class teacher absent today"></div>
+      <div class="full row"><button class="btn primary">Assign substitute</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (m) => {
+      $('#subf', m).onsubmit = async (e) => {
+        e.preventDefault(); const b = formData(e.target);
+        const teacher = staff.find((t) => t.id === b.substitute_teacher_id);
+        if (!confirm('Assign ' + teacher?.name + ' to cover ' + d.class.name + ' on ' + b.date + '? The system will block timetable conflicts.')) return;
+        try { await S('/substitutions', { body: { ...b, class_id: id, confirm: true } }); toast('Substitute assigned'); closeModal(); render(); }
+        catch (error) {
+          if (error.data?.conflicts?.length) toast(error.data.conflicts.join(' · '));
+          else toast(error.message);
+        }
+      };
+    });
+  const removeSub = $('#remove-substitute');
+  if (removeSub && d.substitution) removeSub.onclick = async () => {
+    if (!confirm('Remove ' + d.substitution.substitute_teacher_name + ' as the substitute for ' + d.class.name + ' today?')) return;
+    await act(() => S('/substitutions/' + d.substitution.id, { method: 'DELETE', body: { confirm: true } }), 'Substitute assignment removed'); render();
+  };
 });
 
 // ---------- timetable: weekly class schedule and printable teacher view ----------
