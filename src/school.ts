@@ -723,6 +723,8 @@ export class SchoolDO extends DurableObject<Env> {
         if (k === 'email') {
           v = normId(v || '');
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) fail(400, 'A valid Google sign-in email is required');
+          const duplicate = this.one('SELECT id FROM staff WHERE email=? AND id<>? AND active=1 LIMIT 1', v, id);
+          if (duplicate) fail(409, 'That Google sign-in email is already assigned to another active staff account.');
         }
         if (k === 'phone') v = normId(v) || null;
         if ((k === 'role' || k === 'subrole') && !a.isMain) continue;
