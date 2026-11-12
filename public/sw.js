@@ -1,6 +1,6 @@
 // App shell cached for offline start; GET API calls are network-first with a cached fallback,
 // so today's lists and attendance can be read during internet cuts.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = ['/', '/app.js', '/app.css', '/icon.svg', '/manifest.webmanifest', '/fonts/plex-sans-var.woff2'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open('shell-' + VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
