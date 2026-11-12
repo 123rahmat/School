@@ -705,6 +705,8 @@ export class SchoolDO extends DurableObject<Env> {
       c.set('ctx', ctx);
       const actor = this.loadActor(ctx);
       c.set('actor', actor);
+      const expectedActor = c.req.header('x-expected-actor');
+      if (expectedActor && expectedActor !== actor.key) fail(409, 'This saved form belongs to a different signed-in account. Sign in with the original account to synchronize it.');
       if (!['GET', 'HEAD'].includes(c.req.method) && !c.req.path.startsWith('/notifications') && !c.req.path.endsWith('/read')) this.writable(ctx);
 
       const submissionId = c.req.header('x-submission-id');
