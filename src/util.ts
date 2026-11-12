@@ -14,6 +14,7 @@ export interface Ctx {
   schoolId: string;
   kind: 'staff' | 'guardian';
   refId: string;
+  institutionType: string;
   schoolStatus: string; // trial | active | grace | paused
   studentCap: number;
   storageLimitBytes: number;
