@@ -48,30 +48,215 @@ const accountsHtml = (list) => list && list.length
 
 // ---------- API ----------
 async function api(path, opts = {}) {
-  if (path.startsWith('/api/') && !navigator.onLine) {
-    throw new Error('No internet connection. Connect to the internet to verify your Google account and securely contact the institution server.');
+  const method = (opts.method || (opts.body !== undefined || opts.form ? 'POST' : 'GET')).toUpperCase();
+  const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  const isSchoolApi = path.startsWith('/api/s/');
+  const submissionId = opts.submissionId || (isSchoolApi && isWrite ? newSubmissionId() : null);
+  const submissionLabel = opts.submissionLabel || (isSchoolApi && isWrite ? submissionLabelFor(path, method) : '');
+  const init = { method, headers: {}, credentials: 'same-origin', cache: 'no-store' };
+  if (submissionId) {
+    init.headers['x-submission-id'] = submissionId;
+    init.headers['x-submission-label'] = submissionLabel;
   }
-  const init = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin', cache: 'no-store' };
   if (opts.form) init.body = opts.form;
   else if (opts.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
-  const r = await fetch(path, init);
+  const canQueue = isSchoolApi && isWrite && !!ME && ME.kind !== 'owner' && !opts.noQueue &&
+    !/^\/api\/s\/attendance\/[^/]+\/\d{4}-\d{2}-\d{2}(?:\/submit)?$/.test(path);
+  const queueOrThrow = async (cause) => {
+    if (canQueue) {
+      try {
+        await enqueueOfflineSubmission({ id: submissionId, identity: offlineIdentity(), url: path, method,
+          label: submissionLabel, body: opts.form ? { type: 'form', entries: [...opts.form.entries()] }
+            : opts.body !== undefined ? { type: 'json', value: opts.body } : { type: 'empty' },
+          createdAt: new Date().toISOString(), state: 'waiting', attempts: 0 });
+        const queued = new Error('Saved on this device. Not yet received by the school server; it will sync automatically.');
+        queued.queued = true; queued.submissionId = submissionId; queued.label = submissionLabel;
+        throw queued;
+      } catch (storageError) {
+        if (storageError && storageError.queued) throw storageError;
+        const failed = new Error('The connection failed and this device could not save the form offline. Keep this page open and copy your information before leaving.');
+        failed.cause = cause; failed.storageError = storageError; failed.submissionId = submissionId;
+        throw failed;
+      }
+    }
+    const failed = cause instanceof Error ? cause : new Error('The school server could not be reached. Please try again.');
+    if (submissionId) failed.submissionId = submissionId;
+    throw failed;
+  };
+  if (path.startsWith('/api/') && !navigator.onLine) {
+    if (canQueue) return queueOrThrow(new Error('Offline'));
+    const err = new Error('No internet connection. Reconnect to contact the school server.');
+    if (submissionId) err.submissionId = submissionId;
+    throw err;
+  }
+  let r;
+  try { r = await fetch(path, init); }
+  catch (error) { return queueOrThrow(error); }
   let data = null;
   try { data = await r.json(); } catch { data = null; }
+  if ([502, 503, 504].includes(r.status) && isSchoolApi && isWrite && !!ME && !opts.noQueue) {
+    return queueOrThrow(new Error('The school server connection was interrupted.'));
+  }
   if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null; setSessionHint(false); if (!opts.quiet) go(isInstalledApp() ? '/login' : '/'); throw new Error('Please sign in'); }
   if (!r.ok) {
     const err = new Error((data && data.error) || (data && data.message) || 'Request failed');
-    err.status = r.status; err.data = data; throw err;
+    err.status = r.status; err.data = data; if (submissionId) err.submissionId = submissionId; throw err;
   }
   return data;
 }
 const S = (p, o) => api('/api/s' + p, o);
 
+// ---------- durable offline submissions (shared by browser and installed PWA) ----------
+const OFFLINE_DB_NAME = 'school-offline-submissions';
+const OFFLINE_DB_VERSION = 1;
+let offlineDbPromise;
+function openOfflineDb() {
+  if (offlineDbPromise) return offlineDbPromise;
+  offlineDbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('This browser does not support durable offline form storage.'));
+    const request = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('submissions')) {
+        const store = db.createObjectStore('submissions', { keyPath: 'id' });
+        store.createIndex('identity', 'identity', { unique: false });
+      }
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      try { if (navigator.storage?.persist) navigator.storage.persist().catch(() => {}); } catch {}
+      resolve(db);
+    };
+    request.onerror = () => reject(request.error || new Error('Could not open offline form storage.'));
+    request.onblocked = () => reject(new Error('Offline form storage is updating in another tab. Close older school tabs and retry.'));
+  });
+  return offlineDbPromise;
+}
+function offlineQueueMetaKey(identity = offlineIdentity()) { return 'school-offline-summary:' + identity; }
+function readOfflineQueueMeta(identity = offlineIdentity()) {
+  try { return JSON.parse(localStorage.getItem(offlineQueueMetaKey(identity)) || '[]'); } catch { return []; }
+}
+function writeOfflineQueueMeta(items, identity = offlineIdentity()) {
+  try { localStorage.setItem(offlineQueueMetaKey(identity), JSON.stringify(items)); } catch {}
+}
+function newSubmissionId() {
+  try { return crypto.randomUUID(); } catch { return 'sub_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2); }
+}
+function submissionLabelFor(path, method) {
+  const p = path.replace(/^\/api\/s/, '');
+  if (p === '/students' && method === 'POST') return 'Add student profile';
+  if (/^\/students\/[^/]+$/.test(p) && method === 'PATCH') return 'Update student profile';
+  if (/^\/students\/[^/]+\/move-class$/.test(p)) return 'Move student to another class';
+  if (p.startsWith('/attendance/')) return 'Attendance update';
+  if (p.startsWith('/change-requests')) return 'Submit a change request';
+  if (p === '/payments') return 'Submit fee payment';
+  if (p.startsWith('/fees/') || p.includes('/fee')) return 'Fee management update';
+  if (p === '/results' || p.startsWith('/results/')) return 'Upload or manage examination result';
+  if (p.startsWith('/staff')) return 'Teacher or staff record update';
+  if (p.startsWith('/classes')) return 'Class or teacher assignment update';
+  if (p.startsWith('/notices')) return 'Post or manage a school notice';
+  if (p.startsWith('/threads')) return 'Send a school message';
+  if (p.startsWith('/settings')) return 'Update school settings';
+  return method + ' ' + p.replace(/\/[a-z0-9_-]{8,}/gi, '/record').slice(0, 90);
+}
+async function enqueueOfflineSubmission(item) {
+  const db = await openOfflineDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('submissions', 'readwrite');
+    tx.objectStore('submissions').put(item);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('Could not save offline form.'));
+    tx.onabort = () => reject(tx.error || new Error('Offline form save was interrupted.'));
+  });
+  const meta = readOfflineQueueMeta(item.identity).filter(x => x.id !== item.id);
+  meta.push({ id: item.id, label: item.label, createdAt: item.createdAt, state: item.state, lastError: '' });
+  writeOfflineQueueMeta(meta, item.identity);
+  updateConnectionBanner();
+}
+async function getOfflineSubmissions(identity = offlineIdentity()) {
+  const db = await openOfflineDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('submissions', 'readonly');
+    const request = tx.objectStore('submissions').index('identity').getAll(identity);
+    request.onsuccess = () => resolve((request.result || []).sort((a,b) => a.createdAt.localeCompare(b.createdAt)));
+    request.onerror = () => reject(request.error || new Error('Could not read offline submissions.'));
+  });
+}
+async function updateOfflineSubmission(item) {
+  const db = await openOfflineDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('submissions', 'readwrite');
+    tx.objectStore('submissions').put(item);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('Could not update offline submission.'));
+  });
+  writeOfflineQueueMeta(readOfflineQueueMeta(item.identity).map(x => x.id === item.id
+    ? { ...x, state: item.state, lastError: item.lastError || '' } : x), item.identity);
+}
+async function removeOfflineSubmission(item) {
+  const db = await openOfflineDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('submissions', 'readwrite');
+    tx.objectStore('submissions').delete(item.id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('Could not clear synchronized submission.'));
+  });
+  writeOfflineQueueMeta(readOfflineQueueMeta(item.identity).filter(x => x.id !== item.id), item.identity);
+  updateConnectionBanner();
+}
+function formFromStoredEntries(entries) {
+  const form = new FormData();
+  for (const [key, value] of entries || []) form.append(key, value);
+  return form;
+}
+let flushingOfflineSubmissions = false;
+async function flushOfflineSubmissions() {
+  if (flushingOfflineSubmissions || !ME || ME.kind === 'owner' || !navigator.onLine) return;
+  flushingOfflineSubmissions = true;
+  let changed = false;
+  try {
+    const identity = offlineIdentity();
+    const items = await getOfflineSubmissions(identity);
+    for (const item of items) {
+      if (item.state === 'needs_review') continue;
+      const opts = { method: item.method, submissionId: item.id, submissionLabel: item.label, noQueue: true, quiet: true };
+      if (item.body?.type === 'json') opts.body = item.body.value;
+      if (item.body?.type === 'form') opts.form = formFromStoredEntries(item.body.entries);
+      try {
+        await api(item.url, opts);
+        await removeOfflineSubmission(item);
+        changed = true;
+        toast(item.label + ': received and saved by the school server.');
+      } catch (error) {
+        const processingConflict = error.status === 409 && /still being processed/i.test(error.message);
+        const next = { ...item, attempts: (item.attempts || 0) + 1, lastTriedAt: new Date().toISOString(),
+          lastError: error.message || 'The school server could not confirm this submission.',
+          state: error.status && error.status >= 400 && error.status < 500 && error.status !== 401 && !processingConflict ? 'needs_review' : 'waiting' };
+        await updateOfflineSubmission(next);
+        changed = true;
+        if (error.status === 401) break;
+        if (next.state === 'needs_review') toast(item.label + ': needs your review before it can be sent.');
+        else break;
+      }
+    }
+    if (changed && currentPath() === '/submissions') await render();
+    updateConnectionBanner();
+  } catch (error) {
+    console.warn('Offline submission sync paused:', error);
+  } finally {
+    flushingOfflineSubmissions = false;
+  }
+}
+
+
 let connectionRestoreTimer = null;
 let connectionRestoredUntil = 0;
 function connectionBannerHtml() {
-  const pending = ME && typeof outbox === 'function' ? outbox().length : 0;
-  if (!navigator.onLine) return `<div class="network-banner offline" role="status" aria-live="assertive"><span class="network-dot"></span><div><b>No internet connection</b><span>Google sign-in, session verification and server updates require internet. Attendance drafts can be saved on this device and synced after reconnection.${pending ? ` ${pending} attendance item(s) are waiting on this device.` : ''}</span></div></div>`;
-  if (connectionRestoredUntil > Date.now()) return `<div class="network-banner restored" role="status" aria-live="polite"><span class="network-dot"></span><div><b>Connection restored</b><span>Checking your secure session and syncing saved attendance changes.</span></div></div>`;
+  const attendancePending = ME && typeof outbox === 'function' ? outbox().length : 0;
+  const formPending = ME ? readOfflineQueueMeta().length : 0;
+  const pending = attendancePending + formPending;
+  if (!navigator.onLine) return `<div class="network-banner offline" role="status" aria-live="assertive"><span class="network-dot"></span><div><b>No internet connection</b><span>Your unsent work stays on this device. ${pending ? `${pending} submission(s) are waiting to reach the school server. Do not clear this browser's data.` : 'New changes will be queued locally where offline storage is supported.'} Reconnect to verify your session and sync your work.</span><a href="/submissions">View submission status</a></div></div>`;
+  if (connectionRestoredUntil > Date.now()) return `<div class="network-banner restored" role="status" aria-live="polite"><span class="network-dot"></span><div><b>Connection restored</b><span>Checking your secure session and syncing saved submissions.</span></div></div>`;
   return '';
 }
 function updateConnectionBanner() {
@@ -84,9 +269,14 @@ function toast(msg) {
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3200);
 }
 async function act(fn, okMsg) {
-  try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
-  catch (e) {
+  try {
+    const r = await fn();
+    if (r?.queued) { toast('Saved on this device. Waiting to reach the school server.'); return r; }
+    if (okMsg) toast(okMsg);
+    return r;
+  } catch (e) {
     if (e.data && e.data.needsConfirm) return { needsConfirm: true, message: e.data.message };
+    if (e.queued) { toast('Saved on this device. Not yet received by the school server; it will sync automatically.'); return { queued: true, submissionId: e.submissionId }; }
     toast(e.message); throw e;
   }
 }
@@ -179,7 +369,7 @@ function nav() {
   const items = [];
   if (ME.kind === 'owner') items.push(link('/owner', 'Owner panel'));
   else if (ME.kind === 'guardian') {
-    items.push(link('/', 'My children'), link('/notices', 'Notices'), link('/threads', 'Messages'));
+    items.push(link('/', 'My children'), link('/submissions', 'My submissions'), link('/notices', 'Notices'), link('/threads', 'Messages'));
   } else {
     items.push(link('/', ME.isAdmin ? 'Dashboard' : 'Today'));
     items.push(`<div class="group">People</div>`, link('/students', 'Students'));
@@ -194,6 +384,7 @@ function nav() {
     if (ME.role === 'admin' || ME.subrole === 'office') items.push(link('/outbox', 'WhatsApp / SMS', ME.outbox ? ` <span class="badge warn">${ME.outbox}</span>` : ''));
     items.push(link('/results', 'Results'), link('/requests', 'Change requests'));
     if (ME.isAdmin) { items.push(`<div class="group">School</div>`, link('/settings', 'Settings')); }
+    items.push(link('/submissions', 'Submission history'));
     if (ME.isMainAdmin) items.push(link('/billing', 'Billing'));
   }
   items.push(`<div class="group">Me</div>`, link('/notifications', 'Notifications', ME.unread ? ` <span class="badge bad">${ME.unread}</span>` : ''), `<a href="#" id="logout">Sign out</a>`);
@@ -1336,13 +1527,15 @@ const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX()) ||
 const saveOutbox = (items, key = OUTBOX()) => { try { localStorage.setItem(key, JSON.stringify(items)); } catch { toast('This device could not save the offline queue. Check device storage.'); } };
 function syncStatusHtml() {
   if (!ME) return '';
-  const items = outbox(), count = items.length;
-  const blocked = items.filter(x => x.blocked);
-  const links = blocked.slice(0, 3).map(x => `<a href="/attendance/${encodeURIComponent(x.classId)}?date=${encodeURIComponent(x.date)}">Review ${esc(x.date)}</a>`).join(' · ');
-  if (!navigator.onLine) return '';
-  if (blocked.length) return `<div class="sync-status offline" role="status"><b>Attendance needs review</b><span>${blocked.length} queued item(s) were not accepted. Check the affected dates before trying again.</span>${links}</div>`;
-  if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
-  return '';
+  const attendanceItems = outbox(), attendanceCount = attendanceItems.length;
+  const blockedAttendance = attendanceItems.filter(x => x.blocked);
+  const generic = readOfflineQueueMeta();
+  const genericBlocked = generic.filter(x => x.state === 'needs_review').length;
+  const total = attendanceCount + generic.length;
+  if (!total) return '';
+  if (!navigator.onLine) return `<div class="sync-status offline" role="status" aria-live="polite"><b>Work saved on this device</b><span>${total} submission(s) have not reached the school server. They will retry after connection returns. Do not clear this browser's data.</span><a href="/submissions">View pending submissions</a></div>`;
+  if (blockedAttendance.length || genericBlocked) return `<div class="sync-status offline" role="status" aria-live="polite"><b>Some submissions need review</b><span>${blockedAttendance.length + genericBlocked} item(s) need attention.</span><a href="/submissions">Review submissions</a></div>`;
+  return `<div class="sync-status queued" role="status" aria-live="polite"><b>Submissions waiting to sync</b><span>${total} item(s) are saved on this device and will be sent when the school server is reachable.</span><a href="/submissions">View submission status</a></div>`;
 }
 let flushingOutbox = false;
 async function flushOutbox() {
@@ -1356,7 +1549,7 @@ async function flushOutbox() {
     for (const it of items) {
       if (it.blocked) { left.push(it); continue; }
       try {
-        await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records }, quiet: true });
+        await S(`/attendance/${it.classId}/${it.date}${it.submit ? '/submit' : ''}`, { method: it.submit ? 'POST' : 'PUT', body: { records: it.records }, quiet: true, noQueue: true, submissionId: it.submissionId, submissionLabel: 'Attendance ' + it.classId + ' ' + it.date });
         toast(it.submit ? 'Queued attendance submitted to the server' : 'Queued attendance draft synced');
       } catch (e) {
         // Keep every failed item under the identity that created it. Retry network/server
@@ -1386,6 +1579,7 @@ window.addEventListener('online', async () => {
     await refreshMe();
     await render();
     await flushOutbox();
+    await flushOfflineSubmissions();
   } catch {
     updateConnectionBanner();
   }
@@ -1395,7 +1589,7 @@ window.addEventListener('offline', () => {
   clearTimeout(connectionRestoreTimer);
   updateConnectionBanner();
 });
-setInterval(flushOutbox, 60000);
+setInterval(() => { flushOutbox(); flushOfflineSubmissions(); }, 45000);
 
 route('/attendance/:id', async ({ id }) => {
   const date = query().date || today();
@@ -1438,7 +1632,7 @@ route('/attendance/:id', async ({ id }) => {
       toast(submit ? 'Submitted — parents of absent and late students are being told' : 'Draft saved');
     } catch (e) {
       if (!e.status || e.status === 503) {
-        const ob = outbox().filter((x) => !(x.classId === id && x.date === date)); ob.push({ classId: id, date, records: recs, submit, queuedAt: new Date().toISOString() });
+        const ob = outbox().filter((x) => !(x.classId === id && x.date === date)); ob.push({ classId: id, date, records: recs, submit, submissionId: e.submissionId || newSubmissionId(), queuedAt: new Date().toISOString() });
         saveOutbox(ob);
         toast('You are offline. Saved on this device; it will sync automatically.');
       } else toast(e.message);
@@ -1740,6 +1934,22 @@ route('/notifications', async () => {
   ME.unread = 0;
 });
 
+// ---------- submission history ----------
+route('/submissions', async () => {
+  const [serverRows, localRows] = await Promise.all([S('/submissions').catch(() => null), getOfflineSubmissions().catch(() => [])]);
+  const localHtml = localRows.map(x => `<tr><td>${esc(x.label)}</td><td>${fmtTime(x.createdAt)}</td><td>${badge(x.state === 'needs_review' ? 'Needs review' : 'Waiting on this device', x.state === 'needs_review' ? 'bad' : 'warn')}</td><td class="small">${esc(x.lastError || 'Not yet received by the school server')}</td></tr>`).join('');
+  const serverHtml = (serverRows || []).map(x => `<tr><td>${esc(x.label || x.method + ' ' + x.path)}</td><td>${fmtTime(x.created_at)}</td><td>${badge('Received by server','ok')}</td><td class="small">${esc(x.user_name || 'You')} · reference ${esc(x.id)}</td></tr>`).join('');
+  view(`<h1>Submission history</h1>
+    <p class="muted">A device-side item is not yet a school record. It becomes received only after the school server confirms it. Administrator approval may still be required for some submissions.${serverRows === null ? ' Server history is unavailable while offline; the local queue remains visible.' : ''}</p>
+    <h2>Waiting on this device (${localRows.length})</h2>
+    <div class="table-wrap"><table><thead><tr><th>What you entered</th><th>Saved locally</th><th>Status</th><th>Details</th></tr></thead><tbody>${localHtml || '<tr><td colspan="4" class="muted">No pending offline forms for this signed-in account.</td></tr>'}</tbody></table></div>
+    <h2>Received by the school server (${serverRows?.length ?? '—'})</h2>
+    <div class="table-wrap"><table><thead><tr><th>Submission</th><th>Received</th><th>Status</th><th>Reference / submitted by</th></tr></thead><tbody>${serverRows === null ? '<tr><td colspan="4" class="muted">Server history unavailable offline. Reconnect to load it.</td></tr>' : serverHtml || '<tr><td colspan="4" class="muted">No server-confirmed submissions yet.</td></tr>'}</tbody></table></div>
+    <div class="row"><button class="btn" id="sync-now">Sync pending submissions now</button><button class="btn" id="refresh-history">Refresh history</button></div>`);
+  $('#sync-now').onclick = async () => { await flushOutbox(); await flushOfflineSubmissions(); await render(); };
+  $('#refresh-history').onclick = render;
+});
+ 
 // ---------- settings ----------
 route('/settings', async () => {
   const tab = query().tab || 'general';
@@ -2031,4 +2241,5 @@ route('/owner', async () => {
     render();
   }
   flushOutbox();
+  flushOfflineSubmissions();
 })();
