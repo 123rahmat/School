@@ -186,7 +186,10 @@ app.post('/api/auth/google', async (c) => {
     }
     rows = matching;
     if (!rows.length) {
-      if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. Register a new institution only when you are creating a new institution.');
+      if (requestedRole === 'main_admin') {
+        if (allRows.length) fail(403, 'This Google email is already registered for another institution role. Choose Teacher / staff or Parent to match your profile; do not register a second institution.');
+        fail(403, 'No main administrator profile is registered for this Google email. Register an institution only when you are creating a new institution.');
+      }
       if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
       fail(403, 'No parent profile is registered for this Google email. Ask your institution administrator to add your email to your child’s guardian profile.');
     }
