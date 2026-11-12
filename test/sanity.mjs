@@ -67,11 +67,11 @@ assert.match(app, /att-outbox-v2:/, 'Offline attendance queue must be identity-s
 assert.match(app, /credentials: 'same-origin'/, 'API requests must use same-origin session cookies');
 assert.match(app, /cache: 'no-store'/, 'API requests must not be served from a browser cache');
 assert.match(app, /school-offline-submissions/, 'All school forms must share a durable IndexedDB queue');
-assert.match(app, /flushOfflineSubmissions\\(\\)/, 'Queued forms must retry after connectivity returns');
-assert.match(app, /Saved on this device\\. Not yet received by the school server/, 'Local queue state must not be confused with server receipt');
-assert.match(app, /route\\('\\/submissions'/, 'Users must have a submission history screen');
+assert.ok(app.includes('flushOfflineSubmissions()'), 'Queued forms must retry after connectivity returns');
+assert.ok(app.includes('Saved on this device. Not yet received by the school server'), 'Local queue state must not be confused with server receipt');
+assert.ok(app.includes("route('/submissions'"), 'Users must have a submission history screen');
 assert.match(school, /x-submission-id/, 'School API must use stable submission IDs for retry safety');
-assert.match(school, /app\\.get\\('\\/submissions'/, 'Server-confirmed submission history must be role-scoped');
+assert.ok(school.includes("app.get('/submissions'"), 'Server-confirmed submission history must be role-scoped');
 assert.match(schema, /CREATE TABLE IF NOT EXISTS api_submissions/, 'School database must retain server submission receipts');
 
 assert.match(sw, /const VERSION = 'v11'/, 'PWA shell/cache version must be updated');
@@ -82,13 +82,13 @@ assert.match(school, /day\.submitted_by === a\.key/, 'Attendance submit retry mu
 assert.match(school, /async runCron\(ctx: Ctx\)/, 'Cron cleanup that awaits R2 deletions must be asynchronous');
 assert.match(school, /app\.post\('\/internal\/cron', async \(c\) => c\.json\(await this\.runCron/, 'The internal cron route must await asynchronous cleanup');
 
-assert.doesNotMatch(app, /route\\('\\/timetable'|route\\('\\/syllabus'|substitution-bonuses/, 'Focused school UI must not expose removed teaching modules');
-assert.doesNotMatch(school, /app\\.(?:get|post|delete)\\('\\/(?:timetable|syllabus|substitutions)/, 'Focused school API must not expose removed teaching workflows');
-assert.doesNotMatch(schema, /CREATE TABLE IF NOT EXISTS (?:timetable_slots|class_substitutions|syllabus_documents)/, 'New school databases must not create removed feature tables');
-assert.match(css, /@media \\(max-width: 860px\\)/, 'Workspace must adapt navigation for phone and tablet widths');
-assert.match(css, /@media \\(min-width: 601px\\) and \\(max-width: 860px\\)/, 'Tablet layout must use tablet-appropriate forms and cards');
-assert.match(css, /@media \\(max-width: 600px\\)/, 'Phone layout must use phone-appropriate spacing and form columns');
-assert.match(css, /minmax\\(0, 1fr\\)/, 'Workspace columns must shrink without forcing viewport overflow');
+assert.ok(!app.includes("route('/timetable'") && !app.includes("route('/syllabus'") && !app.includes('substitution-bonuses'), 'Focused school UI must not expose removed teaching modules');
+assert.ok(!school.includes("app.get('/timetable'") && !school.includes("app.post('/timetable'") && !school.includes("app.get('/syllabus'") && !school.includes("app.get('/substitutions'"), 'Focused school API must not expose removed teaching workflows');
+assert.ok(!schema.includes('CREATE TABLE IF NOT EXISTS timetable_slots') && !schema.includes('CREATE TABLE IF NOT EXISTS class_substitutions') && !schema.includes('CREATE TABLE IF NOT EXISTS syllabus_documents'), 'New school databases must not create removed feature tables');
+assert.ok(css.includes('@media (max-width: 860px)'), 'Workspace must adapt navigation for phone and tablet widths');
+assert.ok(css.includes('@media (min-width: 601px) and (max-width: 860px)'), 'Tablet layout must use tablet-appropriate forms and cards');
+assert.ok(css.includes('@media (max-width: 600px)'), 'Phone layout must use phone-appropriate spacing and form columns');
+assert.ok(css.includes('minmax(0, 1fr)'), 'Workspace columns must shrink without forcing viewport overflow');
 assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
