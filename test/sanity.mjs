@@ -31,7 +31,7 @@ assert.match(worker, /String\(claims\.email_verified\) !== 'true'/, 'Google veri
 assert.match(worker, /'platform_owner'/, 'Dedicated platform owner sign-in role must be supported');
 assert.match(worker, /requestedRole === 'platform_owner'.*not authorized for platform administration/s, 'Non-owner Google accounts must be rejected from platform administration');
 assert.match(worker, /identity\.email === normId\(c\.env\.OWNER_EMAIL\)/, 'Platform owner identity must match the configured owner email');
-assert.match(worker, /identity\.email === normId\(c\.env\.OWNER_EMAIL\) fail\(403, 'The platform owner account cannot register an institution\.'\)/, 'Platform owner must not register an institution');
+assert.match(worker, /if \(identity\.email === normId\(c\.env\.OWNER_EMAIL\)\) fail\(403, 'The platform owner account cannot register an institution\.'\)/, 'Platform owner must not register an institution');
 
 assert.match(app, /function landingPage\(\)/, 'Public landing page must exist');
 assert.match(app, /Use in browser/, 'Landing page must provide browser access');
