@@ -33,7 +33,7 @@ const accountsHtml = (list) => list && list.length
 
 // ---------- API ----------
 async function api(path, opts = {}) {
-  const init = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin' };
+  const init = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {}, credentials: 'same-origin', cache: 'no-store' };
   if (opts.form) init.body = opts.form;
   else if (opts.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
   const r = await fetch(path, init);
@@ -94,9 +94,28 @@ function parseCSV(text) {
 // ---------- routing ----------
 const routes = [];
 const route = (pattern, fn) => routes.push([new RegExp('^' + pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), fn]);
-function go(path) { location.hash = '#' + path; }
-function currentPath() { return (location.hash.slice(1) || '/').split('?')[0]; }
-function query() { return Object.fromEntries(new URLSearchParams((location.hash.split('?')[1]) || '')); }
+// Clean pathname routing: direct links work without a /#/ fragment. Legacy hash links
+// are normalized once and remain accepted for existing bookmarks.
+if (location.hash.startsWith('#/')) history.replaceState(null, '', location.hash.slice(1));
+function go(path) {
+  const target = new URL(path, location.origin);
+  history.pushState(null, '', target.pathname + target.search);
+  render();
+}
+function currentPath() {
+  if (location.hash.startsWith('#/')) return location.hash.slice(1).split('?')[0];
+  return location.pathname || '/';
+}
+function query() {
+  const search = location.hash.startsWith('#/') ? (location.hash.split('?')[1] || '') : location.search;
+  return Object.fromEntries(new URLSearchParams(search));
+}
+document.addEventListener('click', (event) => {
+  const anchor = event.target instanceof Element ? event.target.closest('a[href^="#/"]') : null;
+  if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || anchor.target === '_blank') return;
+  event.preventDefault();
+  go(anchor.getAttribute('href').slice(1));
+});
 
 async function render() {
   const path = currentPath();
@@ -117,6 +136,7 @@ async function render() {
   view('<div class="center muted">Page not found</div>');
 }
 window.addEventListener('hashchange', render);
+window.addEventListener('popstate', render);
 
 // ---------- layout ----------
 function nav() {
@@ -151,7 +171,7 @@ function view(html) {
   $('#app').innerHTML = `
   <div class="layout">
     <aside class="side" id="side">
-      <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'School')}</span></div>
+      <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
       <nav>${nav()}</nav>
       <div class="muted small" style="padding:12px 10px">${esc(ME?.name || '')}${ME?.role && ME.role !== 'parent' ? ' · ' + esc(ME.subrole || ME.role) : ''}</div>
     </aside>
@@ -165,7 +185,7 @@ function view(html) {
     </div>
   </div>`;
   $('#menu').onclick = () => $('#side').classList.toggle('open');
-  $$$('#side nav a').forEach((a) => a.addEventListener('click', () => $('#side').classList.remove('open')));
+  $('#side nav a').forEach((a) => a.addEventListener('click', () => $('#side').classList.remove('open')));
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
@@ -174,8 +194,7 @@ function view(html) {
     }
     try { await api('/api/auth/logout', { body: {} }); }
     catch { toast('Could not sign out from the server. Please try again.'); return; }
-    clearPrivateOfflineData();
-    ME = null; BILL = null; go('/login');
+      ME = null; BILL = null; go('/login');
   };
   setupSearch();
   setupInstall();
@@ -196,7 +215,8 @@ function billingBanner() {
 function setupSearch() {
   const q = $('#q'); if (!q) return;
   const box = $('#qr'); let t;
-  const recent = () => { try { return JSON.parse(localStorage.getItem('recent') || '[]'); } catch { return []; } };
+  const recentKey = () => 'recent:' + [ME?.schoolId || 'platform', ME?.id || 'anonymous', ME?.kind || 'guest'].join(':');
+  const recent = () => { try { return JSON.parse(localStorage.getItem(recentKey()) || '[]'); } catch { return []; } };
   const showRecent = () => {
     const r = recent(); if (!r.length) return box.classList.add('hidden');
     box.innerHTML = '<div class="muted small" style="padding:6px 12px">Recently opened</div>' + r.map((x) => `<a href="#${esc(x.href)}">${esc(x.label)}</a>`).join('');
@@ -212,10 +232,10 @@ function setupSearch() {
         + r.staff.map((s) => `<a href="#/staff/${s.id}" data-label="${esc(s.name)} (teacher)"><b>${esc(s.name)}</b> <span class="muted small">· teacher${s.subjects ? ' · ' + esc(s.subjects) : ''}${s.active ? '' : ' · former'}</span></a>`).join('')
         || '<div class="muted" style="padding:10px 12px">No matches</div>';
       box.classList.remove('hidden');
-      $$$('a', box).forEach((a) => a.onclick = () => {
+      $('a', box).forEach((a) => a.onclick = () => {
         const r2 = recent().filter((x) => x.href !== a.getAttribute('href').slice(1));
         r2.unshift({ href: a.getAttribute('href').slice(1), label: a.dataset.label });
-        try { localStorage.setItem('recent', JSON.stringify(r2.slice(0, 8))); } catch {}
+        try { localStorage.setItem(recentKey(), JSON.stringify(r2.slice(0, 8))); } catch {}
         box.classList.add('hidden'); q.value = '';
       });
     }, 200);
@@ -256,13 +276,13 @@ function showAuthError(error, mode = 'login') {
   if (!next) return;
   next.innerHTML = '';
   if (mode === 'login' && /not registered|not linked|not found/i.test(raw)) {
-    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution account with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to a institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
+    next.innerHTML = `<div class="auth-help"><b>This Google account is not linked to an institution yet.</b><p>Starting a new institution? Create an institution account with this Google account.</p><a class="btn primary" href="#/signup">Create an institution account</a><p class="small muted">Already belong to an institution? Ask its administrator to add this exact Google email to your staff or guardian profile.</p></div>`;
   } else if (/not configured/i.test(raw)) {
     next.innerHTML = '<div class="auth-help"><b>Google sign-in needs configuration.</b><p>The platform administrator must set GOOGLE_CLIENT_ID in the Cloudflare Worker production settings and redeploy.</p></div>';
   } else if (mode === 'signup') {
     next.innerHTML = '<div class="auth-help"><p>Already have an institution account? <a href="#/login">Sign in instead</a>.</p></div>';
   } else {
-    next.innerHTML = '<div class="auth-help"><p>Use the Google account email your institution has registered. If the problem continues, ask the institution administrator to check your account email.</p></div>';
+    next.innerHTML = '<div class="auth-help"><p>Use the Google account connected to your institution profile. If the problem continues, ask the institution administrator to check your account email.</p></div>';
   }
 }
 async function mountGoogleButton(target, onCredential, buttonText = 'signin_with', mode = 'login') {
@@ -772,7 +792,7 @@ function bindCalendar(s) {
     download(`attendance-${s.reg_no}-${month}.csv`, csv([['date', 'status'], ...p.attendance.records.map((r) => [r.date, STATUS[r.status]])]));
   };
   $('#att-print').onclick = () => print();
-  $$$('[data-fix]').forEach((d) => d.onclick = () => modal(`<h2>Correct ${esc(d.dataset.fix)}</h2><form id="cf" class="form">
+  $('[data-fix]').forEach((d) => d.onclick = () => modal(`<h2>Correct ${esc(d.dataset.fix)}</h2><form id="cf" class="form">
     <div><label>New status</label><select name="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
     <div class="full"><label>Reason (the parent is told)</label><input name="reason" required></div>
     <div class="full row"><button class="btn primary">Save correction</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
@@ -857,7 +877,7 @@ function bindFees(s, p) {
     });
   };
   // Add, change or waive the late fine on one voucher
-  $$$('[data-fine]').forEach((a) => a.onclick = (e) => {
+  $('[data-fine]').forEach((a) => a.onclick = (e) => {
     e.preventDefault();
     const v = p.vouchers.find((x) => x.id === a.dataset.fine);
     modal(`<h2>Late fine — ${esc(v.month)}</h2><p>Current fine: <b>${money(v.fine)}</b>${v.fine_locked ? ' (set by hand)' : ''}</p>
@@ -874,8 +894,8 @@ function bindFees(s, p) {
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#df', m).onsubmit = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/discounts`, { body: formData(e.target) }), 'Discount added — applies from the next voucher'); closeModal(); render(); };
   });
-  $$$('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}`, { method: 'DELETE' }), 'Removed'); render(); });
-  $$$('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason } }), 'Receipt cancelled'); render(); });
+  $('[data-deldisc]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/students/${s.id}/discounts/${a.dataset.deldisc}`, { method: 'DELETE' }), 'Removed'); render(); });
+  $('[data-cancel]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); const reason = prompt('Reason for cancelling this receipt?'); if (!reason) return; await act(() => S(`/payments/${a.dataset.cancel}/cancel`, { body: { reason } }), 'Receipt cancelled'); render(); });
   const pz = $('#pause'); if (pz) pz.onclick = async () => {
     if (p.reminderPause) { await act(() => S(`/students/${s.id}/reminder-pause`, { body: { off: true } }), 'Reminders resumed'); return render(); }
     const reason = prompt('Why pause fee reminders for this student? (e.g. agreed late payment)'); if (!reason) return;
@@ -1014,11 +1034,11 @@ route('/classes', async () => {
     };
     if (c) {
       $('#addsub', m).onclick = async () => { await act(() => S(`/classes/${c.id}/subjects`, { body: { subject: $('#subj', m).value, teacher_id: $('#subt', m).value } }), 'Subject added'); closeModal(); render(); };
-      $$$('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
+      $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
   });
   if ($('#add')) $('#add').onclick = () => form(null);
-  $$$('[data-edit]').forEach((b) => b.onclick = () => form(rows.find((c) => c.id === b.dataset.edit)));
+  $('[data-edit]').forEach((b) => b.onclick = () => form(rows.find((c) => c.id === b.dataset.edit)));
 });
 
 route('/class/:id', async ({ id }) => {
@@ -1056,7 +1076,7 @@ route('/attendance', async () => {
 
 // Offline attendance is queued per signed-in person and institution so one user's work
 // can never be replayed under another user's session on a shared device.
-const offlineIdentity = () => ME ? [ME.schoolName || 'platform', ME.id || ME.kind, ME.kind || 'user'].map(x => String(x).replace(/[^a-z0-9_-]/gi, '_')).join(':') : 'signed-out';
+const offlineIdentity = () => ME ? [ME.schoolId || 'platform', ME.id || ME.kind, ME.kind || 'user'].map(x => String(x).replace(/[^a-z0-9_-]/gi, '_')).join(':') : 'signed-out';
 const OUTBOX = () => 'att-outbox-v2:' + offlineIdentity();
 const DRAFT_PREFIX = () => 'att-draft-v2:' + offlineIdentity() + ':';
 const outbox = () => { try { return JSON.parse(localStorage.getItem(OUTBOX()) || '[]'); } catch { return []; } };
@@ -1070,11 +1090,6 @@ function syncStatusHtml() {
   if (blocked.length) return `<div class="sync-status offline" role="status"><b>Attendance needs review</b><span>${blocked.length} queued item(s) were not accepted. Check the affected dates before trying again.</span>${links}</div>`;
   if (count) return `<div class="sync-status queued" role="status"><b>Attendance waiting to sync</b><span>${count} queued item(s) will be sent when the server is reachable.</span></div>`;
   return '';
-}
-function clearPrivateOfflineData() {
-  // Keep identity-scoped unsynced attendance and drafts so sign-out never discards work.
-  // Private GET responses are cleared to prevent another account on this device seeing them.
-  if (navigator.serviceWorker?.controller) navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_PRIVATE_CACHES' });
 }
 let flushingOutbox = false;
 async function flushOutbox() {
@@ -1128,7 +1143,7 @@ route('/attendance/:id', async ({ id }) => {
   ${canMark && !d.holiday && d.status !== 'submitted' && d.students.length ? `<div class="row" style="margin-top:14px;position:sticky;bottom:10px"><button class="btn" id="save">Save draft</button><button class="btn primary" id="sub">Review & submit</button></div>` : ''}`);
   $('#dt').onchange = (e) => go(`/attendance/${id}?date=${e.target.value}`);
   const saveLocal = () => { try { localStorage.setItem(draftKey, JSON.stringify(recs)); } catch {} };
-  $$$('.att-btns').forEach((g) => g.onclick = async (e) => {
+  $('.att-btns').forEach((g) => g.onclick = async (e) => {
     const b = e.target.closest('button'); if (!b || b.disabled) return;
     const sid = g.dataset.s, k = b.dataset.k;
     if (d.status === 'submitted') {
@@ -1140,7 +1155,7 @@ route('/attendance/:id', async ({ id }) => {
       await act(() => S('/change-requests', { body: { kind: 'attendance', student_id: sid, date, status: k, reason } }), 'Request sent to admin'); return;
     }
     recs[sid] = k; saveLocal();
-    $$$('button', g).forEach((x) => x.classList.toggle('on', x.dataset.k === k));
+    $('button', g).forEach((x) => x.classList.toggle('on', x.dataset.k === k));
   });
   const send = async (submit) => {
     try {
@@ -1215,7 +1230,7 @@ route('/fees/unpaid', async () => {
   const reload = () => go(`/fees/unpaid?month=${$('#m').value}&class_id=${$('#c').value}`);
   $('#m').onchange = reload; $('#c').onchange = reload;
   $('#csv').onclick = () => download(`unpaid-${month}.csv`, csv([['name', 'reg_no', 'class', 'parent_phone', 'month', 'due', 'paid', 'balance', 'days_overdue'], ...rows.map((r) => [r.name, r.reg_no, r.class_name, r.parent_phone, r.month, r.due, r.paid, r.balance, r.days_overdue])]));
-  $$$('[data-rem]').forEach((b) => b.onclick = async () => { await act(() => S('/fees/remind', { body: { voucher_ids: [b.dataset.rem] } }), 'Reminder sent'); });
+  $('[data-rem]').forEach((b) => b.onclick = async () => { await act(() => S('/fees/remind', { body: { voucher_ids: [b.dataset.rem] } }), 'Reminder sent'); });
   $('#remall').onclick = async () => { if (!confirm(`Send a reminder to ${rows.length} parent(s)?`)) return; const r = await act(() => S('/fees/remind', { body: { voucher_ids: rows.filter((x) => x.status !== 'carried').map((x) => x.id) } })); toast(`${r.sent} reminder(s) sent`); };
 });
 
@@ -1229,8 +1244,8 @@ route('/fees/slips', async () => {
   <td>${esc(p.txn_id || '')}</td><td>${p.slip_key ? `<a target="_blank" href="/files/${esc(p.slip_key.split('/').slice(1).join('/'))}">View</a>` : ''}</td>
   <td class="row">${p.status === 'submitted' && p.can_verify ? `<button class="btn small primary" data-v="${p.id}">Verify</button><button class="btn small danger" data-r="${p.id}">Reject</button>` : p.receipt_no ? `<a href="#/receipt/${p.id}">#${p.receipt_no}</a>` : esc(p.reason || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Nothing here</td></tr>'}
   </tbody></table></div><p class="small muted">Check each slip against the institution's Easypaisa/JazzCash account before verifying. Duplicate transaction IDs are blocked automatically.</p>`);
-  $$$('[data-v]').forEach((b) => b.onclick = async () => { const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: {} })); toast(`Verified — receipt #${r.receipt}`); render(); });
-  $$$('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason } }), 'Rejected'); render(); });
+  $('[data-v]').forEach((b) => b.onclick = async () => { const r = await act(() => S(`/payments/${b.dataset.v}/verify`, { body: {} })); toast(`Verified — receipt #${r.receipt}`); render(); });
+  $('[data-r]').forEach((b) => b.onclick = async () => { const reason = prompt('Why is this slip rejected? The parent will see this.'); if (!reason) return; await act(() => S(`/payments/${b.dataset.r}/reject`, { body: { reason } }), 'Rejected'); render(); });
 });
 
 route('/fees/defaulters', async () => {
@@ -1279,7 +1294,7 @@ route('/cash', async () => {
   ${d.teachers.map((t) => `<div class="card"><div class="row between"><h3 style="margin:0">${esc(t.name)} — ${money(t.total)}</h3>${ME.canFees ? `<button class="btn primary" data-t="${t.teacher_id}" data-a="${t.total}">Confirm handover</button>` : ''}</div>
   <div class="table-wrap" style="margin-top:10px"><table><tbody>${t.items.map((i) => `<tr><td>${fmtTime(i.created_at)}</td><td>${esc(i.student_name)}</td><td>${esc(i.class_name)}</td><td class="num">${money(i.amount)}</td></tr>`).join('')}</tbody></table></div></div>`).join('') || '<div class="card muted">No cash is being held.</div>'}
   <h2>Recent handovers</h2><div class="table-wrap"><table><tbody>${d.handovers.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.name)}</td><td class="num">${money(h.amount)}</td></tr>`).join('') || '<tr><td class="muted">None</td></tr>'}</tbody></table></div>`);
-  $$$('[data-t]').forEach((b) => b.onclick = async () => {
+  $('[data-t]').forEach((b) => b.onclick = async () => {
     if (!confirm(`Confirm you received ${money(b.dataset.a)} from this teacher?`)) return;
     await act(() => S('/cash/handover', { body: { teacher_id: b.dataset.t, amount: Number(b.dataset.a) } }), 'Handover confirmed; receipts issued'); render();
   });
@@ -1296,7 +1311,7 @@ route('/notices', async () => {
   view(`<div class="row between"><h1>Notices</h1>${ME.kind === 'staff' ? '<button class="btn primary" id="new">New notice</button>' : ''}</div>
   <div class="card">${rows.map(noticeItem).join('') || '<span class="muted">No notices yet</span>'}</div>`);
   for (const n of rows) S(`/notices/${n.id}/read`, { body: {} }).catch(() => {});
-  $$$('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice?')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE' }), 'Removed'); render(); });
+  $('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice?')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE' }), 'Removed'); render(); });
   const nb = $('#new'); if (nb) nb.onclick = () => modal(`<h2>New notice</h2><form id="nf" class="form">
     <div><label>Send to</label><select name="audience" id="aud">
       ${ME.role === 'admin' || ME.subrole === 'office' ? '<option value="school">Whole school (all parents and staff)</option>' : ''}
@@ -1363,12 +1378,12 @@ route('/results', async () => {
       e.preventDefault();
       const r = await act(() => S('/results', { form: new FormData(e.target) }));
       $('#out', m).innerHTML = r.results.map((x) => `<div class="small">${x.ok ? '✓' : '⚠'} ${esc(x.file)} ${x.ok ? '→ ' + esc(x.student) : '— ' + esc(x.error)}</div>`).join('') + '<button type="button" class="btn" data-close>Done</button>';
-      $$$('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
+      $('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
     };
   });
-  $$$('[data-pub]').forEach((b) => b.onclick = async () => { const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title } })); toast(`Published ${r.published}; parents notified`); render(); });
-  $$$('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Delete this result? It goes to the recycle bin for 30 days.')) return; await act(() => S('/results/' + a.dataset.del, { method: 'DELETE' }), 'Deleted'); render(); });
-  $$$('[data-assign]').forEach((b) => b.onclick = async () => {
+  $('[data-pub]').forEach((b) => b.onclick = async () => { const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title } })); toast(`Published ${r.published}; parents notified`); render(); });
+  $('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Delete this result? It goes to the recycle bin for 30 days.')) return; await act(() => S('/results/' + a.dataset.del, { method: 'DELETE' }), 'Deleted'); render(); });
+  $('[data-assign]').forEach((b) => b.onclick = async () => {
     const q = prompt('Registration number of the student?'); if (!q) return;
     const r = await S('/search?q=' + encodeURIComponent(q)); const s = r.students.find((x) => x.reg_no === q) || r.students[0];
     if (!s) return toast('No student found');
@@ -1386,8 +1401,8 @@ route('/requests', async () => {
   <td>${badge(r.status, r.status === 'approved' ? 'ok' : r.status === 'declined' ? 'bad' : 'warn')}</td>
   <td class="row">${ME.isAdmin && r.status === 'open' ? `<button class="btn small primary" data-a="${r.id}">Approve</button><button class="btn small" data-d="${r.id}">Decline</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No requests</td></tr>'}
   </tbody></table></div>${ME.isAdmin ? '<p class="small muted">Student detail requests: open the student and edit the record, then approve.</p>' : ''}`);
-  $$$('[data-a]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true } }), 'Approved'); render(); });
-  $$$('[data-d]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false } }), 'Declined'); render(); });
+  $('[data-a]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.a}/decide`, { body: { approve: true } }), 'Approved'); render(); });
+  $('[data-d]').forEach((b) => b.onclick = async () => { await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false } }), 'Declined'); render(); });
 });
 
 // ---------- WhatsApp / SMS from the admin's own phone ----------
@@ -1411,9 +1426,9 @@ route('/outbox', async () => {
     <a class="btn small" data-send="${r.id}" data-ch="sms" href="sms:${esc(r.phone)}?body=${encodeURIComponent(r.text)}">SMS</a></td></tr>`).join('')}</tbody></table></div></div>`).join('') || '<div class="card muted">Nothing to send. Absence alerts, fee reminders, receipts and notices show up here automatically.</div>'}`);
   const glist = Object.values(groups);
   const mark = (ids, channel, status = 'sent') => S('/outbox/mark', { body: { ids, channel, status } }).catch(() => {});
-  $$$('[data-send]').forEach((a) => a.addEventListener('click', () => { mark([a.dataset.send], a.dataset.ch); const tr = $('#r_' + a.dataset.send); if (tr) tr.style.opacity = '.4'; }));
-  $$$('[data-smsall]').forEach((a) => a.addEventListener('click', () => { mark(glist[a.dataset.smsall].map((r) => r.id), 'sms'); setTimeout(render, 1500); }));
-  $$$('[data-skipall]').forEach((b) => b.onclick = async () => { await mark(glist[b.dataset.skipall].map((r) => r.id), null, 'skipped'); render(); });
+  $('[data-send]').forEach((a) => a.addEventListener('click', () => { mark([a.dataset.send], a.dataset.ch); const tr = $('#r_' + a.dataset.send); if (tr) tr.style.opacity = '.4'; }));
+  $('[data-smsall]').forEach((a) => a.addEventListener('click', () => { mark(glist[a.dataset.smsall].map((r) => r.id), 'sms'); setTimeout(render, 1500); }));
+  $('[data-skipall]').forEach((b) => b.onclick = async () => { await mark(glist[b.dataset.skipall].map((r) => r.id), null, 'skipped'); render(); });
   $('#compose').onclick = () => modal(`<h2>New WhatsApp / SMS</h2><form id="cf" class="form">
     <div><label>To</label><select name="to"><option value="parents">Parents</option><option value="teachers">Teachers</option><option value="all">Parents and teachers</option></select></div>
     <div><label>Class (parents only)</label><select name="class_id"><option value="">All classes</option>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
@@ -1499,7 +1514,7 @@ route('/settings', async () => {
     <div id="accts">${(list.length ? list : [{}]).map(row).join('')}</div>
     <div class="row"><button class="btn" id="addacct">Add another account</button>${ME.role === 'admin' ? '<button class="btn primary" id="saveacct">Save accounts</button>' : ''}</div>`;
     setTimeout(() => {
-      const bindRm = () => $$$('.acct .rm').forEach((b) => b.onclick = () => b.closest('.acct').remove());
+      const bindRm = () => $('.acct .rm').forEach((b) => b.onclick = () => b.closest('.acct').remove());
       bindRm();
       $('#addacct').onclick = () => { $('#accts').insertAdjacentHTML('beforeend', row()); bindRm(); };
       $('#saveacct').onclick = async () => {
@@ -1519,8 +1534,8 @@ route('/settings', async () => {
     await act(() => S('/settings', { body: { settings, schoolName: b.schoolName } }), 'Saved'); await refreshMe(); render();
   };
   const hf = $('#hf'); if (hf) hf.onsubmit = async (e) => { e.preventDefault(); await act(() => S('/holidays', { body: formData(e.target) }), 'Added'); render(); };
-  $$$('[data-dh]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S('/holidays/' + a.dataset.dh, { method: 'DELETE' }), 'Removed'); render(); });
-  $$$('[data-so]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/devices/${b.dataset.so}/signout`, { body: {} }), 'Signed out'); render(); });
+  $('[data-dh]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S('/holidays/' + a.dataset.dh, { method: 'DELETE' }), 'Removed'); render(); });
+  $('[data-so]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/devices/${b.dataset.so}/signout`, { body: {} }), 'Signed out'); render(); });
   const exc = $('#exc'); if (exc) exc.onclick = async () => {
     const b = formData($('#pf'));
     const nextClass = {}; for (const [k, v] of Object.entries(b)) if (k.startsWith('next_')) nextClass[k.slice(5)] = v;
@@ -1530,7 +1545,7 @@ route('/settings', async () => {
     <div class="table-wrap"><table><tbody>${students.map((s) => `<tr><td>${esc(s.name)}</td><td>${esc(s.class_name)}</td><td><select data-st="${s.id}"><option value="promoted">Promote</option><option value="not promoted">Not promoted (repeat)</option><option value="left">Left school</option><option value="passed out">Passed out</option></select></td></tr>`).join('')}</tbody></table></div>
     <button class="btn primary" id="run" style="margin-top:12px">Promote everyone and start ${esc(b.new_session)}</button>`;
     $('#run').onclick = async () => {
-      $$$('[data-st]').forEach((sel) => { if (sel.value !== 'promoted') decisions[sel.dataset.st] = { outcome: sel.value }; });
+      $('[data-st]').forEach((sel) => { if (sel.value !== 'promoted') decisions[sel.dataset.st] = { outcome: sel.value }; });
       if (!confirm('Start the new session? The old session becomes read-only.')) return;
       const r = await act(() => S('/promotion', { body: { new_session: b.new_session, next_class: nextClass, decisions } }));
       toast('Done: ' + Object.entries(r.counts).map(([k, v]) => `${v} ${k}`).join(', ')); render();
@@ -1598,8 +1613,8 @@ route('/owner', async () => {
   <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 2).toFixed(1)} MB</td><td class="small">${s.support_until && s.support_until > new Date().toISOString() ? 'until ' + fmtTime(s.support_until) : '–'}</td>
   <td><button class="btn small" data-ed="${s.id}">Change</button></td></tr>`).join('')}
   </tbody></table></div><p class="small muted">You see billing and usage only — never a school's records.</p>`);
-  $$$('[data-ok]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/owner/slips/${b.dataset.ok}/confirm`, { body: {} }), 'Confirmed; school renewed'); render(); });
-  $$$('[data-no]').forEach((b) => b.onclick = async () => { const reason = prompt('Reason for rejecting?'); if (!reason) return; await act(() => api(`/api/owner/slips/${b.dataset.no}/reject`, { body: { reason } }), 'Rejected'); render(); });
+  $('[data-ok]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/owner/slips/${b.dataset.ok}/confirm`, { body: {} }), 'Confirmed; school renewed'); render(); });
+  $('[data-no]').forEach((b) => b.onclick = async () => { const reason = prompt('Reason for rejecting?'); if (!reason) return; await act(() => api(`/api/owner/slips/${b.dataset.no}/reject`, { body: { reason } }), 'Rejected'); render(); });
   $('#bill').onclick = async () => { await act(() => api('/api/owner/run-billing', { body: {} }), 'Billing run complete'); render(); };
   $('#new').onclick = () => modal(`<h2>Add school</h2><form id="nf" class="form"><div class="full"><label>School name</label><input name="name" required></div>
     <div><label>Main admin name</label><input name="admin_name" required></div><div><label>Admin email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
@@ -1611,7 +1626,7 @@ route('/owner', async () => {
     <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#af', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/announce', { body: formData(e.target) }), 'Sent'); closeModal(); };
   });
-  $$$('[data-ed]').forEach((b) => b.onclick = () => {
+  $('[data-ed]').forEach((b) => b.onclick = () => {
     const s = d.schools.find((x) => x.id === b.dataset.ed);
     modal(`<h2>${esc(s.name)}</h2><form id="ef" class="form">
       <div><label>Tier</label><select name="tier">${d.plans.map((p) => `<option ${p.tier === s.tier ? 'selected' : ''}>${p.tier}</option>`).join('')}</select></div>
