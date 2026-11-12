@@ -1040,8 +1040,9 @@ export class SchoolDO extends DurableObject<Env> {
       }
       if (conflicts.length) return c.json({ error: 'Substitute teacher timetable conflict. Choose another teacher or resolve the schedule first.', conflicts: [...new Set(conflicts)] }, 409);
       const id = 'sub_' + rid(10);
-      this.run('INSERT OR REPLACE INTO class_substitutions (id,class_id,original_teacher_id,substitute_teacher_id,date,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
-        id, classId, cl!.class_teacher_id || null, teacherId, date, reason, a.key, now());
+      const rate = Number(this.one('SELECT amount_per_day FROM class_substitution_rates WHERE class_id=?', classId)?.amount_per_day || 0);
+      this.run('INSERT OR REPLACE INTO class_substitutions (id,class_id,original_teacher_id,substitute_teacher_id,date,reason,created_by,created_at,rate_amount,status) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        id, classId, cl!.class_teacher_id || null, teacherId, date, reason, a.key, now(), rate, 'assigned');
       this.audit(a, 'teacher.substitute.assign', 'class', classId, { date, original_teacher_id: cl!.class_teacher_id, substitute_teacher_id: teacherId, reason });
       if (cl!.class_teacher_id) this.notify('s:' + cl!.class_teacher_id, 'Class substitute assigned', teacher.name + ' will cover ' + cl!.name + ' on ' + date + '.');
       this.notify('s:' + teacherId, 'Substitute class assigned', 'You are assigned to ' + cl!.name + ' on ' + date + '. Open Attendance to take the register.');
@@ -1054,9 +1055,70 @@ export class SchoolDO extends DurableObject<Env> {
       const row = this.one('SELECT * FROM class_substitutions WHERE id=?', c.req.param('id'));
       if (!row) fail(404, 'Substitute assignment not found');
       if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, row.class_id)))) fail(403, 'Only the administrator or scoped attendance manager can remove this assignment');
+      if (row.status === 'completed' || row.bonus_paid_at) fail(409, 'A completed substitution cannot be removed; keep it in the payroll history');
       this.run('DELETE FROM class_substitutions WHERE id=?', row.id);
       this.audit(a, 'teacher.substitute.remove', 'class', row.class_id, { date: row.date, substitute_teacher_id: row.substitute_teacher_id });
       return c.json({ ok: true });
+    });
+
+    // ----- institution-controlled substitute rates and monthly bonus ledger -----
+    app.get('/substitution-rates', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Staff access required');
+      let rows = this.q('SELECT r.class_id,r.amount_per_day,r.updated_at,c.name AS class_name FROM class_substitution_rates r JOIN classes c ON c.id=r.class_id ORDER BY c.grade,c.name');
+      if (!this.isFullAdmin(a)) rows = rows.filter((r) => a.scopeAll || this.inClassScope(a, r.class_id) || a.teaches.has(r.class_id));
+      return c.json({ rates: rows, editable: this.isFullAdmin(a), defaultRate: 0 });
+    });
+    app.post('/substitution-rates', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the per-class substitution rate before saving');
+      const classId = String(b.class_id || ''), amount = Number(b.amount_per_day);
+      if (!this.one('SELECT 1 FROM classes WHERE id=? AND active=1', classId)) fail(404, 'Active class not found');
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 1000000) fail(400, 'Enter a valid daily rate in whole rupees (0 to 1,000,000)');
+      this.run('INSERT OR REPLACE INTO class_substitution_rates (class_id,amount_per_day,updated_by,updated_at) VALUES (?,?,?,?)', classId, amount, a.key, now());
+      this.audit(a, 'substitution.rate.update', 'class', classId, { amount_per_day: amount });
+      return c.json({ ok: true, class_id: classId, amount_per_day: amount });
+    });
+    app.get('/substitution-bonuses', (c) => {
+      const a = c.get('actor');
+      if (a.type !== 'staff') fail(403, 'Staff access required');
+      const month = c.req.query('month') || pkt().month;
+      if (!/^\d{4}-\d{2}$/.test(month)) fail(400, 'Month must be YYYY-MM');
+      let rows = this.q("SELECT x.*,c.name AS class_name,t.name AS teacher_name,t.phone AS teacher_phone FROM class_substitutions x JOIN classes c ON c.id=x.class_id JOIN staff t ON t.id=x.substitute_teacher_id WHERE substr(x.date,1,7)=? ORDER BY t.name,x.date,c.name", month);
+      if (!this.isFullAdmin(a)) {
+        if (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage')) rows = rows.filter((x) => this.inClassScope(a, x.class_id));
+        else rows = rows.filter((x) => x.substitute_teacher_id === a.id);
+      }
+      const grouped: Record<string, any> = {};
+      for (const r of rows) {
+        const key = r.substitute_teacher_id;
+        if (!grouped[key]) grouped[key] = { teacher_id:key,teacher_name:r.teacher_name,phone:r.teacher_phone,days:0,completed:0,pending:0,bonus_total:0,paid_total:0,unpaid_total:0,substitutions:[] };
+        const g = grouped[key]; g.days++;
+        if (r.status === 'completed') g.completed++; else if (r.status === 'assigned') g.pending++;
+        if (r.status === 'completed') g.bonus_total += Number(r.rate_amount || 0);
+        if (r.bonus_paid_at) g.paid_total += Number(r.rate_amount || 0);
+        else if (r.status === 'completed') g.unpaid_total += Number(r.rate_amount || 0);
+        g.substitutions.push({ id:r.id,class_id:r.class_id,class_name:r.class_name,date:r.date,reason:r.reason,status:r.status,rate_amount:r.rate_amount,completed_at:r.completed_at,bonus_paid_at:r.bonus_paid_at,bonus_note:r.bonus_note });
+      }
+      return c.json({ month, teachers:Object.values(grouped), totals:{ days:rows.length,completed:rows.filter((r)=>r.status==='completed').length,
+        bonus_total:rows.filter((r)=>r.status==='completed').reduce((n,r)=>n+Number(r.rate_amount||0),0),
+        paid_total:rows.filter((r)=>!!r.bonus_paid_at).reduce((n,r)=>n+Number(r.rate_amount||0),0),
+        unpaid_total:rows.filter((r)=>r.status==='completed'&&!r.bonus_paid_at).reduce((n,r)=>n+Number(r.rate_amount||0),0) } });
+    });
+    app.post('/substitution-bonuses/mark-paid', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the selected substitution bonus payment batch');
+      const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].slice(0,500);
+      if (!ids.length) fail(400, 'Select at least one completed substitution');
+      const rows = this.q("SELECT * FROM class_substitutions WHERE status='completed' AND bonus_paid_at IS NULL AND id IN (" + ids.map(()=>'?').join(',') + ")", ...ids);
+      if (rows.length !== ids.length) fail(409, 'Some selected substitutions are not completed, are already paid, or no longer exist. Refresh the month view.');
+      const when = now(), note = String(b.note || '').trim() || null;
+      this.tx(() => { for (const r of rows) this.run('UPDATE class_substitutions SET bonus_paid_at=?,bonus_paid_by=?,bonus_note=? WHERE id=? AND bonus_paid_at IS NULL', when, a.key, note, r.id); });
+      const amount = rows.reduce((n,r)=>n+Number(r.rate_amount||0),0);
+      this.audit(a, 'substitution.bonus.pay', null, null, { ids, count:rows.length, amount, note });
+      return c.json({ ok:true,count:rows.length,amount });
     });
 
     // ----- timetable: weekly periods with server-side teacher, class and room conflict checks -----
