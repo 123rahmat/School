@@ -1115,6 +1115,39 @@ route('/staff/:id', async ({ id }) => {
   const on = (i, f) => { const b = $('#' + i); if (b) b.onclick = f; };
   on('edit', () => staffForm(t));
   on('react', async () => { await act(() => S(`/staff/${id}/reactivate`, { body: {} }), 'Reactivated'); render(); });
+  on('replace', () => modal(`<h2>Replace ${esc(t.name)} with a new teacher</h2>
+    <p class="small muted">This creates a new teacher account with a separate permanent ID. The old teacher is signed out and marked as former. Past attendance, student records, messages and audit history remain attached to the old profile.</p>
+    <form id="replaceTeacherForm" class="form">
+      <div><label>New teacher's full name *</label><input name="name" required maxlength="120"></div>
+      <div><label>New teacher's Google email *</label><input name="email" type="email" required autocomplete="off"></div>
+      <div><label>New teacher's phone (optional)</label><input name="phone" inputmode="tel" placeholder="03xx xxxxxxx"></div>
+      <div><label>Subjects (optional)</label><input name="subjects" placeholder="Mathematics, Physics"></div>
+      <div><label>Replacement date</label><input name="from_date" type="date" value="${today()}" required></div>
+      <div class="full stack">
+        <label class="row"><input type="checkbox" name="transfer_classes" value="1" checked> Transfer current class-teacher assignments</label>
+        <label class="row"><input type="checkbox" name="transfer_subjects" value="1" checked> Transfer current subject assignments</label>
+        <label class="row"><input type="checkbox" name="transfer_timetable" value="1" checked> Transfer timetable periods</label>
+      </div>
+      <p class="full small muted">The new teacher must sign in with their own verified Google account. Untransferred responsibilities are unassigned. The former teacher's history is not deleted.</p>
+      <div class="full row"><button class="btn primary">Create new teacher and replace</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (m) => {
+      $('#replaceTeacherForm', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const b = formData(form);
+        for (const key of ['transfer_classes', 'transfer_subjects', 'transfer_timetable']) b[key] = !!form.elements[key].checked;
+        let result = await act(() => S(`/staff/${id}/replace`, { body: b }));
+        if (result?.needsConfirm) {
+          if (!confirm(result.message + '\n\nContinue only after the cash has been physically handed over or settled.')) return;
+          result = await act(() => S(`/staff/${id}/replace`, { body: { ...b, confirm_cash: true } }));
+        }
+        if (result?.new_id) {
+          closeModal();
+          toast('Replacement teacher created. The former account is now inactive.');
+          go('/staff/' + result.new_id);
+        }
+      };
+    }));
   on('deact', () => modal(`<h2>Deactivate ${esc(t.name)}</h2><p class="small">They are signed out of all devices at once. Their history stays. Hand their classes to another teacher from the class page.</p>
     <form id="df" class="form"><div><label>Leaving date</label><input type="date" name="date" value="${today()}"></div><div><label>Reason</label><input name="reason"></div>
     <div class="full row"><button class="btn danger">Deactivate</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
