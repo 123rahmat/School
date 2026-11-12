@@ -265,6 +265,8 @@ function connectionBannerHtml() {
 function updateConnectionBanner() {
   const slot = $('#connection-notice-slot');
   if (slot) slot.innerHTML = connectionBannerHtml();
+  const syncSlot = $('#sync-status-slot');
+  if (syncSlot) syncSlot.innerHTML = syncStatusHtml();
 }
 
 function toast(msg) {
@@ -414,7 +416,7 @@ function view(html) {
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
         <button class="btn small hidden" id="install">Install app</button>
       </div>
-      <div class="content">${billingBanner()}${syncStatusHtml()}${html}</div>
+      <div class="content">${billingBanner()}<div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
     </div>
   </div>`;
   const side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
