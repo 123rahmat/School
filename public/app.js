@@ -1268,8 +1268,9 @@ route('/class/:id', async ({ id }) => {
   const d = await S('/classes/' + id);
   const staff = (ME.isFullAdmin || ME.canManageAttendance) ? await S('/staff') : [];
   view(`<div class="row between"><div><h1 style="margin:0">Class ${esc(d.class.name)}</h1><div class="muted">Class teacher: ${esc(d.class.class_teacher_name || '–')}${d.class.room ? ' · Room ' + esc(d.class.room) : ''}</div></div>
-  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button>' : ''}${d.canManageSubstitution ? '<button class="btn primary" id="substitute">Assign substitute</button>' : ''}</div></div>
-  ${d.substitution ? `<div class="banner info">Substitute today: <b>${esc(d.substitution.substitute_teacher_name)}</b> (${esc(d.substitution.reason)}).${d.canManageSubstitution ? ` <button class="btn small" id="remove-substitute">Remove assignment</button>` : ''}</div>` : ''}
+  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button><button class="btn" id="subrate">Set substitution rate</button>' : ''}${d.canManageSubstitution ? '<button class="btn primary" id="substitute">Assign substitute</button>' : ''}</div></div>
+  <div class="small muted">Substitution rate: <b>${money(d.substitutionRate || 0)}</b> per class per day ${d.substitutionRate ? '' : '· Not set yet (Rs 0)'}</div>
+  ${d.substitution ? `<div class="banner info">Substitute today: <b>${esc(d.substitution.substitute_teacher_name)}</b> (${esc(d.substitution.reason)}). Rate: ${money(d.substitution.rate_amount || 0)} · ${esc(d.substitution.status)}.${d.canManageSubstitution ? ` <button class="btn small" id="remove-substitute">Remove assignment</button>` : ''}</div>` : ''}
   <h2>Subject teachers</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)}: ${esc(s.teacher_name || '–')}`).join(' · ') || '<span class="muted">None</span>'}</div>
   <h2>Today: ${badge(d.today.status, d.today.status === 'submitted' ? 'ok' : 'warn')}</h2>
   <div class="table-wrap"><table><thead><tr><th>Reg</th><th>Student</th><th>Today</th>${d.fees ? '<th class="num">Fee this month</th><th>Status</th>' : ''}</tr></thead><tbody>
@@ -1277,7 +1278,10 @@ route('/class/:id', async ({ id }) => {
     return `<tr><td>${esc(s.reg_no)}</td><td><a href="/student/${s.id}">${esc(s.name)}</a> ${s.status === 'pending' ? badge('pending', 'warn') : ''}</td><td>${d.today.status === 'new' ? '–' : STATUS[t?.status] || '–'}</td>
     ${d.fees ? `<td class="num">${f ? money(f.total) : '–'}</td><td>${f ? badge(f.status, VOUCHER_STATUS[f.status]) : ''}</td>` : ''}</tr>`; }).join('')}
   </tbody></table></div>
-  <h2>Class teacher history</h2><div class="card small">${d.history.map((h) => `${esc(h.name)}: ${fmtDate(h.from_date)} – ${h.to_date ? fmtDate(h.to_date) : 'now'}`).join('<br>') || '–'}</div>`);
+  <h2>Class teacher history</h2><div class="card small">${d.history.map((h) => `${esc(h.name)}: ${fmtDate(h.from_date)} – ${h.to_date ? fmtDate(h.to_date) : 'now'}`).join('<br>') || '–'}</div>
+  <h2>Substitution history</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Substitute</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>
+  ${d.substitutionHistory.map((x) => `<tr><td>${fmtDate(x.date)}</td><td>${esc(x.substitute_teacher_name)}</td><td>${esc(x.reason)}</td><td>${money(x.rate_amount || 0)}</td><td>${x.bonus_paid_at ? badge('bonus paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No substitutions recorded.</td></tr>'}
+  </tbody></table></div>`);
   const r = $('#rep'); if (r) r.onclick = () => modal(`<h2>Replace class teacher</h2><form id="rf" class="form">
     <div><label>New class teacher</label><select name="teacher_id">${staff.filter((t) => t.id !== d.class.class_teacher_id).map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
     <div><label>From date</label><input type="date" name="from_date" value="${today()}"></div>
@@ -1290,6 +1294,18 @@ route('/class/:id', async ({ id }) => {
       await act(() => S(`/classes/${id}/replace-teacher`, { body: { ...b, subjects_too: !!b.subjects_too, confirm: true } }), 'Teacher replaced'); closeModal(); render();
     };
   });
+  const rateBtn = $('#subrate');
+  if (rateBtn) rateBtn.onclick = () => modal(`<h2>Substitution rate · ${esc(d.class.name)}</h2>
+    <p class="small muted">Set the amount in whole Pakistani rupees paid for one completed substitute day in this class. The rate starts at Rs 0. Each new assignment stores a snapshot, so later rate changes do not change previous bonuses.</p>
+    <form id="ratef" class="form"><div class="full"><label>Amount per class per day (Rs)</label><input name="amount_per_day" type="number" min="0" max="1000000" step="1" value="${Number(d.substitutionRate || 0)}" required></div>
+      <div class="full row"><button class="btn primary">Save rate</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+      $('#ratef', m).onsubmit = async (e) => {
+        e.preventDefault(); const b = formData(e.target);
+        if (!confirm('Set the substitution rate for ' + d.class.name + ' to Rs ' + b.amount_per_day + ' per completed substitute day? This affects new assignments only.')) return;
+        await act(() => S('/substitution-rates', { body: { class_id:id, amount_per_day:Number(b.amount_per_day), confirm:true } }), 'Rate saved');
+        closeModal(); render();
+      };
+    });
   const subBtn = $('#substitute');
   if (subBtn) subBtn.onclick = () => modal(`<h2>Assign substitute teacher</h2>
     <p class="small muted">The substitute can mark attendance for this class on the selected date. Their existing timetable is checked for clashes.</p>
