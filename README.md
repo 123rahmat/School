@@ -143,7 +143,7 @@ npx wrangler secret put TWILIO_AUTH_TOKEN
 - Sign in with Google: create an OAuth Web client in Google Cloud Console, add your site as an authorised
   JavaScript origin, and set `GOOGLE_CLIENT_ID` under `[vars]`. The button appears on the sign-in page.
 
-With `DEV_OTP = "0"`, a code that cannot be delivered shows an error instead of appearing on screen. Then deploy:
+Google sign-in is the only authentication method. Staff and parent records must have the exact email address of the\nGoogle account they use. Phone numbers may be saved for contact and school communications, but are never accepted as\na login identity. Existing accounts that only had phone-based login must have a Google email added by the school admin.\n\nFor local development, put the Web Client ID in `.dev.vars` (do not commit that file). In Cloudflare, add\n`GOOGLE_CLIENT_ID` under the Worker’s Settings → Variables and Secrets. The client ID is public configuration; do not\nput a Google client secret in browser code or commit credentials to GitHub.\n\nThen deploy:
 
 ```bash
 npm run deploy
