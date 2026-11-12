@@ -451,7 +451,8 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   canSetFees(a: Actor, classId: string) {
-    return this.isFullAdmin(a) || (this.setting('teacher_set_fees') === '1' && a.classTeacherOf.has(classId));
+    return this.isFullAdmin(a) || (a.role === 'subadmin' && this.canFeesAll(a) && this.inClassScope(a, classId)) ||
+      (this.setting('teacher_set_fees') === '1' && a.classTeacherOf.has(classId));
   }
 
   /** Optional late fine set by the admin: fixed + per day + per month late, capped. Off unless the admin turns it on. */
@@ -684,12 +685,14 @@ export class SchoolDO extends DurableObject<Env> {
 
     app.get('/me', (c) => {
       const a = c.get('actor');
-      const classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name').filter((x) => this.isAdmin(a) || a.teaches.has(x.id));
+      const classes = this.q('SELECT id, name FROM classes WHERE active=1 ORDER BY grade, name').filter((x) =>
+        this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, x.id) && ['students.view','students.manage','fees.manage','attendance.manage','timetable.manage','syllabus.manage','classes.view'].some((p) => this.hasPermission(a, p))) || a.teaches.has(x.id));
       const children = a.type === 'guardian' ? this.q("SELECT s.id, s.name, s.reg_no, c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id WHERE s.guardian_id=? AND s.status='active'", a.id) : [];
       const settings: Row = {};
       for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = this.setting(k);
-      return c.json({ id: a.id, userId: a.publicId || null, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), canFees: this.canFeesAll(a),
-        canManageStudents: this.canManageStudents(a),
+      return c.json({ id: a.id, userId: a.publicId || null, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), isFullAdmin: this.isFullAdmin(a),
+        permissions: [...a.permissions], scopeAll: a.scopeAll, scopeClasses: [...a.scopeClasses],
+        canFees: this.canFeesAll(a), canManageStudents: this.canManageStudents(a), canManageTimetable: this.canManageTimetable(a), canManageSyllabus: this.canManageSyllabus(a),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
         outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
@@ -716,7 +719,8 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       if (a.type === 'guardian') fail(403, 'No access');
       const active = c.req.query('active') !== '0' ? 1 : 0;
-      const cols = this.isAdmin(a) ? '*' : 'id, name, role, subjects, active';
+      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view')) fail(403, 'Staff directory access has not been granted to this account');
+      const cols = this.isFullAdmin(a) ? '*' : 'id, name, role, subjects, active';
       const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
       return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
     });
