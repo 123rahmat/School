@@ -976,8 +976,8 @@ export class SchoolDO extends DurableObject<Env> {
           this.run('UPDATE classes SET name=? WHERE id=?', nextName, id);
         }
         for (const k of ['grade', 'section', 'room']) if (k in b) this.run(`UPDATE classes SET ${k}=? WHERE id=?`, k === 'grade' ? Number(b[k]) || 0 : (b[k] || null), id);
-        if (teacherChanged) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
       });
+      if (teacherChanged) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
       this.audit(a, nameChanged ? 'class.rename' : 'class.edit', 'class', id, { old_name:cl!.name, new_name:nextName, teacher_changed:teacherChanged, changes:b });
       return c.json(this.one('SELECT * FROM classes WHERE id=?', id));
     });
