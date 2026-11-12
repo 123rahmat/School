@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS staff (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT, phone TEXT,
+  id TEXT PRIMARY KEY, public_id TEXT, name TEXT NOT NULL, email TEXT, phone TEXT,
   role TEXT NOT NULL,              -- admin | subadmin | teacher
   subrole TEXT,                    -- accountant | coordinator | office (sub-admins)
   is_main INTEGER NOT NULL DEFAULT 0,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS class_subjects (
 );
 
 CREATE TABLE IF NOT EXISTS guardians (
-  id TEXT PRIMARY KEY, phone TEXT, email TEXT, name TEXT, created_at TEXT NOT NULL
+  id TEXT PRIMARY KEY, public_id TEXT, phone TEXT, email TEXT, name TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS guardians_phone ON guardians(phone);
 
