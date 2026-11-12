@@ -164,7 +164,8 @@ app.post('/api/auth/google', async (c) => {
     return c.json({ ok: true, kind: 'owner' });
   }
 
-  let rows = await loginRows(c.env, identity.email);
+  const allRows = await loginRows(c.env, identity.email);
+  let rows = allRows;
   if (!rows.length) {
     if (requestedRole === 'main_admin') fail(403, 'No main administrator profile is registered for this Google email. To create a new institution, register a new institution account.');
     if (requestedRole === 'teacher') fail(403, 'No teacher or staff profile is registered for this Google email. Ask your institution administrator to add your profile and this Google email.');
