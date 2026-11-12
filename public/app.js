@@ -419,14 +419,21 @@ function view(html) {
       <div class="content">${billingBanner()}<div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
     </div>
   </div>`;
-  const side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
+  const layout = $('.layout'), side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
+  const mobileNav = () => window.matchMedia('(max-width: 860px)').matches;
   const setNavOpen = (open) => {
-    side.classList.toggle('open', open);
-    scrim.classList.toggle('open', open);
+    if (mobileNav()) {
+      side.classList.toggle('open', open);
+      scrim.classList.toggle('open', open);
+    } else {
+      layout.classList.toggle('nav-collapsed', !open);
+      side.classList.remove('open');
+      scrim.classList.remove('open');
+    }
     menu.setAttribute('aria-expanded', String(open));
-    menu.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+    menu.setAttribute('aria-label', open ? 'Collapse navigation' : 'Expand navigation');
   };
-  menu.onclick = () => setNavOpen(!side.classList.contains('open'));
+  menu.onclick = () => setNavOpen(mobileNav() ? !side.classList.contains('open') : layout.classList.contains('nav-collapsed'));
   scrim.onclick = () => setNavOpen(false);
   $('#side nav a').forEach((a) => a.addEventListener('click', () => setNavOpen(false)));
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
