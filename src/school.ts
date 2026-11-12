@@ -959,11 +959,26 @@ export class SchoolDO extends DurableObject<Env> {
     app.patch('/classes/:id', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const id = c.req.param('id'); const b = await c.req.json<any>();
-      const cl = this.one('SELECT * FROM classes WHERE id=?', id); if (!cl) fail(404, 'Not found');
-      if ('class_teacher_id' in b && b.class_teacher_id !== cl!.class_teacher_id && b.confirm !== true) fail(400, 'Confirm the class teacher reassignment before saving');
-      for (const k of ['name', 'grade', 'section', 'room']) if (k in b) this.run(`UPDATE classes SET ${k}=? WHERE id=?`, b[k], id);
-      if ('class_teacher_id' in b && b.class_teacher_id !== cl!.class_teacher_id) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
-      this.audit(a, 'class.edit', 'class', id, b);
+      const cl = this.one('SELECT * FROM classes WHERE id=? AND active=1', id); if (!cl) fail(404, 'Active class not found');
+      const nextName = 'name' in b ? String(b.name || '').trim() : cl!.name;
+      if (!nextName) fail(400, 'Class name is required');
+      if (this.one('SELECT 1 FROM classes WHERE lower(name)=lower(?) AND id<>? AND active=1', nextName, id)) fail(409, 'Another active class already has this name');
+      const nameChanged = nextName !== cl!.name;
+      const teacherChanged = 'class_teacher_id' in b && String(b.class_teacher_id || '') !== String(cl!.class_teacher_id || '');
+      if ((nameChanged || teacherChanged) && b.confirm !== true) fail(400, 'Review the class rename or teacher reassignment and confirm before saving');
+      if (teacherChanged && b.class_teacher_id) {
+        const teacher = this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", b.class_teacher_id);
+        if (!teacher) fail(400, 'Choose an active teacher account');
+      }
+      this.tx(() => {
+        if (nameChanged) {
+          this.run('UPDATE enrollments SET class_name_snapshot=? WHERE class_id=? AND class_name_snapshot IS NULL', cl!.name, id);
+          this.run('UPDATE classes SET name=? WHERE id=?', nextName, id);
+        }
+        for (const k of ['grade', 'section', 'room']) if (k in b) this.run(`UPDATE classes SET ${k}=? WHERE id=?`, k === 'grade' ? Number(b[k]) || 0 : (b[k] || null), id);
+        if (teacherChanged) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
+      });
+      this.audit(a, nameChanged ? 'class.rename' : 'class.edit', 'class', id, { old_name:cl!.name, new_name:nextName, teacher_changed:teacherChanged, changes:b });
       return c.json(this.one('SELECT * FROM classes WHERE id=?', id));
     });
     app.post('/classes/:id/replace-teacher', async (c) => {
