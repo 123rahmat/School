@@ -31,12 +31,21 @@ assert.match(app, /Use in browser/, 'Landing page must provide browser access');
 assert.match(app, /Install app/, 'Landing page must provide install action');
 assert.match(app, /route\('\/login'/, 'Google login page must exist');
 assert.match(app, /route\('\/signup'/, 'Google signup page must exist');
+assert.match(app, /data-login-role="main_admin"/, 'Main administrator sign-in choice must exist');
+assert.match(app, /data-login-role="teacher"/, 'Teacher sign-in choice must exist');
+assert.match(app, /data-login-role="parent"/, 'Parent sign-in choice must exist');
+assert.match(app, /isInstalledApp\(\)/, 'Installed-app entry routing must be device aware');
+assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
+assert.match(school, /publicId: s!\.public_id/, 'Staff accounts must expose their assigned account ID');
+assert.match(school, /publicId: g!\.public_id/, 'Parent accounts must expose their assigned account ID');
+assert.match(school, /lower\(hex\(randomblob\(16\)\)\)/, 'Account IDs must be generated as opaque hexadecimal values');
+assert.match(school, /userId: u\.public_id/, 'Administrator search must return account IDs for lookup');
 assert.match(app, /This Google account is not linked to an institution yet/, 'Unknown Google emails must be directed to signup or their institution admin');
 assert.match(app, /att-outbox-v2:/, 'Offline attendance queue must be identity-scoped');
 assert.match(app, /CLEAR_PRIVATE_CACHES/, 'Private API caches must be purged when the account changes');
 assert.match(app, /attendance drafts and submissions are saved on the device/i, 'Offline capability must be described accurately');
 
-assert.match(sw, /const VERSION = 'v4'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v7'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /beforeinstallprompt|CLEAR_PRIVATE_CACHES/, 'Service worker must support private cache clearing');
 assert.match(sw, /caches\.open\('api-' \+ VERSION\)/, 'Previously opened API reads should be cached for offline use');
 
