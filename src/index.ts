@@ -226,6 +226,9 @@ app.post('/api/signup/google', async (c) => {
   });
   const ctx = await ctxFor(c.env, schoolId, 'staff', 'system');
   const me = await callSchoolJson(c.env, ctx, '/internal/main-admin', {});
+  if (typeof me.userId !== 'string' || !/^[a-f0-9]{32}$/.test(me.userId)) {
+    fail(503, 'The new main administrator profile was created without its secure account ID. Contact support before retrying registration.');
+  }
   await createSession(c, schoolId, 'staff', me.id, adminName);
   return c.json({ ok: true, kind: 'staff', schoolId });
 });
