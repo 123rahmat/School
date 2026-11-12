@@ -185,7 +185,7 @@ function nav() {
     items.push(`<div class="group">People</div>`, link('/students', 'Students'));
     if (ME.isAdmin) items.push(link('/staff', 'Teachers & staff'));
     items.push(link('/classes', 'Classes'));
-    items.push(`<div class="group">Teaching</div>`, link('/timetable', 'Timetable'), link('/syllabus', 'Syllabus'));
+    // Class and subject assignments are managed from the Classes workspace.
     items.push(`<div class="group">Daily work</div>`, link('/attendance', 'Attendance'));
     if (ME.canFees || ME.classTeacherOf.length) items.push(link('/fees', 'Fees'));
     items.push(link('/cash', 'Cash held'));
@@ -1108,12 +1108,11 @@ function staffForm(t = null) {
     ['dashboard.view', 'Dashboard overview'], ['staff.view', 'View staff directory'],
     ['students.view', 'View student profiles'], ['students.manage', 'Add and edit student records'],
     ['fees.manage', 'Manage fees, vouchers, payments and fee reports'], ['attendance.manage', 'Manage attendance and corrections'],
-    ['timetable.manage', 'Manage weekly timetable and teacher periods'], ['syllabus.manage', 'Upload and manage syllabus documents'],
     ['classes.view', 'View assigned classes'], ['notices.manage', 'Create and manage notices'], ['results.manage', 'Upload, assign and publish results'],
   ];
   const defaults = t?.subrole === 'accountant' ? ['students.view','fees.manage','classes.view','dashboard.view']
-    : t?.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','timetable.manage','syllabus.manage','notices.manage','dashboard.view']
-    : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','timetable.manage','syllabus.manage','notices.manage','dashboard.view'];
+    : t?.subrole === 'coordinator' ? ['students.view','attendance.manage','classes.view','notices.manage','dashboard.view']
+    : ['students.view','students.manage','fees.manage','classes.view','attendance.manage','notices.manage','dashboard.view'];
   let currentPermissions = [];
   try { currentPermissions = Array.isArray(t?.permissions) ? t.permissions : (t?.permissions ? JSON.parse(t.permissions) : defaults); } catch { currentPermissions = defaults; }
   let scopeIds = [];
@@ -1136,7 +1135,7 @@ function staffForm(t = null) {
       '<option value="accountant" ' + (t?.subrole === 'accountant' ? 'selected' : '') + '>Accountant</option>' +
       '<option value="coordinator" ' + (t?.subrole === 'coordinator' ? 'selected' : '') + '>Coordinator</option></select></div>' +
       '<div class="full stack" id="mini-admin-config" style="display:' + (t?.role === 'subadmin' ? 'block' : 'none') + '">' +
-      '<h3 style="margin:0">Mini Admin permissions</h3><p class="small muted">Select only the tasks this person may perform. Fee, attendance, timetable and syllabus access also provides limited student identity details in the selected classes.</p>' +
+      '<h3 style="margin:0">Mini Admin permissions</h3><p class="small muted">Select only the tasks this person may perform. Fee and attendance access also provides limited student identity details in the selected classes.</p>' +
       '<div class="grid">' + permissionHtml + '</div><div class="divider"></div><h3 style="margin:0">Class scope</h3>' +
       '<label class="row" style="margin:0"><input type="checkbox" name="scope_all" id="scope-all" value="1" ' + (scopeAll ? 'checked' : '') + '> All active classes in the institution</label>' +
       '<div id="scope-class-list" style="display:' + (scopeAll ? 'none' : 'block') + '"><p class="small muted">Or select the exact classes this Mini Admin may access.</p>' +
@@ -1187,22 +1186,13 @@ route('/staff/:id', async ({ id }) => {
   ${t.left_at ? `<div class="banner warn">Left on ${fmtDate(t.left_at)} — ${esc(t.left_reason || '')}</div>` : ''}
   <h2>Subjects</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)} — <a href="/class/${s.class_id}">${esc(s.class_name)}</a>`).join('<br>') || '<span class="muted">None</span>'}</div>
   <h2>Attendance submissions</h2><div class="table-wrap"><table><tbody>${d.submissions.map((s) => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.class_name)}</td><td>${fmtTime(s.submitted_at)}</td></tr>`).join('') || '<tr><td class="muted">None</td></tr>'}</tbody></table></div>
-  <h2>Substitution bonus</h2><div class="grid" style="margin-top:10px">
-    <div class="stat"><div class="l">Completed substitute days</div><b>${d.substitutionBonus?.completed_days || 0}</b></div>
-    <div class="stat"><div class="l">Bonus earned</div><b>${money(d.substitutionBonus?.earned || 0)}</b></div>
-    <div class="stat"><div class="l">Marked paid</div><b>${money(d.substitutionBonus?.paid || 0)}</b></div>
-    <div class="stat"><div class="l">Balance to review</div><b>${money(Math.max(0,Number(d.substitutionBonus?.earned || 0)-Number(d.substitutionBonus?.paid || 0)))}</b></div>
-  </div>
-  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Class</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>
-    ${d.substitutions.map((x) => `<tr><td>${fmtDate(x.date)}</td><td>${esc(x.class_name)}</td><td>${esc(x.reason)}</td><td>${money(x.rate_amount || 0)}</td><td>${x.bonus_paid_at ? badge('bonus paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No substitute assignments recorded.</td></tr>'}
-  </tbody></table></div>
   <h2>Notices posted</h2><div class="card">${d.notices.map((n) => `<div>${esc(n.title)} <span class="muted small">${fmtTime(n.created_at)}</span></div>`).join('') || '<span class="muted">None</span>'}</div>
   ${d.history.length ? `<h2>Change history</h2><div class="table-wrap"><table><tbody>${d.history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
   const on = (i, f) => { const b = $('#' + i); if (b) b.onclick = f; };
   on('edit', () => staffForm(t));
   on('react', async () => { if (!confirm('Reactivate ' + t.name + ' and restore their sign-in access?')) return; await act(() => S(`/staff/${id}/reactivate`, { body: { confirm: true } }), 'Reactivated'); render(); });
   on('replace', () => modal(`<h2>Replace ${esc(t.name)} with a new teacher</h2>
-    <p class="small muted">This creates a separate teacher account. Nothing transfers automatically. Select each class-teacher assignment, subject assignment and timetable period that the new teacher should receive. Unselected responsibilities are left unassigned. Past attendance, results, fees, notices and audit history stay with the former teacher or their original records.</p>
+    <p class="small muted">This creates a separate teacher account. Nothing transfers automatically. Select the class-teacher and subject assignments that the new teacher should receive. Unselected responsibilities are left unassigned. Past attendance, results, fees, notices and audit history stay with the former teacher or their original records.</p>
     <form id="replaceTeacherForm" class="form">
       <div><label>New teacher's full name *</label><input name="name" required maxlength="120"></div>
       <div><label>New teacher's Google email *</label><input name="email" type="email" required autocomplete="off"></div>
@@ -1214,8 +1204,6 @@ route('/staff/:id', async ({ id }) => {
         ${d.classTeacherOf.map((x) => `<label class="row"><input type="checkbox" name="transfer_class_ids" value="${x.id}"> ${esc(x.name)} — class teacher</label>`).join('') || '<p class="small muted">No class-teacher assignments.</p>'}
         <b>Subject assignments</b>
         ${d.subjects.map((x) => `<label class="row"><input type="checkbox" name="transfer_subject_ids" value="${x.id}"> ${esc(x.class_name)} — ${esc(x.subject)}</label>`).join('') || '<p class="small muted">No subject assignments.</p>'}
-        <b>Timetable periods</b>
-        ${d.timetable.map((x) => `<label class="row"><input type="checkbox" name="transfer_timetable_ids" value="${x.id}"> ${esc(x.class_name)} — ${esc(x.subject)} · day ${x.day_of_week}, period ${x.period}, ${esc(x.start_time)}–${esc(x.end_time)}</label>`).join('') || '<p class="small muted">No timetable periods.</p>'}
       </div>
       <p class="full small muted">The replacement teacher signs in with their own verified Google account and receives a new permanent ID. You can select some assignments but leave others vacant. Cash held by the former teacher must be handed over or settled before replacement.</p>
       <div class="full row"><button class="btn primary">Create new teacher and apply selected transfers</button><button type="button" class="btn" data-close>Cancel</button></div>
@@ -1226,9 +1214,8 @@ route('/staff/:id', async ({ id }) => {
         const b = formData(form);
         b.transfer_class_ids = $$('input[name="transfer_class_ids"]:checked', form).map((x) => x.value);
         b.transfer_subject_ids = $$('input[name="transfer_subject_ids"]:checked', form).map((x) => x.value);
-        b.transfer_timetable_ids = $$('input[name="transfer_timetable_ids"]:checked', form).map((x) => x.value);
         if (!confirm('Create a NEW teacher account for ' + b.name + ' and sign out ' + t.name + '? Transfer exactly ' +
-          (b.transfer_class_ids.length + b.transfer_subject_ids.length + b.transfer_timetable_ids.length) +
+          (b.transfer_class_ids.length + b.transfer_subject_ids.length) +
           ' selected assignment(s). Everything else will be left unassigned.')) return;
         b.confirm = true;
         let result = await act(() => S(`/staff/${id}/replace`, { body: b }));
@@ -1279,7 +1266,7 @@ route('/classes', async () => {
         const teacherChanged = String(b.class_teacher_id || '') !== String(c.class_teacher_id || '');
         const nameChanged = String(b.name || '').trim() !== String(c.name || '').trim();
         if (nameChanged && !confirm('Rename the class from "' + c.name + '" to "' + b.name + '"? This changes the label only; it does not move students or change teacher assignments. Historical enrollment names will be preserved.')) return;
-        if (teacherChanged && !confirm('Change the permanent class teacher for ' + c.name + '? This changes only the class-teacher assignment, not subject or timetable assignments.')) return;
+        if (teacherChanged && !confirm('Change the permanent class teacher for ' + c.name + '? This changes only the class-teacher assignment. Subject-teacher assignments remain separate.')) return;
         b.confirm = true;
         await act(() => S('/classes/' + c.id, { method: 'PATCH', body: b }), 'Saved');
       } else {
@@ -1305,9 +1292,7 @@ route('/class/:id', async ({ id }) => {
   const d = await S('/classes/' + id);
   const staff = (ME.isFullAdmin || ME.canManageAttendance) ? await S('/staff') : [];
   view(`<div class="row between"><div><h1 style="margin:0">Class ${esc(d.class.name)}</h1><div class="muted">Class teacher: ${esc(d.class.class_teacher_name || '–')}${d.class.room ? ' · Room ' + esc(d.class.room) : ''}</div></div>
-  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button><button class="btn" id="subrate">Set substitution rate</button>' : ''}${d.canManageSubstitution ? '<button class="btn primary" id="substitute">Assign substitute</button>' : ''}</div></div>
-  <div class="small muted">Substitution rate: <b>${money(d.substitutionRate || 0)}</b> per class per day ${d.substitutionRate ? '' : '· Not set yet (Rs 0)'}</div>
-  ${d.substitution ? `<div class="banner info">Substitute today: <b>${esc(d.substitution.substitute_teacher_name)}</b> (${esc(d.substitution.reason)}). Rate: ${money(d.substitution.rate_amount || 0)} · ${esc(d.substitution.status)}.${d.canManageSubstitution ? ` <button class="btn small" id="remove-substitute">Remove assignment</button>` : ''}</div>` : ''}
+  <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button>' : ''}</div></div>
   <h2>Subject teachers</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)}: ${esc(s.teacher_name || '–')}`).join(' · ') || '<span class="muted">None</span>'}</div>
   <h2>Today: ${badge(d.today.status, d.today.status === 'submitted' ? 'ok' : 'warn')}</h2>
   <div class="table-wrap"><table><thead><tr><th>Reg</th><th>Student</th><th>Today</th>${d.fees ? '<th class="num">Fee this month</th><th>Status</th>' : ''}</tr></thead><tbody>
@@ -1316,13 +1301,11 @@ route('/class/:id', async ({ id }) => {
     ${d.fees ? `<td class="num">${f ? money(f.total) : '–'}</td><td>${f ? badge(f.status, VOUCHER_STATUS[f.status]) : ''}</td>` : ''}</tr>`; }).join('')}
   </tbody></table></div>
   <h2>Class teacher history</h2><div class="card small">${d.history.map((h) => `${esc(h.name)}: ${fmtDate(h.from_date)} – ${h.to_date ? fmtDate(h.to_date) : 'now'}`).join('<br>') || '–'}</div>
-  <h2>Substitution history</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Substitute</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>
-  ${d.substitutionHistory.map((x) => `<tr><td>${fmtDate(x.date)}</td><td>${esc(x.substitute_teacher_name)}</td><td>${esc(x.reason)}</td><td>${money(x.rate_amount || 0)}</td><td>${x.bonus_paid_at ? badge('bonus paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No substitutions recorded.</td></tr>'}
-  </tbody></table></div>`);
+`);
   const r = $('#rep'); if (r) r.onclick = () => modal(`<h2>Replace class teacher</h2><form id="rf" class="form">
     <div><label>New class teacher</label><select name="teacher_id">${staff.filter((t) => t.id !== d.class.class_teacher_id).map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
     <div><label>From date</label><input type="date" name="from_date" value="${today()}"></div>
-    <label class="full row"><input type="checkbox" name="subjects_too" value="1"> Also hand over the old teacher's subject periods in this class</label>
+    <label class="full row"><input type="checkbox" name="subjects_too" value="1"> Also hand over the old teacher's subject assignments in this class</label>
     <p class="full small muted">Past attendance and notices keep the old teacher's name.</p>
     <div class="full row"><button class="btn primary">Replace</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#rf', m).onsubmit = async (e) => {
@@ -1331,102 +1314,9 @@ route('/class/:id', async ({ id }) => {
       await act(() => S(`/classes/${id}/replace-teacher`, { body: { ...b, subjects_too: !!b.subjects_too, confirm: true } }), 'Teacher replaced'); closeModal(); render();
     };
   });
-  const rateBtn = $('#subrate');
-  if (rateBtn) rateBtn.onclick = () => modal(`<h2>Substitution rate · ${esc(d.class.name)}</h2>
-    <p class="small muted">Set the amount in whole Pakistani rupees paid for one completed substitute day in this class. The rate starts at Rs 0. Each new assignment stores a snapshot, so later rate changes do not change previous bonuses.</p>
-    <form id="ratef" class="form"><div class="full"><label>Amount per class per day (Rs)</label><input name="amount_per_day" type="number" min="0" max="1000000" step="1" value="${Number(d.substitutionRate || 0)}" required></div>
-      <div class="full row"><button class="btn primary">Save rate</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-      $('#ratef', m).onsubmit = async (e) => {
-        e.preventDefault(); const b = formData(e.target);
-        if (!confirm('Set the substitution rate for ' + d.class.name + ' to Rs ' + b.amount_per_day + ' per completed substitute day? This affects new assignments only.')) return;
-        await act(() => S('/substitution-rates', { body: { class_id:id, amount_per_day:Number(b.amount_per_day), confirm:true } }), 'Rate saved');
-        closeModal(); render();
-      };
-    });
-  const subBtn = $('#substitute');
-  if (subBtn) subBtn.onclick = () => modal(`<h2>Assign substitute teacher</h2>
-    <p class="small muted">The substitute can mark attendance for this class on the selected date. Their existing timetable is checked for clashes.</p>
-    <form id="subf" class="form">
-      <div><label>Date *</label><input type="date" name="date" min="${today()}" value="${today()}" required></div>
-      <div><label>Substitute teacher *</label><select name="substitute_teacher_id" required>${staff.filter((t) => t.active && ['teacher','subadmin','admin'].includes(t.role) && t.id !== d.class.class_teacher_id).map((t) => `<option value="${t.id}">${esc(t.name)} — ${esc(t.role)}</option>`).join('')}</select></div>
-      <div class="full"><label>Reason for substitution *</label><input name="reason" required placeholder="Class teacher absent today"></div>
-      <div class="full row"><button class="btn primary">Assign substitute</button><button type="button" class="btn" data-close>Cancel</button></div>
-    </form>`, (m) => {
-      $('#subf', m).onsubmit = async (e) => {
-        e.preventDefault(); const b = formData(e.target);
-        const teacher = staff.find((t) => t.id === b.substitute_teacher_id);
-        if (!confirm('Assign ' + teacher?.name + ' to cover ' + d.class.name + ' on ' + b.date + '? The system will block timetable conflicts.')) return;
-        try { await S('/substitutions', { body: { ...b, class_id: id, confirm: true } }); toast('Substitute assigned'); closeModal(); render(); }
-        catch (error) {
-          if (error.data?.conflicts?.length) toast(error.data.conflicts.join(' · '));
-          else toast(error.message);
-        }
-      };
-    });
-  const removeSub = $('#remove-substitute');
-  if (removeSub && d.substitution) removeSub.onclick = async () => {
-    if (!confirm('Remove ' + d.substitution.substitute_teacher_name + ' as the substitute for ' + d.class.name + ' today?')) return;
-    await act(() => S('/substitutions/' + d.substitution.id, { method: 'DELETE', body: { confirm: true } }), 'Substitute assignment removed'); render();
-  };
+
 });
 
-// ---------- timetable: weekly class schedule and printable teacher view ----------
-route('/timetable', async () => {
-  const [d, classes, staff] = await Promise.all([S('/timetable'), S('/classes'), ME.role === 'admin' ? S('/staff') : []]);
-  const days = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
-  view(`<div class="row between"><div><h1>Weekly timetable</h1><p class="muted small">Official weekly teaching periods. Teacher, class and room overlaps are checked before a change is saved.</p></div><div class="row"><button class="btn" id="ttprint">Print</button><button class="btn" id="ttcsv">Download CSV</button>${d.canManage ? '<button class="btn primary" id="ttadd">Add period</button>' : ''}</div></div>
-  <div class="table-wrap"><table><thead><tr><th>Day</th><th>Period</th><th>Time</th><th>Class</th><th>Subject</th><th>Teacher</th><th>Room</th>${d.canManage ? '<th></th>' : ''}</tr></thead><tbody>
-  ${d.slots.map((x) => `<tr><td>${days[x.day_of_week] || '–'}</td><td>${x.period}</td><td>${esc(x.start_time)}–${esc(x.end_time)}</td><td>${esc(x.class_name)}</td><td>${esc(x.subject)}</td><td>${esc(x.teacher_name || 'Unassigned')}</td><td>${esc(x.room || '–')}</td>${d.canManage ? `<td class="row"><button class="btn small" data-ttedit="${x.id}">Edit</button><button class="btn small danger" data-ttdel="${x.id}">Delete</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="${d.canManage ? 8 : 7}" class="muted">No timetable periods have been added.</td></tr>`}
-  </tbody></table></div><p class="small muted">Times use the institution's local Pakistan time. Changes take effect immediately; past attendance and teacher history are not altered.</p>`);
-  const form = (slot = null) => modal(`<h2>${slot ? 'Edit timetable period' : 'Add timetable period'}</h2>
-    <form id="ttf" class="form">
-      <div><label>Class *</label><select name="class_id" required>${classes.map((c) => `<option value="${c.id}" ${slot?.class_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-      <div><label>Subject *</label><input name="subject" required value="${esc(slot?.subject)}" placeholder="Mathematics"></div>
-      <div><label>Teacher</label><select name="teacher_id"><option value="">Unassigned</option>${staff.filter((t) => t.role === 'teacher').map((t) => `<option value="${t.id}" ${slot?.teacher_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
-      <div><label>Day *</label><select name="day_of_week">${Object.entries(days).map(([k,v]) => `<option value="${k}" ${Number(slot?.day_of_week || 1) === Number(k) ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div><label>Period number *</label><input type="number" name="period" min="1" max="16" required value="${esc(slot?.period || 1)}"></div>
-      <div><label>Start time *</label><input type="time" name="start_time" required value="${esc(slot?.start_time || '08:00')}"></div>
-      <div><label>End time *</label><input type="time" name="end_time" required value="${esc(slot?.end_time || '08:40')}"></div>
-      <div><label>Room (optional)</label><input name="room" value="${esc(slot?.room)}" placeholder="Room 4"></div>
-      <div class="full" id="tt-errors" aria-live="polite"></div>
-      <div class="full row"><button class="btn primary">${slot ? 'Save changes' : 'Add period'}</button><button type="button" class="btn" data-close>Cancel</button></div>
-    </form>`, (m) => {
-      $('#ttf', m).onsubmit = async (e) => {
-        e.preventDefault(); const b = formData(e.target); if (slot) b.id = slot.id;
-        const errors = $('#tt-errors', m); errors.innerHTML = '';
-        try { await S('/timetable', { body: b }); closeModal(); toast('Timetable saved'); render(); }
-        catch (error) {
-          if (error.data?.conflicts?.length) errors.innerHTML = `<div class="banner warn"><b>Timetable conflict — not saved</b><ul>${error.data.conflicts.map((x) => `<li>${esc(x.message)}</li>`).join('')}</ul></div>`;
-          else toast(error.message);
-        }
-      };
-    });
-  if ($('#ttadd')) $('#ttadd').onclick = () => form();
-  $('[data-ttedit]').forEach((b) => b.onclick = () => form(d.slots.find((x) => x.id === b.dataset.ttedit)));
-  $('[data-ttdel]').forEach((b) => b.onclick = async () => { if (!confirm('Delete this timetable period?')) return; await act(() => S('/timetable/' + b.dataset.ttdel, { method: 'DELETE' }), 'Period deleted'); render(); });
-  $('#ttprint').onclick = () => window.print();
-  $('#ttcsv').onclick = () => download('weekly-timetable.csv', csv([['day','period','start','end','class','subject','teacher','room'], ...d.slots.map((x) => [days[x.day_of_week],x.period,x.start_time,x.end_time,x.class_name,x.subject,x.teacher_name,x.room])]));
-});
-
-// ---------- syllabus: private class and subject PDF library ----------
-route('/syllabus', async () => {
-  const [rows, classes] = await Promise.all([S('/syllabus'), S('/classes')]);
-  view(`<div class="row between"><div><h1>Syllabus library</h1><p class="muted small">Download the official syllabus for each assigned class and subject. PDF files stay inside the institution workspace.</p></div></div>
-    ${ME.isAdmin || ME.kind === 'staff' ? `<form id="syllabusForm" class="card form" enctype="multipart/form-data"><div><label>Class *</label><select name="class_id" required>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
-      <div><label>Subject *</label><input name="subject" required placeholder="Mathematics"></div><div class="full"><label>Document title *</label><input name="title" required placeholder="Grade 7 — Term 1 syllabus"></div>
-      <div class="full"><label>PDF document *</label><input name="file" type="file" accept="application/pdf,.pdf" required></div>
-      <div class="full row"><button class="btn primary">Upload syllabus PDF</button></div></form>` : ''}
-    <div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Document</th><th>Uploaded by</th><th>Date</th><th></th></tr></thead><tbody>
-    ${rows.map((r) => `<tr><td>${esc(r.class_name)}</td><td>${esc(r.subject)}</td><td>${esc(r.title)}<div class="small muted">${esc(r.file_name || '')}</div></td><td>${esc(r.uploader || 'Staff')}</td><td>${fmtDate(String(r.created_at || '').slice(0,10))}</td><td class="row"><a class="btn small" target="_blank" href="/files/syllabus/${encodeURIComponent(String(r.file_key).split('/').slice(2).join('/'))}">Download PDF</a>${ME.role === 'admin' ? `<button class="btn small danger" data-sydel="${r.id}">Remove</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No syllabus documents uploaded yet.</td></tr>'}
-    </tbody></table></div>`);
-  const form = $('#syllabusForm');
-  if (form) form.onsubmit = async (e) => {
-    e.preventDefault(); const fd = new FormData(form);
-    try { await S('/syllabus', { method: 'POST', form: fd }); toast('Syllabus uploaded'); render(); }
-    catch (error) { toast(error.message); }
-  };
-  $('[data-sydel]').forEach((b) => b.onclick = async () => { if (!confirm('Remove this syllabus document?')) return; await act(() => S('/syllabus/' + b.dataset.sydel, { method: 'DELETE' }), 'Syllabus removed'); render(); });
-});
 // ---------- attendance ----------
 route('/attendance', async () => {
   const classes = await S('/classes');
@@ -1853,7 +1743,7 @@ route('/notifications', async () => {
 // ---------- settings ----------
 route('/settings', async () => {
   const tab = query().tab || 'general';
-  const tabs = [['general', 'General'], ...(ME.role === 'admin' ? [['payments', 'Payment accounts']] : []), ['holidays', 'Holidays'], ...(ME.isFullAdmin ? [['bonuses', 'Substitution bonuses']] : []), ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
+  const tabs = [['general', 'General'], ...(ME.role === 'admin' ? [['payments', 'Payment accounts']] : []), ['holidays', 'Holidays'], ...(ME.isMainAdmin ? [['devices', 'Signed-in devices'], ['promotion', 'Year-end promotion'], ['storage', 'Storage'], ['data', 'Backup & export']] : []), ['audit', 'Audit log']];
   let body = '';
   if (tab === 'general') {
     const { settings: s, schoolName } = await S('/settings');
@@ -1893,29 +1783,6 @@ route('/settings', async () => {
     <div class="table-wrap"><table><thead><tr><th>From class</th><th>Students</th><th>Move to</th></tr></thead><tbody>
     ${sorted.map((c, i) => `<tr><td>${esc(c.name)}</td><td>${c.students}</td><td><select name="next_${c.id}">${sorted.map((x) => `<option value="${x.id}" ${sorted.find((y) => y.grade === c.grade + 1)?.id === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="passout" ${!sorted.some((y) => y.grade === c.grade + 1) ? 'selected' : ''}>Passed out (final class)</option></select></td></tr>`).join('')}
     </tbody></table></div><button type="button" class="btn" id="exc">Next: review exceptions</button></form><div id="exlist"></div></div>`;
-  }
-  if (tab === 'bonuses') {
-    const requestedMonth = query().month || today().slice(0,7);
-    const data = await S('/substitution-bonuses?month=' + encodeURIComponent(requestedMonth));
-    const rows = data.teachers.map((teacher) => teacher.substitutions.map((x) =>
-      '<tr><td><input type="checkbox" name="bonus_ids" value="' + esc(x.id) + '" ' +
-      (x.status === 'completed' && !x.bonus_paid_at ? '' : 'disabled') + '></td>' +
-      '<td>' + fmtDate(x.date) + '</td><td>' + esc(teacher.teacher_name) + '</td><td>' + esc(x.class_name) + '</td>' +
-      '<td>' + esc(x.reason) + '</td><td>' + money(x.rate_amount || 0) + '</td><td>' +
-      (x.bonus_paid_at ? badge('paid','ok') : x.status === 'completed' ? badge('completed · unpaid','warn') : badge('assigned','')) + '</td></tr>'
-    ).join('')).join('');
-    body = '<div class="row between"><div><h2 style="margin:0">Substitution bonuses</h2>' +
-      '<p class="small muted">Only days with submitted attendance count as completed. Amounts use the class rate saved when each substitute assignment was created. Marking paid records the manual payment; it does not transfer money.</p></div>' +
-      '<form id="bonusMonth" class="row"><input id="bonus-month" type="month" value="' + esc(requestedMonth) + '"><button class="btn">Load month</button></form></div>' +
-      '<div class="grid"><div class="stat"><div class="l">Completed days</div><b>' + data.totals.completed + '</b></div>' +
-      '<div class="stat"><div class="l">Bonus total</div><b>' + money(data.totals.bonus_total) + '</b></div>' +
-      '<div class="stat"><div class="l">Marked paid</div><b>' + money(data.totals.paid_total) + '</b></div>' +
-      '<div class="stat"><div class="l">Outstanding</div><b>' + money(data.totals.unpaid_total) + '</b></div></div>' +
-      '<div class="table-wrap"><table><thead><tr><th></th><th>Date</th><th>Teacher</th><th>Class</th><th>Reason</th><th>Rate</th><th>Status</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="7" class="muted">No substitutions for this month.</td></tr>') + '</tbody></table></div>' +
-      '<div class="card form"><div><label>Batch payment note (optional)</label><input id="bonus-note" placeholder="Cash paid / bank transfer reference"></div>' +
-      '<div class="row"><button class="btn primary" id="bonus-paid">Mark selected completed days as paid</button></div>' +
-      '<p class="small muted">Select only substitution days actually included in this payment. The system records the administrator, time and note for audit.</p></div>';
   }
   if (tab === 'storage') {
     const st = await S('/storage');
@@ -1963,21 +1830,6 @@ route('/settings', async () => {
   const hf = $('#hf'); if (hf) hf.onsubmit = async (e) => { e.preventDefault(); await act(() => S('/holidays', { body: formData(e.target) }), 'Added'); render(); };
   $$('[data-dh]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); await act(() => S('/holidays/' + a.dataset.dh, { method: 'DELETE' }), 'Removed'); render(); });
   $$('[data-so]').forEach((b) => b.onclick = async () => { await act(() => api(`/api/devices/${b.dataset.so}/signout`, { body: {} }), 'Signed out'); render(); });
-  const bonusMonthForm = $('#bonusMonth');
-  if (bonusMonthForm) bonusMonthForm.onsubmit = (e) => {
-    e.preventDefault();
-    go('/settings?tab=bonuses&month=' + encodeURIComponent($('#bonus-month').value));
-  };
-  const bonusPay = $('#bonus-paid');
-  if (bonusPay) bonusPay.onclick = async () => {
-    const ids = $('input[name="bonus_ids"]:checked').map((x) => x.value);
-    if (!ids.length) return toast('Select at least one completed, unpaid substitution day.');
-    if (!confirm('Mark ' + ids.length + ' selected substitution day(s) as paid? Check the real payment first.')) return;
-    await act(() => S('/substitution-bonuses/mark-paid', {
-      body: { ids, note: $('#bonus-note').value, confirm: true }
-    }), 'Bonus payment batch recorded');
-    render();
-  };
   const exc = $('#exc'); if (exc) exc.onclick = async () => {
     const b = formData($('#pf'));
     const nextClass = {}; for (const [k, v] of Object.entries(b)) if (k.startsWith('next_')) nextClass[k.slice(5)] = v;
