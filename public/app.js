@@ -256,7 +256,14 @@ function showAuthError(error, mode = 'login') {
   }
 }
 async function mountGoogleButton(target, onCredential, buttonText = 'signin_with', mode = 'login') {
-  const cfg = await api('/api/config').catch(() => ({}));
+  let cfg;
+  try {
+    cfg = await api('/api/config');
+  } catch {
+    showAuthError(new Error('Could not load sign-in settings from the School server. Check your connection and try again.'), mode);
+    target.innerHTML = '<p class="small muted">Sign-in settings could not be loaded.</p>';
+    return;
+  }
   if (!cfg.googleClientId) {
     showAuthError(new Error('Google sign-in is not configured yet.'), mode);
     target.innerHTML = '<p class="small muted">Google sign-in is temporarily unavailable.</p>';
@@ -334,7 +341,7 @@ function landingPage() {
     <header class="landing-nav">
       <a class="landing-brand" href="#/" aria-label="School Manager home"><img src="/icon.svg" alt=""><span>School Manager</span></a>
       <nav aria-label="Main navigation">
-        <a href="#features">Features</a><a href="#institutions">Who it serves</a><a href="#how-it-works">How it works</a><a href="#contact">Contact</a>
+        <a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a><a href="#" data-scroll="contact">Contact</a>
       </nav>
       <div class="landing-nav-actions"><a class="btn" href="#/login">Sign in</a><a class="btn primary" href="#/signup">Create account</a></div>
     </header>
@@ -398,12 +405,17 @@ function landingPage() {
     </main>
     <footer class="landing-footer" id="contact">
       <div><a class="landing-brand" href="#/"><img src="/icon.svg" alt=""><span>School Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
-      <div><b>Explore</b><a href="#features">Features</a><a href="#institutions">Who it serves</a><a href="#how-it-works">How it works</a></div>
+      <div><b>Explore</b><a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a></div>
       <div><b>Account</b><a href="#/signup">Create account</a><a href="#/login">Sign in</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
       <div><b>Contact us</b><p class="small muted">For product enquiries, onboarding and support:</p><p id="landing-contact-email" class="small muted">Loading contact details…</p><p class="small muted">Contact details are published by the platform team.</p></div>
       <div class="landing-copyright">© <span id="landing-year"></span> School Manager. All rights reserved. <span>Use in browser · Install when supported</span></div>
     </footer>
   </div>`;
+  $('[data-scroll]').forEach((link) => link.addEventListener('click', (event) => {
+    event.preventDefault();
+    const section = document.getElementById(link.dataset.scroll);
+    if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
   const year = $('#landing-year');
   if (year) year.textContent = String(new Date().getFullYear());
   ['landing-install','landing-install-bottom','landing-install-footer'].forEach((id) => {
@@ -486,7 +498,7 @@ route('/setup', async () => {
   <div class="card stack">
     <p>Do these in order — each takes a minute:</p>
     <ol class="stack">
-      <li><a href="#/staff">Add your teachers</a> (they sign in with their email or phone).</li>
+      <li><a href="#/staff">Add your teachers</a> and register the Google email each person will use to sign in.</li>
       <li><a href="#/classes">Create classes</a> and pick a class teacher for each.</li>
       <li><a href="#/students">Add students</a> one by one, or import a CSV file from Excel.</li>
       <li><a href="#/fees/setup">Set the fee for each class</a>.</li>
