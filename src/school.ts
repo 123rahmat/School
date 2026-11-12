@@ -2118,19 +2118,22 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   replaceTeacherProfile(a: Actor, old: Row, next: { name: string; email: string; phone: string | null; subjects: string | null }, effective: string,
-    move: { classes: boolean; subjects: boolean; timetable: boolean }): string {
+    move: { classIds: string[]; subjectIds: string[]; timetableIds: string[] }): string {
     this.requireMain(a);
     const newId = 'tch_' + rid(12);
     const endDate = addDays(effective, -1);
+    const classIds = new Set(move.classIds);
+    const subjectIds = new Set(move.subjectIds);
+    const timetableIds = new Set(move.timetableIds);
     this.tx(() => {
-      this.run(`INSERT INTO staff (id, public_id, name, email, phone, role, subjects, search_key, created_at)
-        VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'teacher', ?, ?, ?)`,
+      this.run(\`INSERT INTO staff (id, public_id, name, email, phone, role, subjects, search_key, created_at)
+        VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'teacher', ?, ?, ?)\`,
         newId, next.name, next.email, next.phone, next.subjects, skeleton(next.name), now());
 
       const classes = this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', old.id);
       for (const cl of classes) {
         this.run('UPDATE class_teacher_assignments SET to_date=? WHERE class_id=? AND teacher_id=? AND to_date IS NULL', endDate, cl.id, old.id);
-        if (move.classes) {
+        if (classIds.has(cl.id)) {
           this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), cl.id, newId, effective);
           this.run('UPDATE classes SET class_teacher_id=? WHERE id=? AND class_teacher_id=?', newId, cl.id, old.id);
         } else {
@@ -2142,7 +2145,7 @@ export class SchoolDO extends DurableObject<Env> {
       for (const sub of subjects) {
         this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
           endDate, sub.class_id, sub.subject, old.id);
-        if (move.subjects) {
+        if (subjectIds.has(sub.id)) {
           this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', newId, sub.id);
           this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
             rid(10), sub.class_id, sub.subject, newId, effective, a.key);
@@ -2151,10 +2154,11 @@ export class SchoolDO extends DurableObject<Env> {
         }
       }
 
-      // Existing periods follow the replacement by default; later timetable edits
-      // still pass through the same server-side clash checks.
-      this.run('UPDATE timetable_slots SET teacher_id=?, updated_at=? WHERE teacher_id=?',
-        move.timetable ? newId : null, now(), old.id);
+      const periods = this.q('SELECT id FROM timetable_slots WHERE teacher_id=?', old.id);
+      for (const period of periods) {
+        this.run('UPDATE timetable_slots SET teacher_id=?, updated_at=? WHERE id=?',
+          timetableIds.has(period.id) ? newId : null, now(), period.id);
+      }
 
       this.run('UPDATE staff SET active=0, left_at=?, left_reason=? WHERE id=?',
         effective, 'Replaced by ' + next.name, old.id);
