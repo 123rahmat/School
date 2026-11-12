@@ -38,6 +38,8 @@ assert.match(app, /isInstalledApp\(\)/, 'Installed-app entry routing must be dev
 assert.match(app, /No internet connection\. Connect to the internet to verify your Google account/, 'Google sign-in must require an internet connection');
 assert.match(app, /function connectionBannerHtml\(\)/, 'Global offline and restored connection banner must exist');
 assert.match(app, /Connection restored/, 'The app must show a connection-restored banner');
+assert.match(app, /Attendance drafts can be saved on this device/, 'Offline attendance drafts must remain local');
+assert.match(app, /attendance item\\(s\\) are waiting on this device/, 'Offline banner must show queued attendance count');
 assert.match(app, /window\.addEventListener\('online', async/, 'Reconnect must revalidate the server session and sync queued attendance');
 assert.match(app, /window\.addEventListener\('offline'/, 'The app must show offline state when connectivity is lost');
 assert.match(worker, /requestedRole === 'main_admin'/, 'Server must validate the selected sign-in role');
