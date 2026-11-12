@@ -749,7 +749,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor');
       if (a.type === 'guardian') fail(403, 'No access');
       const active = c.req.query('active') !== '0' ? 1 : 0;
-      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.canManageTimetable(a)) fail(403, 'Staff directory access has not been granted to this account');
+      if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.canManageTimetable(a) && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Staff directory access has not been granted to this account');
       const cols = this.isFullAdmin(a) ? '*' : 'id, name, role, subjects, active';
       const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
       return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
@@ -804,6 +804,7 @@ export class SchoolDO extends DurableObject<Env> {
       const s = this.one('SELECT * FROM staff WHERE id=?', id); if (!s) fail(404, 'Not found');
       if (s!.is_main && !a.isMain) fail(403, 'Only the main admin can edit the main admin');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the staff account changes and confirm before saving');
       const changes: Row = {};
       for (const k of ['name', 'email', 'phone', 'subjects', 'role', 'subrole']) if (k in b) {
         let v = b[k];
@@ -863,6 +864,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (s!.is_main) fail(400, 'The main admin cannot be deactivated');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + id)!.n);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${s!.name} still holds ${money(cash)} in cash. Settle it first, or confirm to continue.` }, 409);
+      if (b.confirm !== true) fail(400, 'Confirm this account deactivation before continuing');
       this.run('UPDATE staff SET active=0, left_at=?, left_reason=? WHERE id=?', b.date || pkt().date, b.reason || null, id);
       await this.syncLogin('staff', id, [], true);
       this.audit(a, 'staff.deactivate', 'staff', id, { reason: b.reason, cash });
@@ -870,6 +872,8 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/staff/:id/reactivate', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm this staff account reactivation before continuing');
       const id = c.req.param('id');
       this.run('UPDATE staff SET active=1, left_at=NULL, left_reason=NULL WHERE id=?', id);
       const s = this.one('SELECT * FROM staff WHERE id=?', id)!;
@@ -886,6 +890,7 @@ export class SchoolDO extends DurableObject<Env> {
       const old = this.one("SELECT * FROM staff WHERE id=? AND role='teacher' AND active=1", oldId);
       if (!old) fail(404, 'Active teacher not found');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the replacement teacher details and confirm the handover');
       const name = String(b.name || '').trim();
       const email = normId(b.email || '');
       const phone = normId(b.phone || '') || null;
@@ -930,6 +935,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const id = c.req.param('id'); const b = await c.req.json<any>();
       const cl = this.one('SELECT * FROM classes WHERE id=?', id); if (!cl) fail(404, 'Not found');
+      if ('class_teacher_id' in b && b.class_teacher_id !== cl!.class_teacher_id && b.confirm !== true) fail(400, 'Confirm the class teacher reassignment before saving');
       for (const k of ['name', 'grade', 'section', 'room']) if (k in b) this.run(`UPDATE classes SET ${k}=? WHERE id=?`, b[k], id);
       if ('class_teacher_id' in b && b.class_teacher_id !== cl!.class_teacher_id) this.replaceTeacher(a, id, b.class_teacher_id || null, pkt().date);
       this.audit(a, 'class.edit', 'class', id, b);
@@ -938,6 +944,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/classes/:id/replace-teacher', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the teacher handover before saving');
       this.replaceTeacher(a, c.req.param('id'), b.teacher_id, b.from_date || pkt().date, !!b.subjects_too);
       return c.json({ ok: true });
     });
