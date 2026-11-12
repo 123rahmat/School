@@ -1035,14 +1035,14 @@ export class SchoolDO extends DurableObject<Env> {
           accountType: u.is_main ? 'Main administrator' : (u.role === 'teacher' ? 'Teacher' : 'Staff / administrator'),
           active: !!u.active,
         }));
-        const guardianUsers = this.q('SELECT public_id, name, email, phone FROM guardians').filter((u) =>
+        const guardianUsers = this.q("SELECT g.id, g.public_id, g.name, g.email, g.phone, EXISTS(SELECT 1 FROM students s WHERE s.guardian_id=g.id AND s.status='active') AS active FROM guardians g").filter((u) =>
           String(u.public_id || '').toLowerCase().includes(lower) ||
           String(u.name || '').toLowerCase().includes(lower) ||
           String(u.email || '').toLowerCase().includes(lower) ||
           (digits.length >= 4 && String(u.phone || '').endsWith(digits))
         ).map((u) => ({
           userId: u.public_id, name: u.name || 'Parent', email: u.email,
-          accountType: 'Parent / guardian', active: !!this.one("SELECT 1 FROM students WHERE guardian_id=(SELECT id FROM guardians WHERE public_id=?) AND status='active' LIMIT 1", u.public_id),
+          accountType: 'Parent / guardian', active: !!u.active,
         }));
         users = [...staffUsers, ...guardianUsers].slice(0, 20);
       }
