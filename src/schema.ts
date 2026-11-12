@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS timetable_slots (
 );
 CREATE INDEX IF NOT EXISTS timetable_class_day ON timetable_slots(class_id, day_of_week, period);
 CREATE INDEX IF NOT EXISTS timetable_teacher_day ON timetable_slots(teacher_id, day_of_week, start_time, end_time);
+-- A substitute is assigned to a class for one dated school day; normal teaching history is unchanged.
+CREATE TABLE IF NOT EXISTS class_substitutions (
+  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, original_teacher_id TEXT, substitute_teacher_id TEXT NOT NULL,
+  date TEXT NOT NULL, reason TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(class_id, date)
+);
+CREATE INDEX IF NOT EXISTS class_substitutions_teacher_date ON class_substitutions(substitute_teacher_id, date);
 
 -- Syllabus documents belong to a class and subject, and remain private to authorized school users.
 CREATE TABLE IF NOT EXISTS syllabus_documents (
