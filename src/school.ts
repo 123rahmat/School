@@ -951,6 +951,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/classes/:id/subjects', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm this subject and teacher assignment before adding it');
       if (!b.subject) fail(400, 'Subject is required');
       const subjectId = 'cs_' + rid(10);
       this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', subjectId, c.req.param('id'), b.subject.trim(), b.teacher_id || null);
@@ -964,6 +965,7 @@ export class SchoolDO extends DurableObject<Env> {
       const sub = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
       if (sub?.teacher_id) this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
         pkt().date, sub.class_id, sub.subject, sub.teacher_id);
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject teacher assignment');
       this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
       this.audit(a, 'class.subject.remove', 'class', c.req.param('id'), c.req.param('sid'));
       return c.json({ ok: true });
@@ -1062,6 +1064,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/timetable', async (c) => {
       const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the timetable period and confirm before saving');
       const id = String(b.id || 'tt_' + rid(10));
       const classId = String(b.class_id || '');
       const subject = String(b.subject || '').trim();
@@ -1114,6 +1117,7 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.delete('/timetable/:id', (c) => {
       const a = c.get('actor'); this.requirePermission(a, 'timetable.manage');
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this timetable period');
       const id = c.req.param('id');
       const slot = this.one('SELECT * FROM timetable_slots WHERE id=?', id);
       if (!slot) fail(404, 'Timetable period not found');
@@ -1411,12 +1415,16 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.post('/attendance/:classId/:date/submit', async (c) => {
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the attendance register and confirm submission');
       return c.json(this.saveAttendance(c.get('actor'), c.req.param('classId'), c.req.param('date'), b.records || {}, true));
     });
     app.post('/attendance/correct', async (c) => {
-      const a = c.get('actor'); this.requireAdmin(a);
-      if (a.subrole === 'accountant') fail(403, 'No access');
+      const a = c.get('actor');
       const b = await c.req.json<any>();
+      const target = this.one('SELECT class_id FROM students WHERE id=?', b.student_id);
+      if (!target) fail(404, 'Student not found');
+      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'attendance.manage') && this.inClassScope(a, target.class_id)))) fail(403, 'Attendance correction permission is required for this class');
+      if (b.confirm !== true) fail(400, 'Review the attendance correction and confirm before saving');
       this.correctAttendance(a, b.student_id, b.date, b.status, b.reason);
       return c.json({ ok: true });
     });
@@ -1471,10 +1479,14 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json(rows.map((r) => ({ ...r, detail: JSON.parse(r.detail), student_name: this.one('SELECT name FROM students WHERE id=?', r.ref)?.name, requested_by_name: this.one('SELECT name FROM staff WHERE id=?', String(r.requested_by).slice(2))?.name })));
     });
     app.post('/change-requests/:id/decide', async (c) => {
-      const a = c.get('actor'); this.requireAdmin(a);
+      const a = c.get('actor');
       const b = await c.req.json<any>();
       const r = this.one("SELECT * FROM change_requests WHERE id=? AND status='open'", c.req.param('id')); if (!r) fail(404, 'Not found');
       const d = JSON.parse(r!.detail);
+      const target = this.one('SELECT class_id FROM students WHERE id=?', r!.ref);
+      const allowed = this.isFullAdmin(a) || (a.role === 'subadmin' && (r!.kind === 'attendance' ? this.hasPermission(a, 'attendance.manage') : this.canManageStudents(a)) && !!target && this.inClassScope(a, target.class_id));
+      if (!allowed) fail(403, 'You do not have permission to decide this request');
+      if (b.confirm !== true) fail(400, 'Review the request and confirm your decision');
       if (b.approve && r!.kind === 'attendance') this.correctAttendance(a, d.student_id, d.date, d.status, `Teacher request: ${r!.reason}`);
       this.run('UPDATE change_requests SET status=?, decided_by=?, decided_at=? WHERE id=?', b.approve ? 'approved' : 'declined', a.key, now(), r!.id);
       this.notify(r!.requested_by, `Request ${b.approve ? 'approved' : 'declined'}`, r!.reason);
@@ -1503,6 +1515,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/fees/plans', async (c) => {
       const a = c.get('actor');
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the class fee plan changes before saving');
       const plans = b.plans || [];
       for (const p of plans) if (!this.canSetFees(a, p.class_id)) fail(403, 'You cannot set fees for this class');
       const changed = new Set<string>();
@@ -1787,6 +1800,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.get('/notices', (c) => c.json(this.noticesFor(c.get('actor'))));
     app.post('/notices', async (c) => {
       const a = c.get('actor'); const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the audience and notice text, then confirm sending');
       if (a.type !== 'staff' && a.type !== 'system') fail(403, 'Parents cannot post notices');
       if (!b.title || !b.body) fail(400, 'Title and message are required');
       const aud = String(b.audience);
@@ -2009,6 +2023,7 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/promotion', async (c) => {
       const a = c.get('actor'); this.requireMain(a);
       const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review the new session and every promotion decision, then confirm');
       if (!b.new_session) fail(400, 'Name the new session, e.g. 2027-2028');
       const old = this.currentSession();
       const decisions: Record<string, { outcome: string; class_id?: string }> = b.decisions || {};
