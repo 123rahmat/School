@@ -2114,6 +2114,16 @@ export class SchoolDO extends DurableObject<Env> {
       const old = this.currentSession();
       const decisions: Record<string, { outcome: string; class_id?: string }> = b.decisions || {};
       const nextClass: Record<string, string> = b.next_class || {};
+      const validClasses = new Set(this.q('SELECT id FROM classes WHERE active=1').map((r) => r.id));
+      for (const target of Object.values(nextClass)) if (target !== 'passout' && !validClasses.has(target)) fail(400, 'One of the class-wide promotion destinations is no longer active');
+      const activeStudents = this.q("SELECT id,class_id FROM students WHERE status='active'");
+      const activeStudentIds = new Set(activeStudents.map((s) => s.id));
+      for (const [studentId, decision] of Object.entries(decisions)) {
+        if (!activeStudentIds.has(studentId)) fail(400, 'A selected student is no longer active. Refresh the promotion review.');
+        if (!['promoted','not promoted','left','passed out'].includes(decision.outcome)) fail(400, 'Invalid student promotion decision');
+        if (decision.class_id && !validClasses.has(decision.class_id)) fail(400, 'A selected student destination class is no longer active');
+      }
+      if (this.one('SELECT 1 FROM academic_sessions WHERE name=?', String(b.new_session).trim())) fail(409, 'An academic session with this name already exists');
       const sid = 'ses_' + rid(8);
       const today = pkt().date;
       const gids = new Set<string>();
@@ -2123,9 +2133,11 @@ export class SchoolDO extends DurableObject<Env> {
         this.run('INSERT INTO academic_sessions (id, name, current, created_at) VALUES (?,?,1,?)', sid, b.new_session, now());
         for (const s of this.q("SELECT * FROM students WHERE status='active'")) {
           const d = decisions[s.id] || { outcome: nextClass[s.class_id] === 'passout' ? 'passed out' : 'promoted' };
-          let target = s.class_id;
+          let target: string = s.class_id;
           if (d.outcome === 'promoted') target = d.class_id || nextClass[s.class_id] || s.class_id;
           if (d.outcome === 'promoted' && target === 'passout') d.outcome = 'passed out';
+          if (d.outcome === 'not promoted') target = s.class_id;
+          if (d.outcome === 'promoted' && !validClasses.has(target)) fail(400, 'A student destination class is no longer active');
           this.run('UPDATE enrollments SET outcome=? WHERE student_id=? AND session_id=?', d.outcome, s.id, old.id);
           if (d.outcome === 'left' || d.outcome === 'passed out') {
             this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", today, d.outcome, s.id); gids.add(s.guardian_id);
