@@ -10,6 +10,7 @@ export interface Actor {
   key: string; // s:<staffId> | g:<guardianId> | system
   type: 'staff' | 'guardian' | 'system';
   id: string;
+  publicId: string;
   name: string;
   role: 'admin' | 'subadmin' | 'teacher' | 'parent' | 'system';
   subrole: string | null;
@@ -49,7 +50,16 @@ export class SchoolDO extends DurableObject<Env> {
     state.blockConcurrencyWhile(async () => {
       for (const stmt of SCHOOL_SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) this.sql.exec(stmt);
       // Columns added after the first release (older school databases get them here).
-      for (const alter of ['ALTER TABLE vouchers ADD COLUMN fine_locked INTEGER NOT NULL DEFAULT 0']) { try { this.sql.exec(alter); } catch { /* already there */ } }
+      for (const alter of [
+        'ALTER TABLE vouchers ADD COLUMN fine_locked INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE staff ADD COLUMN public_id TEXT',
+        'ALTER TABLE guardians ADD COLUMN public_id TEXT',
+      ]) { try { this.sql.exec(alter); } catch { /* already there */ } }
+      // Give existing accounts a stable 128-bit hexadecimal public ID; these IDs are safe to share for lookup.
+      this.sql.exec("UPDATE staff SET public_id=lower(hex(randomblob(16))) WHERE public_id IS NULL OR public_id=''");
+      this.sql.exec("UPDATE guardians SET public_id=lower(hex(randomblob(16))) WHERE public_id IS NULL OR public_id=''");
+      this.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS staff_public_id_idx ON staff(public_id)');
+      this.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS guardians_public_id_idx ON guardians(public_id)');
     });
     this.app = this.routes();
   }
@@ -67,11 +77,11 @@ export class SchoolDO extends DurableObject<Env> {
   // ---------- identity & access layer ----------
   loadActor(ctx: Ctx): Actor {
     const base = { classTeacherOf: new Set<string>(), teaches: new Set<string>(), children: [] as string[], subrole: null, isMain: false };
-    if (ctx.refId === 'system') return { ...base, key: 'system', type: 'system', id: 'system', name: 'System', role: 'system', isMain: true };
+    if (ctx.refId === 'system') return { ...base, key: 'system', type: 'system', id: 'system', publicId: '', name: 'System', role: 'system', isMain: true };
     if (ctx.kind === 'staff') {
       const s = this.one('SELECT * FROM staff WHERE id=? AND active=1', ctx.refId);
       if (!s) fail(401, 'Your account is not active. Please contact the school.');
-      const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main };
+      const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, publicId: s!.public_id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main };
       for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
       for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
       return a;
@@ -80,7 +90,7 @@ export class SchoolDO extends DurableObject<Env> {
     if (!g) fail(401, 'Not found');
     const kids = this.q("SELECT id FROM students WHERE guardian_id=? AND status='active'", g!.id).map((r) => r.id);
     if (!kids.length) fail(401, 'No active student is linked to this sign-in.');
-    return { ...base, key: 'g:' + g!.id, type: 'guardian', id: g!.id, name: g!.name || 'Parent', role: 'parent', children: kids };
+    return { ...base, key: 'g:' + g!.id, type: 'guardian', id: g!.id, publicId: g!.public_id, name: g!.name || 'Parent', role: 'parent', children: kids };
   }
 
   isAdmin(a: Actor) { return a.role === 'admin' || a.role === 'system' || a.role === 'subadmin'; }
@@ -240,7 +250,7 @@ export class SchoolDO extends DurableObject<Env> {
       return g.id;
     }
     const id = 'g_' + rid(12);
-    this.run('INSERT INTO guardians (id, phone, email, name, created_at) VALUES (?,?,?,?,?)', id, p, e, fatherName, now());
+    this.run('INSERT INTO guardians (id, public_id, phone, email, name, created_at) VALUES (?, lower(hex(randomblob(16))), ?,?,?,?)', id, p, e, fatherName, now());
     return id;
   }
   async syncGuardian(gid: string) {
@@ -605,7 +615,7 @@ export class SchoolDO extends DurableObject<Env> {
       this.run("INSERT INTO meta VALUES ('school_id', ?)", ctx.schoolId);
       this.run("INSERT INTO meta VALUES ('school_name', ?)", b.name);
       const id = 'tch_' + rid(12);
-      this.run("INSERT INTO staff (id, name, email, phone, role, is_main, search_key, created_at) VALUES (?,?,?,?, 'admin', 1, ?, ?)",
+      this.run("INSERT INTO staff (id, public_id, name, email, phone, role, is_main, search_key, created_at) VALUES (?, lower(hex(randomblob(16))), ?, ?, ?, 'admin', 1, ?, ?)",
         id, b.admin.name, normId(b.admin.email), normId(b.admin.phone) || null, skeleton(b.admin.name), now());
       for (const h of ['Tuition', 'Admission', 'Exam', 'Transport']) this.run('INSERT INTO fee_heads VALUES (?,?,?)', 'fh_' + rid(8), h, h === 'Tuition' || h === 'Transport' ? 1 : 0);
       this.currentSession();
@@ -637,7 +647,7 @@ export class SchoolDO extends DurableObject<Env> {
       const children = a.type === 'guardian' ? this.q("SELECT s.id, s.name, s.reg_no, c.name AS class_name FROM students s JOIN classes c ON c.id=s.class_id WHERE s.guardian_id=? AND s.status='active'", a.id) : [];
       const settings: Row = {};
       for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = this.setting(k);
-      return c.json({ id: a.id, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), canFees: this.canFeesAll(a),
+      return c.json({ id: a.id, userId: a.publicId || null, kind: a.type, name: a.name, role: a.role, subrole: a.subrole, isMainAdmin: a.isMain, isAdmin: this.isAdmin(a), canFees: this.canFeesAll(a),
         canManageStudents: this.canManageStudents(a),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
@@ -679,7 +689,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
       const id = 'tch_' + rid(12);
-      this.run('INSERT INTO staff (id, name, email, phone, role, subrole, subjects, search_key, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      this.run('INSERT INTO staff (id, public_id, name, email, phone, role, subrole, subjects, search_key, created_at) VALUES (?, lower(hex(randomblob(16))), ?,?,?,?,?,?,?,?)',
         id, b.name.trim(), email, phone, role, role === 'subadmin' ? b.subrole || 'office' : null, b.subjects || null, skeleton(b.name), now());
       await this.syncLogin('staff', id, [email]);
       this.audit(a, 'staff.add', 'staff', id, { name: b.name, role });
