@@ -1691,11 +1691,12 @@ route('/owner', async () => {
   $$('[data-no]').forEach((b) => b.onclick = async () => { const reason = prompt('Reason for rejecting?'); if (!reason) return; await act(() => api(`/api/owner/slips/${b.dataset.no}/reject`, { body: { reason } }), 'Rejected'); render(); });
   $('#bill').onclick = async () => { await act(() => api('/api/owner/run-billing', { body: {} }), 'Billing run complete'); render(); };
   $('#new').onclick = () => modal(`<h2>Add institution</h2><form id="nf" class="form"><div class="full"><label>Institution name</label><input name="name" required></div>
-    <div><label>Main administrator name</label><input name="admin_name" required></div><div><label>Administrator Google email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
+    <div><label>Institution category</label><select name="kind"><option value="school">School</option><option value="college">College</option><option value="university">University</option><option value="academy">Academy</option><option value="training_institute">Training institute</option><option value="other">Other education provider</option></select></div>
+     <div><label>Main administrator name</label><input name="admin_name" required></div><div><label>Administrator Google email</label><input name="admin_email" type="email" required></div><div><label>Admin phone</label><input name="admin_phone"></div>
     <div class="full row"><button class="btn primary">Create (starts on trial)</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#nf', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/schools', { body: formData(e.target) }), 'Institution created'); closeModal(); render(); };
   });
-  $('#ann').onclick = () => modal(`<h2>Announcement to main admins</h2><form id="af" class="form"><div class="full"><label>School</label><select name="school_id"><option value="">All schools</option>${d.schools.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+  $('#ann').onclick = () => modal(`<h2>Announcement to main admins</h2><form id="af" class="form"><div class="full"><label>Institution</label><select name="school_id"><option value="">All institutions</option>${d.schools.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
     <div class="full"><label>Title</label><input name="title" required></div><div class="full"><label>Message</label><textarea name="body"></textarea></div>
     <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#af', m).onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/owner/announce', { body: formData(e.target) }), 'Sent'); closeModal(); };
