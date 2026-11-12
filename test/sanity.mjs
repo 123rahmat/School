@@ -33,6 +33,7 @@ assert.match(util, /PUBLIC_CONTACT_EMAIL\?: string/, 'Worker Env must define opt
 assert.match(worker, /app\.post\('\/api\/auth\/google'/, 'Google sign-in endpoint must exist');
 assert.match(worker, /app\.post\('\/api\/signup\/google'/, 'Google-based institution signup endpoint must exist');
 assert.match(worker, /app\.post\('\/api\/auth\/logout'/, 'Server-side session revocation endpoint must exist');
+assert.match(worker, /Billing cycle must be monthly or yearly/, 'Platform owner cannot set one-time or unsupported subscription cycles');
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
 assert.match(worker, /RSASSA-PKCS1-v1_5/, "Google ID token signature must be verified using Google's RSA signing key");
 assert.match(worker, /oauth2\/v3\/certs/, 'Google signing keys must come from the official JWKS endpoint');
