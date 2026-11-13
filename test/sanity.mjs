@@ -41,6 +41,20 @@ assert.match(worker, /WHERE NOT EXISTS \(SELECT 1 FROM invoices WHERE school_id=
 assert.ok(worker.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'Owner billing uploads must use a safe inline content-type allowlist');
 assert.ok(school.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'School file downloads must use a safe inline content-type allowlist');
 assert.match(school, /Payment exceeds the remaining voucher balance/, 'Fee verification must prevent overpayment');
+assert.ok(school.includes("UPDATE payments SET verified_by=? WHERE id=? AND status='submitted'"), 'Payment verification must atomically claim a submitted slip');
+assert.ok(school.includes("UPDATE payments SET status='rejected', reason=?, verified_by=?, verified_at=? WHERE id=? AND status='submitted'"), 'Payment rejection must be a conditional one-time transition');
+assert.ok(school.includes("UPDATE payments SET status='cancelled', reason=? WHERE id=? AND status='verified'"), 'Receipt cancellation must be a conditional one-time transition');
+assert.ok(school.includes("SELECT changes() AS n"), 'Financial transitions must check whether their conditional update won the race');
+assert.ok(school.includes('Only a former student can be restored'), 'Student restoration must reject already active students');
+assert.ok(school.includes('activeCount >= ctx.studentCap'), 'Student restoration must enforce the institution student limit');
+assert.ok(school.includes('SELECT id, name FROM classes WHERE id=? AND active=1'), 'Student restoration must target an active class');
+assert.ok(school.includes("outcome='left'") && school.includes('Leaving date cannot be before the current class enrollment'), 'Leaving a student must close their enrollment history with a valid date');
+assert.ok(app.includes('restoreStudentForm') && app.includes('Choose the active class for this student'), 'The restore workflow must let the admin select an active destination class');
+assert.ok(school.includes("const voucherKey = 'vouchers:' + t.month") && school.includes('markRun(voucherKey)'), 'Monthly voucher automation must record completion after successful generation');
+assert.ok(school.includes('markRun(feesKey)'), 'Daily fee automation must record completion after its work succeeds');
+assert.ok(!worker.includes("app.post('/api/billing/support-access'"), 'Do not advertise a support-access grant without a real audited support session');
+assert.ok(!app.includes('support-access') && !app.includes('grant access') && !app.includes('everything they do is logged'), 'The UI must not promise unsupported support access');
+assert.match(wrangler, /^PAYMENT_ACCOUNTS = ""$/m, 'Deployment defaults must not publish placeholder payment numbers');
 assert.match(school, /This voucher has been carried into a newer one/, 'Stale carried vouchers must not accept verified payments');
 assert.match(school, /'x-content-type-options': 'nosniff'/, 'Private school file responses must prevent MIME sniffing');
 
