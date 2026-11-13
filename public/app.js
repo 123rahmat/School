@@ -1802,7 +1802,7 @@ route('/notices', async () => {
     <div id="ts" class="hidden"><label>Student (reg no or name)</label><input id="sq" placeholder="Type to search"><input type="hidden" name="target_student" id="sid"><div id="sres" class="small"></div></div>
     <div class="full"><label>Title</label><input name="title" required></div>
     <div class="full"><label>Message (English or Urdu)</label><textarea name="body" required dir="auto"></textarea></div>
-    <p class="full small muted">Sent as an app notification. WhatsApp/SMS is a paid add-on.</p>
+    <p class="full small muted">This notice is delivered in the app. To send a phone message, use the WhatsApp/SMS queue from your own device.</p>
     <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     const fillNoticeSubjects = () => {
       const classId = $('#notice-class', m).value;
