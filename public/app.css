@@ -763,3 +763,23 @@ img, video, canvas, svg { max-width: 100%; }
   .tools-panel, .tools-link, .tools-close { transition: none !important; animation: none !important; }
 }
 @keyframes tools-panel-in { from { opacity: .88; transform: translateX(7px); } to { opacity: 1; transform: translateX(0); } }
+
+
+/* ---------- secure app boot ---------- */
+.boot-screen{min-height:100svh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:28px 18px;background:radial-gradient(ellipse at 50% 42%,rgba(35,91,170,.17),transparent 48%),#081323;text-align:center}
+.boot-logo-stage{position:relative;display:grid;place-items:center;width:116px;height:116px;isolation:isolate}
+.boot-logo{position:relative;z-index:3;width:64px;height:64px;object-fit:contain;border-radius:19px;box-shadow:0 12px 36px rgba(31,109,220,.32);animation:boot-logo-breathe 2.8s ease-in-out infinite}
+.boot-logo-glow{position:absolute;z-index:1;inset:22px;border-radius:30px;background:rgba(42,133,255,.42);filter:blur(23px);animation:boot-glow 3.2s ease-in-out infinite}
+.boot-orbit{position:absolute;z-index:2;border:1px solid rgba(139,183,255,.34);border-radius:50%;pointer-events:none}
+.boot-orbit-one{inset:5px;border-right-color:rgba(34,211,238,.95);border-bottom-color:rgba(34,211,238,.45);animation:boot-orbit 8s linear infinite}
+.boot-orbit-two{inset:14px;border-style:dashed;border-color:rgba(143,180,255,.2);border-left-color:rgba(143,180,255,.8);animation:boot-orbit 12s linear infinite reverse}
+.boot-brand{color:#f3f7ff;font-size:1.08rem;font-weight:650;letter-spacing:-.025em}
+.boot-progress{width:min(160px,48vw);height:3px;overflow:hidden;border-radius:99px;background:rgba(148,178,230,.16)}
+.boot-progress span{display:block;width:42%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#3b82f6,#22d3ee);animation:boot-progress 1.5s ease-in-out infinite}
+.boot-message{margin:0;color:#91a6c8;font-size:.82rem;letter-spacing:.015em;animation:boot-message 2.4s ease-in-out infinite}
+@keyframes boot-orbit{to{transform:rotate(360deg)}}
+@keyframes boot-logo-breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-3px) scale(1.035)}}
+@keyframes boot-glow{0%,100%{opacity:.45;transform:scale(.88)}50%{opacity:.95;transform:scale(1.12)}}
+@keyframes boot-progress{0%{transform:translateX(-110%)}100%{transform:translateX(350%)}}
+@keyframes boot-message{0%,100%{opacity:.68}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.boot-logo,.boot-logo-glow,.boot-orbit,.boot-progress span,.boot-message{animation:none!important}.boot-progress span{width:100%;opacity:.7}}
