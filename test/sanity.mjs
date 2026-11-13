@@ -40,6 +40,8 @@ assert.match(worker, /submitted amount does not match the invoice/, 'Subscriptio
 assert.match(worker, /WHERE NOT EXISTS \(SELECT 1 FROM invoices WHERE school_id=\? AND status='open'\)/, 'Invoice generation must avoid duplicate open invoices');
 assert.ok(worker.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'Owner billing uploads must use a safe inline content-type allowlist');
 assert.ok(school.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'School file downloads must use a safe inline content-type allowlist');
+assert.match(school, /Payment exceeds the remaining voucher balance/, 'Fee verification must prevent overpayment');
+assert.match(school, /This voucher has been carried into a newer one/, 'Stale carried vouchers must not accept verified payments');
 assert.match(school, /'x-content-type-options': 'nosniff'/, 'Private school file responses must prevent MIME sniffing');
 
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
