@@ -52,17 +52,7 @@ export function pkt(d = new Date()) {
   return { date: iso.slice(0, 10), month: iso.slice(0, 7), day: p.getUTCDate(), hour: p.getUTCHours(), weekday: p.getUTCDay() };
 }
 
-export function addDays(date: string, n: number): string {
-  const d = new Date(date + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-export function addMonths(date: string, n: number): string {
-  const d = new Date(date + 'T00:00:00Z');
-  d.setUTCMonth(d.getUTCMonth() + n);
-  return d.toISOString().slice(0, 10);
-}
+export { addDays, addMonths } from './date';
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
