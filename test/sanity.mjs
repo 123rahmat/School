@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
 const read = (path) => readFile(new URL('../' + path, import.meta.url), 'utf8');
-const [wrangler, util, worker, platform, app, sw, school, schema, css, html, seo] = await Promise.all([
+const [wrangler, util, worker, platform, app, sw, school, schema, css, html, seo, manifest] = await Promise.all([
   read('wrangler.toml'),
   read('src/util.ts'),
   read('src/index.ts'),
@@ -14,6 +14,7 @@ const [wrangler, util, worker, platform, app, sw, school, schema, css, html, seo
   read('public/app.css'),
   read('public/index.html'),
   read('src/seo.ts'),
+  read('public/manifest.webmanifest'),
 ]);
 
 assert.match(wrangler, /^name = "school"$/m, 'Wrangler deploy target must match the Cloudflare Worker named school');
@@ -71,17 +72,20 @@ assert.match(worker, /requestedRole === 'platform_owner'.*not authorized for pla
 assert.match(worker, /identity\.email === normId\(c\.env\.OWNER_EMAIL\)/, 'Platform owner identity must match the configured owner email');
 assert.match(worker, /if \(identity\.email === normId\(c\.env\.OWNER_EMAIL\)\) fail\(403, 'The platform owner account cannot register an institution\.'\)/, 'Platform owner must not register an institution');
 
-assert.match(app, /function landingPage\(\)/, 'Public landing page must exist');
-assert.match(app, /Use in browser/, 'Landing page must provide browser access');
-assert.match(app, /Install app/, 'Landing page must provide install action');
-assert.match(app, /route\('\/login'/, 'Google login page must exist');
-assert.match(app, /route\('\/signup'/, 'Google signup page must exist');
-assert.match(app, /route\('\/admin'/, 'Dedicated platform owner sign-in page must exist');
+assert.match(seo, /renderSeoPage/, 'The public product page must be server rendered for search engines');
+assert.match(seo, /href="\\/login"/, 'The public SEO page must link to the login screen');
+assert.match(seo, /href="\\/signup"/, 'The public SEO page must link to institution registration');
+assert.match(app, /route\\('\\/login'/, 'Google login page must exist');
+assert.match(app, /route\\('\\/signup'/, 'Google signup page must exist');
+assert.match(app, /route\\('\\/admin'/, 'Dedicated platform owner sign-in page must exist');
 assert.match(app, /role: 'platform_owner'/, 'Platform admin page must request the restricted owner role');
-assert.match(app, /href="\/admin"/, 'Platform admin sign-in must be discoverable from the public footer');
 assert.doesNotMatch(app, /data-login-role=|selectedRole/, 'Google login must not require a manual role picker');
 assert.match(app, /Choose the institution account you want to open/, 'Users with multiple accounts must choose their institution after identity verification');
-assert.match(app, /isInstalledApp\(\)/, 'Installed-app entry routing must be device aware');
+assert.match(app, /function setupInstall\\(\\)/, 'The workspace must keep the app installation action');
+assert.match(app, /id="install"/, 'The authenticated app layout must expose the install action');
+assert.match(manifest, /"start_url": "\\/"/, 'Installed app must launch through the session-aware root');
+assert.match(manifest, /"display": "standalone"/, 'The product must remain an installable app');
+assert.doesNotMatch(app, /isInstalledApp|landingPage\\(/, 'Unused landing and device-branch code must not be shipped in the app bundle');
 assert.match(app, /No internet connection\. Connect to the internet to verify your Google account/, 'Google sign-in must require an internet connection');
 assert.match(app, /function connectionBannerHtml\(\)/, 'Global offline and restored connection banner must exist');
 assert.match(app, /Connection restored/, 'The app must show a connection-restored banner');
