@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS class_subject_teacher_assignments (
 CREATE INDEX IF NOT EXISTS class_subject_teacher_active ON class_subject_teacher_assignments(teacher_id, from_date, to_date);
 CREATE INDEX IF NOT EXISTS class_subject_teacher_subject ON class_subject_teacher_assignments(class_subject_id, from_date, to_date);
 CREATE UNIQUE INDEX IF NOT EXISTS class_subject_teacher_open_unique ON class_subject_teacher_assignments(class_subject_id, teacher_id) WHERE to_date IS NULL;
+CREATE TABLE IF NOT EXISTS class_timetable_slots (
+  id TEXT PRIMARY KEY, class_id TEXT NOT NULL, class_subject_id TEXT NOT NULL, teacher_id TEXT NOT NULL,
+  weekday INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
+  start_time TEXT NOT NULL, end_time TEXT NOT NULL, room TEXT,
+  effective_from TEXT NOT NULL, effective_to TEXT,
+  status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+  cancelled_by TEXT, cancelled_at TEXT, cancel_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS timetable_class_day ON class_timetable_slots(class_id, weekday, status, effective_from, effective_to);
+CREATE INDEX IF NOT EXISTS timetable_teacher_day ON class_timetable_slots(teacher_id, weekday, status, effective_from, effective_to);
+CREATE INDEX IF NOT EXISTS timetable_room_day ON class_timetable_slots(room, weekday, status, effective_from, effective_to);
 
 -- Weekly timetable, dated substitutions and syllabus library are intentionally excluded
 -- from the focused school workflow. Existing legacy tables are left untouched in
