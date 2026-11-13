@@ -18,6 +18,7 @@ export interface Ctx {
   institutionType: string;
   schoolStatus: string; // trial | active | grace | paused
   studentCap: number;
+  subAdminCap: number;
   storageLimitBytes: number;
 }
 
