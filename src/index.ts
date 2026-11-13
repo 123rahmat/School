@@ -369,17 +369,22 @@ app.post('/api/billing/invoice', requireSession(['staff']), async (c) => {
   const sid = c.get('sess').school_id;
   if (cycle !== 'monthly' && cycle !== 'yearly') fail(400, 'Choose monthly or yearly billing.');
   if (typeof tier !== 'string' || !tier || tier === 'trial' || tier === 'custom') fail(400, 'Choose a paid plan. Custom plans must be arranged with the platform owner.');
-  const schoolRow: any = await platformDb(c.env).prepare('SELECT students, tier FROM schools WHERE id=?').bind(sid).first();
+  const schoolRow: any = await platformDb(c.env).prepare('SELECT students FROM schools WHERE id=?').bind(sid).first();
   if (!schoolRow) fail(404, 'Institution not found.');
   const selected: any = await platformDb(c.env).prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(tier).first();
   if (!selected) fail(400, 'That subscription plan is unavailable.');
   if (Number(schoolRow.students || 0) > Number(selected.max_students)) fail(409, 'This plan does not have enough active-student capacity. Choose a higher tier.');
-  if (Number(schoolRow.students || 0) < Number(selected.min_students)) fail(409, 'Your active-student count does not yet match this plan tier.');
-  const open: any = await platformDb(c.env).prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(sid).first();
+  const db = platformDb(c.env);
+  const open: any = await db.prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(sid).first();
   if (open && open.cycle === cycle && open.tier === tier) return c.json(open);
-  if (open) await platformDb(c.env).prepare("UPDATE invoices SET status='cancelled' WHERE id=? AND status='open'").bind(open.id).run();
-  await platformDb(c.env).prepare('UPDATE schools SET tier=?, cycle=? WHERE id=?').bind(tier, cycle, sid).run();
-  const inv = await makeInvoice(c.env, sid);
+  if (open) {
+    const pendingSlip = await db.prepare("SELECT 1 FROM billing_slips WHERE invoice_id=? AND status='submitted' LIMIT 1").bind(open.id).first();
+    if (pendingSlip) fail(409, 'A payment slip is still awaiting review for this invoice. Wait for the platform owner to approve or reject it before changing plans.');
+    await db.prepare("UPDATE invoices SET status='cancelled' WHERE id=? AND status='open'").bind(open.id).run();
+  }
+  // The selected tier is only a pending purchase. Do not grant its limits until payment is verified.
+  const inv = await makeInvoice(c.env, sid, { tier, cycle });
+  if (inv.tier !== tier || inv.cycle !== cycle) fail(409, 'A different invoice was created at the same time. Refresh Billing and review the current invoice.');
   return c.json(inv);
 });
 
@@ -415,25 +420,33 @@ async function tierFor(env: Env, students: number) {
   return (await platformDb(env).prepare("SELECT * FROM plans WHERE tier NOT IN ('trial') AND max_students>=? ORDER BY sort LIMIT 1").bind(students).first()) as any;
 }
 
-async function makeInvoice(env: Env, schoolId: string) {
+async function makeInvoice(env: Env, schoolId: string, selection?: { tier: string; cycle: 'monthly' | 'yearly' }) {
   const db = platformDb(env);
   const existing: any = await db.prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(schoolId).first();
-  if (existing) return existing;
+  if (existing) {
+    if (selection && (existing.tier !== selection.tier || existing.cycle !== selection.cycle)) {
+      fail(409, 'Another invoice is already open. Refresh Billing and review it before creating another.');
+    }
+    return existing;
+  }
   const s: any = await db.prepare('SELECT * FROM schools WHERE id=?').bind(schoolId).first();
   if (!s) fail(404, 'Institution not found');
-  const p = s.tier !== 'trial'
-    ? await db.prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(s.tier).first()
-    : await tierFor(env, s.students);
-  if (!p && (s.tier === 'trial' || s.price_override == null)) fail(400, 'No subscription tier covers the current student count');
-  const tier = s.tier !== 'trial' ? s.tier : p.tier;
-  const plan: any = s.tier !== 'trial' ? p : p;
-  if (!plan) fail(400, 'The institution subscription plan is unavailable');
-  let amount = s.price_override ?? (s.cycle === 'yearly' ? plan.yearly : plan.monthly);
+  const tier = selection?.tier || (s.tier !== 'trial' ? s.tier : '');
+  const cycle = selection?.cycle || s.cycle;
+  const plan: any = selection
+    ? await db.prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(selection.tier).first()
+    : (s.tier !== 'trial'
+      ? await db.prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(s.tier).first()
+      : await tierFor(env, s.students));
+  if (!plan) fail(400, 'No available subscription tier covers this institution. Contact the platform owner.');
+  if (selection && Number(s.students || 0) > Number(plan.max_students)) fail(409, 'The selected plan does not cover the institution active-student count.');
+  const invoiceTier = tier || plan.tier;
+  let amount = s.price_override ?? (cycle === 'yearly' ? plan.yearly : plan.monthly);
   const today = pkt().date;
   const start = s.status === 'paused' || s.renews_at < today ? today : s.renews_at;
-  const end = s.cycle === 'yearly' ? addMonths(start, 12) : addMonths(start, 1);
-  if (s.extra_storage_gb) amount += (s.extra_storage_gb / 5) * (s.cycle === 'yearly' ? 2000 : 200);
-  const inv = { id: 'inv_' + rid(10), school_id: schoolId, tier, cycle: s.cycle, amount, period_start: start, period_end: end,
+  const end = cycle === 'yearly' ? addMonths(start, 12) : addMonths(start, 1);
+  if (s.extra_storage_gb) amount += (s.extra_storage_gb / 5) * (cycle === 'yearly' ? 2000 : 200);
+  const inv = { id: 'inv_' + rid(10), school_id: schoolId, tier: invoiceTier, cycle, amount, period_start: start, period_end: end,
     note: `${s.students} active students → ${plan.tier} tier`, status: 'open', created_at: now() };
   // Insert only if no open invoice exists; the single SQLite statement is atomic.
   const inserted = await db.prepare(`INSERT INTO invoices (id, school_id, tier, cycle, amount, period_start, period_end, note, status, created_at)
@@ -441,7 +454,12 @@ async function makeInvoice(env: Env, schoolId: string) {
     .bind(inv.id, inv.school_id, inv.tier, inv.cycle, inv.amount, inv.period_start, inv.period_end, inv.note, inv.status, inv.created_at, schoolId).run();
   if (Number(inserted.meta?.changes || 0) === 1) return inv;
   const winner: any = await db.prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(schoolId).first();
-  if (winner) return winner;
+  if (winner) {
+    if (selection && (winner.tier !== selection.tier || winner.cycle !== selection.cycle)) {
+      fail(409, 'Another invoice was created at the same time. Refresh Billing and review it before continuing.');
+    }
+    return winner;
+  }
   fail(409, 'An invoice is being generated. Please retry.');
 }
 
