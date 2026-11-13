@@ -79,6 +79,7 @@ assert.ok(app.includes("route('/login'"), 'Google login page must exist');
 assert.ok(app.includes("route('/signup'"), 'Google signup page must exist');
 assert.ok(app.includes("route('/admin'"), 'Dedicated platform owner sign-in page must exist');
 assert.ok(app.includes("role: 'platform_owner'"), 'Platform admin page must request the restricted owner role');
+assert.match(app, /route\('\/admin',[\s\S]*?\{ minimal: true \}/, 'Platform owner sign-in must use the same minimal login screen');
 assert.doesNotMatch(app, /data-login-role=|selectedRole/, 'Google login must not require a manual role picker');
 assert.ok(app.includes('Choose the institution account you want to open'), 'Users with multiple accounts must choose their institution after identity verification');
 assert.ok(app.includes('function setupInstall()'), 'The workspace must keep the app installation action');
@@ -114,7 +115,7 @@ assert.match(school, /x-submission-id/, 'School API must use stable submission I
 assert.ok(school.includes("app.get('/submissions'"), 'Server-confirmed submission history must be role-scoped');
 assert.match(schema, /CREATE TABLE IF NOT EXISTS api_submissions/, 'School database must retain server submission receipts');
 
-assert.match(sw, /const VERSION = 'v17'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v18'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
@@ -158,7 +159,7 @@ assert.match(app, /if \(mobileNav\(\)\) setNavOpen\(false\)/, 'Desktop navigatio
 assert.match(css, /\.tools-panel\.open\s*\{\s*transform: translateX\(0\)/, 'The right tools panel must slide into view on compact screens');
 assert.match(css, /@media \(min-width: 1351px\)/, 'The full three-column workspace must be reserved for wide screens');
 assert.match(css, /@media \(max-width: 860px\)/, 'The workspace must have a mobile drawer layout');
-assert.match(sw, /const VERSION = 'v17'/, 'The service worker shell cache must be refreshed for this UI release');
+assert.match(sw, /const VERSION = 'v18'/, 'The service worker shell cache must be refreshed for this UI release');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
 
 assert.match(worker, /const \{ cycle, tier \} = await c\.req\.json/, 'Subscription checkout must accept the plan explicitly selected by the main administrator');
@@ -167,7 +168,7 @@ assert.match(worker, /selected\.max_students/, 'Subscription checkout must valid
 assert.match(worker, /UPDATE schools SET status='active', tier=\?, cycle=\?, renews_at=\?/, 'The selected plan must become active only after payment verification');
 assert.match(app, /id="plan-tier"/, 'Billing must provide an actual subscription tier selector');
 assert.match(app, /body: \{ tier, cycle: \$\('#cy'\)\.value \}/, 'The selected plan and billing cycle must be submitted to the server');
-assert.match(sw, /const VERSION = 'v17'/, 'The service worker cache must refresh for the subscription checkout change');
+assert.match(sw, /const VERSION = 'v18'/, 'The service worker cache must refresh for the subscription checkout change');
 
 assert.match(platform, /CREATE TABLE IF NOT EXISTS platform_settings/, 'Platform payment settings must persist in the platform database');
 assert.match(worker, /owner\.post\('\/settings\/payment-instructions'/, 'Only the authenticated platform owner may configure official payment instructions');
@@ -188,7 +189,7 @@ assert.match(billingInvoiceRoute, /status='submitted'/, 'A pending payment slip 
 assert.match(worker, /async function makeInvoice\(env: Env, schoolId: string, selection\?/, 'Invoice generation must support an explicitly selected tier and billing cycle');
 assert.match(app, /const selectedTier = open\?\.tier \|\| b\.tier/, 'Billing must retain the selected plan when showing its open invoice');
 assert.match(app, /selected-plan-summary/, 'Billing must explain the selected plan capacity, storage and admin allowance');
-assert.match(sw, /const VERSION = 'v17'/, 'The installed app cache must refresh for authenticated startup');
+assert.match(sw, /const VERSION = 'v18'/, 'The installed app cache must refresh for authenticated startup');
 
 assert.doesNotMatch(util, /subAdminCap/, 'Subscription tiers must not carry a Mini Admin seat quota');
 assert.doesNotMatch(school, /subAdminCap|plan allows .*Mini Admin account/, 'Creating, promoting or reactivating Mini Admins must not be blocked by plan tier');
@@ -209,7 +210,7 @@ assert.match(seo, /application\/ld\+json/, 'The public SEO page must include str
 assert.match(seo, /function renderRobots/, 'The SEO module must publish crawler access rules');
 assert.match(seo, /function renderSitemap/, 'The SEO module must provide an XML sitemap');
 assert.match(wrangler, /"\/about", "\/robots\.txt", "\/sitemap\.xml"/, 'SEO routes must be handled by the Worker rather than the SPA fallback');
-assert.match(sw, /const VERSION = 'v17'/, 'PWA cache must refresh for the new login startup and SEO release');
+assert.match(sw, /const VERSION = 'v18'/, 'PWA cache must refresh for the new login startup and SEO release');
 assert.match(sw, /if \(SHELL\.includes\(url\.pathname\)\)[\s\S]*?caches\.match\(e\.request\)/, 'Static app shell assets must use the versioned cache for fast startup');
 
 assert.ok(!html.includes('\\n<meta'), 'Application metadata tags must be separate valid HTML elements');
