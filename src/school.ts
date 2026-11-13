@@ -198,19 +198,6 @@ export class SchoolDO extends DurableObject<Env> {
 
   notify(userKey: string, title: string, body: string, link?: string) {
     this.run('INSERT INTO notifications (id, user_key, title, body, link, created_at) VALUES (?,?,?,?,?,?)', rid(12), userKey, title, body, link ?? null, now());
-    this.queuePhone(userKey, title, body);
-  }
-
-  /** Queue a WhatsApp/SMS for parents and teachers; the admin sends it from their own phone. */
-  queuePhone(userKey: string, title: string, body: string) {
-    if (this.setting('phone_messages') !== '1') return;
-    let who: Row | null = null, kind = '';
-    if (userKey.startsWith('g:')) { who = this.one('SELECT name, phone FROM guardians WHERE id=?', userKey.slice(2)); kind = 'parent'; }
-    else if (userKey.startsWith('s:')) { who = this.one("SELECT name, phone FROM staff WHERE id=? AND role='teacher' AND active=1", userKey.slice(2)); kind = 'teacher'; }
-    if (!who?.phone) return;
-    const school = this.one("SELECT value FROM meta WHERE key='school_name'")?.value || 'School';
-    this.run('INSERT INTO phone_outbox (id, user_key, name, phone, kind, text, created_at) VALUES (?,?,?,?,?,?,?)',
-      'po_' + rid(12), userKey, who.name, who.phone, kind, `${school}: ${title}\n${body}`, now());
   }
   notifyParentOf(studentId: string, title: string, body: string, link?: string) {
     const s = this.one('SELECT guardian_id, name FROM students WHERE id=?', studentId);
@@ -819,7 +806,7 @@ export class SchoolDO extends DurableObject<Env> {
         canViewStaff: this.isFullAdmin(a) || this.hasPermission(a, 'staff.view'),
         schoolName: this.one("SELECT value FROM meta WHERE key='school_name'")?.value, classes, classTeacherOf: [...a.classTeacherOf], teaches: [...a.teaches], children, settings,
         unread: Number(this.one('SELECT COUNT(*) AS n FROM notifications WHERE user_key=? AND read_at IS NULL', a.key)!.n),
-        outbox: this.isFullAdmin(a) || a.subrole === 'office' ? Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) : 0 });
+      });
     });
 
     app.get('/dashboard', (c) => { const a = c.get('actor'); if (!this.isFullAdmin(a)) this.requirePermission(a, 'dashboard.view'); return c.json(this.dashboard(a)); });
@@ -2086,9 +2073,19 @@ export class SchoolDO extends DurableObject<Env> {
       }
       if (aud === 'student') {
         const target = this.student(a, b.target_id);
-        const mayPostForStudent = this.isFullAdmin(a) || a.classTeacherOf.has(target.class_id) || a.teaches.has(target.class_id) ||
+        const canManageWholeStudentNotice = this.isFullAdmin(a) || a.classTeacherOf.has(target.class_id) ||
           (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, target.class_id));
-        if (!mayPostForStudent) fail(403, 'Only the student’s class teacher, assigned subject teacher or an authorized administrator can post an individual notice');
+        const selectedSubject = String(b.subject || '').trim();
+        if (canManageWholeStudentNotice) {
+          if (selectedSubject && !this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?)', target.class_id, selectedSubject)) fail(400, 'That subject is not assigned to this student’s class');
+          subject = selectedSubject || null;
+        } else {
+          if (!selectedSubject) fail(403, 'A subject teacher must select their assigned subject for this student notice');
+          const assignment = this.one('SELECT 1 FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.teacher_id=? AND a.from_date<=? AND (a.to_date IS NULL OR a.to_date>=?) AND lower(cs.subject)=lower(?) LIMIT 1',
+            target.class_id, a.id, pkt().date, pkt().date, selectedSubject);
+          if (!assignment) fail(403, 'Only a currently assigned subject teacher can update this student’s notice for that subject');
+          subject = selectedSubject;
+        }
       }
       if (!['school', 'class', 'student', 'teachers', 'admins'].includes(aud)) fail(400, 'Choose an audience');
       const id = 'nt_' + rid(10);
@@ -2101,9 +2098,26 @@ export class SchoolDO extends DurableObject<Env> {
       if (aud === 'teachers' || aud === 'school') for (const s of this.q('SELECT id FROM staff WHERE active=1')) keys.add('s:' + s.id);
       if (aud === 'admins') for (const s of this.q("SELECT id FROM staff WHERE active=1 AND role IN ('admin','subadmin')")) keys.add('s:' + s.id);
       keys.delete(a.key);
-      for (const k of keys) this.notify(k, 'Notice: ' + b.title, String(b.body).slice(0, 140), '#/notices');
+      for (const k of keys) this.notify(k, aud === 'student' ? 'Notice for your child: ' + b.title : 'Notice: ' + b.title,
+        String(b.body).slice(0, 140), aud === 'student' ? '#/student/' + b.target_id + '?tab=notices' : '#/notices');
       this.audit(a, 'notice.post', 'notice', id, { audience: aud, title: b.title });
       return c.json({ ok: true, id, recipients: keys.size });
+    });
+    app.patch('/notices/:id', async (c) => {
+      const a = c.get('actor');
+      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
+      if (!n || n.audience !== 'student') fail(404, 'Student notice not found');
+      if (!this.canManageStudentNotice(a, n)) fail(403, 'Only the assigned class teacher, subject teacher or administrator can update this notice');
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm the student notice update');
+      const title = String(b.title || '').trim().slice(0, 120);
+      const body = String(b.body || '').trim().slice(0, 4000);
+      if (!title || !body) fail(400, 'Notice title and text are required');
+      this.run('UPDATE notices SET title=?, body=? WHERE id=?', title, body, n.id);
+      const student = this.one('SELECT guardian_id FROM students WHERE id=?', n.target_id);
+      if (student) this.notify('g:' + student.guardian_id, 'Student notice updated: ' + title, body.slice(0, 140), '#/student/' + n.target_id + '?tab=notices');
+      this.audit(a, 'notice.student.update', 'student', n.target_id, { notice_id: n.id, title });
+      return c.json({ ok: true });
     });
     app.delete('/notices/:id', async (c) => {
       const a = c.get('actor');
@@ -2120,76 +2134,10 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true });
     });
 
-    // ----- message threads (one per student) -----
-    app.get('/threads', (c) => {
-      const a = c.get('actor');
-      if (a.subrole === 'accountant') fail(403, 'No access');
-      const [w, p] = this.studentScope(a, 's');
-      if (this.isAdmin(a) && !a.isMain && a.role !== 'admin') fail(403, 'No access');
-      const rows = this.q(`SELECT s.id AS student_id, s.name, c.name AS class_name, m.body, m.sender_name, m.created_at FROM thread_messages m
-        JOIN students s ON s.id=m.student_id JOIN classes c ON c.id=s.class_id WHERE ${w}
-        AND m.created_at=(SELECT MAX(created_at) FROM thread_messages x WHERE x.student_id=m.student_id) ORDER BY m.created_at DESC LIMIT 200`, ...p);
-      return c.json(rows);
-    });
-    app.get('/threads/:studentId', (c) => {
-      const a = c.get('actor');
-      if (a.subrole === 'accountant' || (a.role === 'subadmin')) fail(403, 'No access');
-      const s = this.student(a, c.req.param('studentId'));
-      if (this.isAdmin(a) && a.type === 'staff') this.audit(a, 'thread.read', 'student', s.id);
-      return c.json({ student: { id: s.id, name: s.name }, messages: this.q('SELECT id, sender_key, sender_name, body, created_at FROM thread_messages WHERE student_id=? ORDER BY created_at', s.id) });
-    });
-    app.post('/threads/:studentId', async (c) => {
-      const a = c.get('actor');
-      if (a.role === 'subadmin') fail(403, 'No access');
-      const s = this.student(a, c.req.param('studentId'));
-      const { body } = await c.req.json<any>();
-      if (!body || !String(body).trim()) fail(400, 'Write a message');
-      const label = a.type === 'guardian' ? `${a.name} (parent)` : a.name;
-      this.run('INSERT INTO thread_messages VALUES (?,?,?,?,?,?)', 'tm_' + rid(12), s.id, a.key, label, String(body).slice(0, 4000), now());
-      const keys = new Set<string>(['g:' + s.guardian_id]);
-      const cl = this.one('SELECT class_teacher_id FROM classes WHERE id=?', s.class_id);
-      if (cl?.class_teacher_id) keys.add('s:' + cl.class_teacher_id);
-      for (const t of this.q('SELECT DISTINCT a.teacher_id FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.from_date<=? AND (a.to_date IS NULL OR a.to_date>=?)', s.class_id, pkt().date, pkt().date)) {
-        // Subject teachers hear only when they have taken part in this thread.
-        if (this.one('SELECT 1 FROM thread_messages WHERE student_id=? AND sender_key=? LIMIT 1', s.id, 's:' + t.teacher_id)) keys.add('s:' + t.teacher_id);
-      }
-      keys.delete(a.key);
-      for (const k of keys) this.notify(k, `Message about ${s.name}`, `${label}: ${String(body).slice(0, 100)}`, `#/thread/${s.id}`);
-      return c.json({ ok: true });
-    });
+    // Student communication is handled through student-specific notices, not chat threads.
 
-    // ----- results (PDF per student, hidden until published) -----
-    app.post('/results', async (c) => {
-      const a = c.get('actor'); const ctx = c.get('ctx');
-      const f = await c.req.formData();
-      const title = String(f.get('title') || '').trim(), session = String(f.get('session') || this.currentSession().name);
-      if (!title) fail(400, 'Title is required');
-      const studentId = f.get('student_id') as string | null;
-      const files = f.getAll('files') as unknown as File[];
-      const out: any[] = [];
-      for (const file of files) {
-        if (!file || typeof file !== 'object' || !file.size) continue;
-        let sid = studentId;
-        if (!sid) {
-          const reg = file.name.replace(/\.pdf$/i, '').trim();
-          sid = this.one('SELECT id FROM students WHERE reg_no=?', reg)?.id ?? null;
-        }
-        let st: Row | null = null;
-        if (sid) { try { st = this.student(a, sid); } catch { st = null; } }
-        const canManageResultClass = !!st && (this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, st.class_id)));
-        const teacherUploadAllowed = !!st && this.setting('teacher_upload_results') === '1' && a.classTeacherOf.has(st.class_id);
-        if (st && !canManageResultClass && !teacherUploadAllowed) fail(403, 'You cannot upload results for this class');
-        if (!st && !(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && a.scopeAll))) {
-          out.push({ file: file.name, ok: false, error: 'No student with this registration number in your assigned results scope' }); continue;
-        }
-        const key = await this.putFile(ctx, a, file, 'results', 10);
-        const id = 'rs_' + rid(10);
-        this.run('INSERT INTO results (id, student_id, session, title, file_key, file_name, uploaded_by, created_at) VALUES (?,?,?,?,?,?,?,?)', id, st?.id ?? null, session, title, key, file.name, a.key, now());
-        out.push({ file: file.name, ok: !!st, id, student: st?.name, error: st ? undefined : 'Unmatched — assign it to a student' });
-      }
-      this.audit(a, 'results.upload', null, null, { title, count: out.length });
-      return c.json({ results: out });
-    });
+// ----- results (PDF per student, hidden until published) -----
+    app.post('/results', () => fail(410, 'Result uploads have been removed. Previously uploaded student results remain available as read-only history.'));
     app.get('/results', (c) => {
       const a = c.get('actor'); if (a.type !== 'staff') fail(403, 'No access');
       const [w, p] = this.studentScope(a, 's');
@@ -2198,29 +2146,8 @@ export class SchoolDO extends DurableObject<Env> {
       const canAssignUnmatched = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && a.scopeAll);
       return c.json(rows.filter((r) => !!r.student_id || canAssignUnmatched));
     });
-    app.post('/results/:id/assign', async (c) => {
-      const a = c.get('actor');
-      const result = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
-      if (!result || result.student_id) return fail(404, 'Unassigned result not found');
-      const { student_id, confirm } = await c.req.json<any>();
-      const student = this.student(a, student_id);
-      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, student.class_id)))) fail(403, 'Results management is not assigned for this class');
-      if (confirm !== true) fail(400, 'Confirm assigning this result PDF to the selected student');
-      this.run('UPDATE results SET student_id=? WHERE id=?', student_id, result.id);
-      this.audit(a, 'result.assign', 'student', student_id, { result_id:result.id, title:result.title });
-      return c.json({ ok: true });
-    });
-    app.post('/results/publish', async (c) => {
-      const a = c.get('actor');
-      const { class_id, title, confirm } = await c.req.json<any>();
-      if (!(this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'results.manage') && this.inClassScope(a, class_id)))) fail(403, 'Results publishing permission is required for this class');
-      if (confirm !== true) fail(400, 'Review the result title and class, then confirm publishing to parents');
-      this.classOf(a, class_id);
-      const rows = this.q('SELECT r.* FROM results r JOIN students s ON s.id=r.student_id WHERE r.published_at IS NULL AND r.deleted_at IS NULL AND s.class_id=? AND r.title=?', class_id, title);
-      for (const r of rows) { this.run('UPDATE results SET published_at=? WHERE id=?', now(), r.id); this.notifyParentOf(r.student_id, 'Result published', `${r.title} is now available.`); }
-      this.audit(a, 'results.publish', 'class', class_id, { title, count: rows.length });
-      return c.json({ published: rows.length });
-    });
+    app.post('/results/:id/assign', () => fail(410, 'Result assignment has been removed.'));
+    app.post('/results/publish', () => fail(410, 'Result publishing has been removed. Historical results remain read-only.'));
     app.delete('/results/:id', (c) => {
       const a = c.get('actor');
       const r = this.one('SELECT * FROM results WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!r) fail(404, 'Not found');
@@ -2271,33 +2198,9 @@ export class SchoolDO extends DurableObject<Env> {
       } });
     });
 
-    // ----- phone outbox: admin sends from own WhatsApp / SMS -----
-    const outboxAccess = (a: Actor) => { if (!(this.isFullAdmin(a) || a.subrole === 'office')) fail(403, 'Only admins can send phone messages'); };
-    app.get('/outbox', (c) => {
-      outboxAccess(c.get('actor'));
-      const status = c.req.query('status') === 'sent' ? 'sent' : 'pending';
-      return c.json(this.q(`SELECT * FROM phone_outbox WHERE status=? ORDER BY created_at ${status === 'sent' ? 'DESC' : 'ASC'} LIMIT 500`, status));
-    });
-    app.post('/outbox/mark', async (c) => {
-      const a = c.get('actor'); outboxAccess(a);
-      const b = await c.req.json<any>();
-      const st = b.status === 'skipped' ? 'skipped' : 'sent';
-      for (const id of (b.ids || []).slice(0, 500)) this.run("UPDATE phone_outbox SET status=?, sent_at=?, sent_by=?, channel=? WHERE id=? AND status='pending'", st, now(), a.key, b.channel || null, id);
-      return c.json({ ok: true });
-    });
-    app.post('/outbox/compose', async (c) => {
-      const a = c.get('actor'); outboxAccess(a);
-      const b = await c.req.json<any>();
-      if (!b.text) fail(400, 'Write a message');
-      const keys = new Set<string>();
-      if (b.to === 'parents' || b.to === 'all') for (const g of this.q("SELECT DISTINCT guardian_id FROM students WHERE status='active'" + (b.class_id ? ' AND class_id=?' : ''), ...(b.class_id ? [b.class_id] : []))) keys.add('g:' + g.guardian_id);
-      if (b.to === 'teachers' || b.to === 'all') for (const s of this.q("SELECT id FROM staff WHERE active=1 AND role='teacher'")) keys.add('s:' + s.id);
-      const before = Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n);
-      for (const k of keys) this.queuePhone(k, b.title || 'Message', b.text);
-      return c.json({ queued: Number(this.one("SELECT COUNT(*) AS n FROM phone_outbox WHERE status='pending'")!.n) - before });
-    });
+    // Phone-message sending has been removed; notifications remain in-app only.
 
-    // ----- notifications -----
+// ----- notifications -----
     app.get('/notifications', (c) => c.json(this.q('SELECT * FROM notifications WHERE user_key=? ORDER BY created_at DESC LIMIT 100', c.get('actor').key)));
     app.post('/notifications/read', (c) => { this.run('UPDATE notifications SET read_at=? WHERE user_key=? AND read_at IS NULL', now(), c.get('actor').key); return c.json({ ok: true }); });
 
@@ -2385,8 +2288,21 @@ export class SchoolDO extends DurableObject<Env> {
     return app;
   }
 
+  canManageStudentNotice(a: Actor, n: Row): boolean {
+    if (this.isFullAdmin(a)) return true;
+    if (n.audience !== 'student') return false;
+    const student = this.one('SELECT class_id FROM students WHERE id=?', n.target_id);
+    if (!student) return false;
+    if (a.classTeacherOf.has(student.class_id)) return true;
+    if (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, student.class_id)) return true;
+    if (!n.subject) return false;
+    return !!this.one('SELECT 1 FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.teacher_id=? AND lower(cs.subject)=lower(?) AND a.from_date<=? AND (a.to_date IS NULL OR a.to_date>=?) LIMIT 1',
+      student.class_id, a.id, n.subject, pkt().date, pkt().date);
+  }
+
   canDeleteNotice(a: Actor, n: Row): boolean {
     if (this.isFullAdmin(a)) return true;
+    if (n.audience === 'student') return this.canManageStudentNotice(a, n);
     if (n.audience !== 'class') return false;
     const classId = String(n.target_id || '');
     if (a.classTeacherOf.has(classId)) return true;
@@ -2418,7 +2334,7 @@ export class SchoolDO extends DurableObject<Env> {
       return n.audience === 'school' || n.audience === 'teachers' || (n.audience === 'class' && a.teaches.has(n.target_id)) || (n.audience === 'student' && (() => { const s = this.one('SELECT class_id FROM students WHERE id=?', n.target_id); return !!s && a.teaches.has(s.class_id); })());
     });
     const reads = this.isAdmin(a);
-    return rows.map((n) => ({ ...n, can_delete: this.canDeleteNotice(a, n), read_count: reads ? Number(this.one('SELECT COUNT(*) AS n FROM notice_reads WHERE notice_id=?', n.id)!.n) : undefined,
+    return rows.map((n) => ({ ...n, can_delete: this.canDeleteNotice(a, n), can_edit: n.audience === 'student' && this.canManageStudentNotice(a, n), read_count: reads ? Number(this.one('SELECT COUNT(*) AS n FROM notice_reads WHERE notice_id=?', n.id)!.n) : undefined,
       target_name: n.audience === 'class' ? this.one('SELECT name FROM classes WHERE id=?', n.target_id)?.name : n.audience === 'student' ? this.one('SELECT name FROM students WHERE id=?', n.target_id)?.name : null }));
   }
 
