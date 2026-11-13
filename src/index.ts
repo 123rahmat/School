@@ -364,13 +364,20 @@ app.post('/api/billing/storage-request', requireSession(['staff']), async (c) =>
 
 app.post('/api/billing/invoice', requireSession(['staff']), async (c) => {
   await requireMainAdmin(c);
-  const { cycle } = await c.req.json<any>().catch(() => ({}));
+  const { cycle, tier } = await c.req.json<any>().catch(() => ({}));
   const sid = c.get('sess').school_id;
-  if (cycle === 'monthly' || cycle === 'yearly') await platformDb(c.env).prepare('UPDATE schools SET cycle=? WHERE id=?').bind(cycle, sid).run();
-  const current: any = await platformDb(c.env).prepare('SELECT cycle FROM schools WHERE id=?').bind(sid).first();
+  if (cycle !== 'monthly' && cycle !== 'yearly') fail(400, 'Choose monthly or yearly billing.');
+  if (typeof tier !== 'string' || !tier || tier === 'trial' || tier === 'custom') fail(400, 'Choose a paid plan. Custom plans must be arranged with the platform owner.');
+  const schoolRow: any = await platformDb(c.env).prepare('SELECT students, tier FROM schools WHERE id=?').bind(sid).first();
+  if (!schoolRow) fail(404, 'Institution not found.');
+  const selected: any = await platformDb(c.env).prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(tier).first();
+  if (!selected) fail(400, 'That subscription plan is unavailable.');
+  if (Number(schoolRow.students || 0) > Number(selected.max_students)) fail(409, 'This plan does not have enough active-student capacity. Choose a higher tier.');
+  if (Number(schoolRow.students || 0) < Number(selected.min_students)) fail(409, 'Your active-student count does not yet match this plan tier.');
   const open: any = await platformDb(c.env).prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(sid).first();
-  if (open && open.cycle === current?.cycle) return c.json(open);
+  if (open && open.cycle === cycle && open.tier === tier) return c.json(open);
   if (open) await platformDb(c.env).prepare("UPDATE invoices SET status='cancelled' WHERE id=? AND status='open'").bind(open.id).run();
+  await platformDb(c.env).prepare('UPDATE schools SET tier=?, cycle=? WHERE id=?').bind(tier, cycle, sid).run();
   const inv = await makeInvoice(c.env, sid);
   return c.json(inv);
 });
@@ -413,10 +420,12 @@ async function makeInvoice(env: Env, schoolId: string) {
   if (existing) return existing;
   const s: any = await db.prepare('SELECT * FROM schools WHERE id=?').bind(schoolId).first();
   if (!s) fail(404, 'Institution not found');
-  const p = await tierFor(env, s.students);
+  const p = s.tier !== 'trial'
+    ? await db.prepare("SELECT * FROM plans WHERE tier=? AND tier NOT IN ('trial','custom')").bind(s.tier).first()
+    : await tierFor(env, s.students);
   if (!p && (s.tier === 'trial' || s.price_override == null)) fail(400, 'No subscription tier covers the current student count');
-  const tier = s.tier !== 'trial' && s.price_override != null ? s.tier : p.tier;
-  const plan: any = s.tier !== 'trial' && s.price_override != null ? await planFor(env, s) : p;
+  const tier = s.tier !== 'trial' ? s.tier : p.tier;
+  const plan: any = s.tier !== 'trial' ? p : p;
   if (!plan) fail(400, 'The institution subscription plan is unavailable');
   let amount = s.price_override ?? (s.cycle === 'yearly' ? plan.yearly : plan.monthly);
   const today = pkt().date;
