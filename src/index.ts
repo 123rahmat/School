@@ -370,7 +370,7 @@ app.post('/api/billing/slip', requireSession(['staff']), async (c) => {
   const form = await c.req.formData();
   const inv: any = await platformDb(c.env).prepare("SELECT * FROM invoices WHERE id=? AND school_id=? AND status='open'").bind(form.get('invoice_id'), ctx.schoolId).first();
   if (!inv) fail(400, 'Invoice not found or already paid');
-  const txn = String(form.get('txn_id') || '').trim().toUpperCase();
+  const txn = String(form.get('txn_id') || '').trim().toUpperCase().slice(0, 120);
   if (!txn) fail(400, 'Transaction ID is required');
   const dup = await platformDb(c.env).prepare("SELECT 1 FROM billing_slips WHERE txn_id=? AND status!='rejected'").bind(txn).first();
   if (dup) fail(409, 'This transaction ID has already been used');
@@ -378,11 +378,12 @@ app.post('/api/billing/slip', requireSession(['staff']), async (c) => {
   let key: string | null = null;
   if (file && typeof file === 'object' && file.size) {
     if (file.size > 5 * 1024 * 1024) fail(400, 'File too large (max 5 MB)');
-    key = `platform/${ctx.schoolId}/slips/${rid(12)}-${file.name.replace(/[^\w.-]/g, '_')}`;
-    await c.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type } });
+    key = `platform/${ctx.schoolId}/slips/${rid(12)}-${file.name.replace(/[^\\w.-]/g, '_')}`;
+    await c.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
   }
+  // The invoice amount is authoritative; never accept a client-supplied amount.
   await platformDb(c.env).prepare('INSERT INTO billing_slips (id, invoice_id, school_id, txn_id, amount, file_key, created_at) VALUES (?,?,?,?,?,?,?)')
-    .bind('bs_' + rid(10), inv.id, ctx.schoolId, txn, Number(form.get('amount') || inv.amount), key, now()).run();
+    .bind('bs_' + rid(10), inv.id, ctx.schoolId, txn, inv.amount, key, now()).run();
   return c.json({ ok: true });
 });
 
@@ -425,13 +426,19 @@ async function makeInvoice(env: Env, schoolId: string) {
 
 async function confirmSlip(env: Env, slipId: string) {
   const sl: any = await platformDb(env).prepare("SELECT * FROM billing_slips WHERE id=? AND status='submitted'").bind(slipId).first();
-  if (!sl) fail(404, 'Slip not found');
-  const inv: any = await platformDb(env).prepare('SELECT * FROM invoices WHERE id=?').bind(sl.invoice_id).first();
-  await platformDb(env).batch([
-    platformDb(env).prepare("UPDATE billing_slips SET status='verified', decided_at=? WHERE id=?").bind(now(), slipId),
-    platformDb(env).prepare("UPDATE invoices SET status='paid' WHERE id=?").bind(inv.id),
-    platformDb(env).prepare("UPDATE schools SET status='active', tier=?, cycle=?, renews_at=? WHERE id=?").bind(inv.tier, inv.cycle, inv.period_end, inv.school_id),
+  if (!sl) fail(404, 'Slip not found or already handled');
+  const inv: any = await platformDb(env).prepare("SELECT * FROM invoices WHERE id=? AND school_id=? AND status='open'").bind(sl.invoice_id, sl.school_id).first();
+  if (!inv) fail(409, 'The invoice is no longer open. Refresh billing before confirming this slip.');
+  if (Number(sl.amount) !== Number(inv.amount)) fail(409, 'The submitted amount does not match the invoice. Resolve the amount discrepancy before confirming.');
+  // Conditional state transitions make repeated or concurrent owner clicks safe.
+  const results = await platformDb(env).batch([
+    platformDb(env).prepare("UPDATE billing_slips SET status='verified', decided_at=? WHERE id=? AND status='submitted' AND EXISTS (SELECT 1 FROM invoices WHERE id=? AND status='open')").bind(now(), slipId, inv.id),
+    platformDb(env).prepare("UPDATE invoices SET status='paid' WHERE id=? AND status='open' AND EXISTS (SELECT 1 FROM billing_slips WHERE id=? AND status='verified')").bind(inv.id, slipId),
+    platformDb(env).prepare("UPDATE schools SET status='active', tier=?, cycle=?, renews_at=? WHERE id=? AND EXISTS (SELECT 1 FROM invoices WHERE id=? AND status='paid')").bind(inv.tier, inv.cycle, inv.period_end, inv.school_id, inv.id),
   ]);
+  if (Number(results[0]?.meta?.changes || 0) !== 1 || Number(results[1]?.meta?.changes || 0) !== 1) {
+    fail(409, 'This payment slip or invoice has already been processed. Refresh the billing page.');
+  }
   const ctx = await systemCtx(env, inv.school_id);
   await callSchoolJson(env, ctx, '/internal/notify-admins', { title: 'Payment confirmed', body: `Receipt: Rs ${inv.amount} received for ${inv.period_start} to ${inv.period_end}. Thank you.`, mainOnly: true }).catch(() => {});
 }
@@ -515,9 +522,10 @@ owner.post('/slips/:id/confirm', async (c) => { await confirmSlip(c.env, c.req.p
 owner.post('/slips/:id/reject', async (c) => {
   const { reason } = await c.req.json<any>();
   if (!reason) fail(400, 'A reason is required');
-  const sl: any = await platformDb(c.env).prepare('SELECT * FROM billing_slips WHERE id=?').bind(c.req.param('id')).first();
-  if (!sl) fail(404, 'Not found');
-  await platformDb(c.env).prepare("UPDATE billing_slips SET status='rejected', reason=?, decided_at=? WHERE id=?").bind(reason, now(), sl.id).run();
+  const sl: any = await platformDb(c.env).prepare("SELECT * FROM billing_slips WHERE id=? AND status='submitted'").bind(c.req.param('id')).first();
+  if (!sl) fail(404, 'Submitted slip not found or already handled');
+  const updated = await platformDb(c.env).prepare("UPDATE billing_slips SET status='rejected', reason=?, decided_at=? WHERE id=? AND status='submitted'").bind(String(reason).slice(0, 500), now(), sl.id).run();
+  if (Number(updated.meta?.changes || 0) !== 1) fail(409, 'This payment slip has already been processed. Refresh the billing page.');
   const ctx = await systemCtx(c.env, sl.school_id);
   await callSchoolJson(c.env, ctx, '/internal/notify-admins', { title: 'Payment slip rejected', body: `Reason: ${reason}. Please upload again under Billing.`, mainOnly: true }).catch(() => {});
   return c.json({ ok: true });
