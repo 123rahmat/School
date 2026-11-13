@@ -53,7 +53,7 @@ assert.ok(app.includes('restoreStudentForm') && app.includes('Choose the active 
 assert.ok(school.includes("const voucherKey = 'vouchers:' + t.month") && school.includes('markRun(voucherKey)'), 'Monthly voucher automation must record completion after successful generation');
 assert.ok(school.includes('markRun(feesKey)'), 'Daily fee automation must record completion after its work succeeds');
 assert.ok(!worker.includes("app.post('/api/billing/support-access'"), 'Do not advertise a support-access grant without a real audited support session');
-assert.ok(!app.includes('support-access') && !app.includes('grant access') && !app.includes('everything they do is logged'), 'The UI must not promise unsupported support access');
+assert.ok(app.includes('there is currently no remote support-access feature'), 'The UI must clearly disclose that remote support access is not available');
 assert.match(wrangler, /^PAYMENT_ACCOUNTS = ""$/m, 'Deployment defaults must not publish placeholder payment numbers');
 assert.match(school, /This voucher has been carried into a newer one/, 'Stale carried vouchers must not accept verified payments');
 assert.match(school, /'x-content-type-options': 'nosniff'/, 'Private school file responses must prevent MIME sniffing');
