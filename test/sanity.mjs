@@ -165,4 +165,10 @@ assert.match(app, /id="plan-tier"/, 'Billing must provide an actual subscription
 assert.match(app, /body: \{ tier, cycle: \$\('#cy'\)\.value \}/, 'The selected plan and billing cycle must be submitted to the server');
 assert.match(sw, /const VERSION = 'v13'/, 'The service worker cache must refresh for the subscription checkout change');
 
+assert.match(worker, /CREATE TABLE IF NOT EXISTS platform_settings/, 'Platform payment settings must persist in the platform database');
+assert.match(worker, /owner\.post\('\/settings\/payment-instructions'/, 'Only the authenticated platform owner may configure official payment instructions');
+assert.match(worker, /paymentSetting\?\.setting_value/, 'School billing must receive the platform owner configured payment instructions');
+assert.match(app, /id="platform-payment-instructions"/, 'The platform owner must have a UI to configure real payment instructions');
+assert.match(app, /api\('\/api\/owner\/settings\/payment-instructions'/, 'The owner payment settings form must save through the protected API');
+
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
