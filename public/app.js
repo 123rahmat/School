@@ -2210,11 +2210,18 @@ route('/billing', async () => {
           <div class="full"><label>Slip (image or PDF)</label><input type="file" name="file" accept="image/jpeg,image/png,image/webp,application/pdf" required></div><div class="full"><button class="btn primary">Upload slip</button></div></form>`
         : `<div class="banner warn">Payment details have not been configured yet. Do not transfer money. Contact the platform administrator and check Billing again after the official account details appear.</div>`}`
     : '<p>No invoice is open. Create one to pay now:</p>'}
-    <div class="row"><select id="cy"><option value="monthly" ${b.cycle === 'monthly' ? 'selected' : ''}>Monthly</option><option value="yearly" ${b.cycle === 'yearly' ? 'selected' : ''}>Yearly (10 months' price)</option></select><button class="btn" id="inv">${open ? 'Recreate invoice' : 'Create invoice'}</button></div>
+    <div class="form">
+      <div><label for="plan-tier">Choose your subscription plan</label><select id="plan-tier">
+        ${(b.plans || []).filter((p) => !['trial','custom'].includes(p.tier) && Number(b.students || 0) >= Number(p.min_students) && Number(b.students || 0) <= Number(p.max_students)).map((p) => `<option value="${esc(p.tier)}" ${p.tier === b.tier ? 'selected' : ''}>${esc(planLabel(p.tier))} · ${p.min_students}–${p.max_students} students</option>`).join('')}
+      </select></div>
+      <div><label for="cy">Billing cycle</label><select id="cy"><option value="monthly" ${b.cycle === 'monthly' ? 'selected' : ''}>Monthly</option><option value="yearly" ${b.cycle === 'yearly' ? 'selected' : ''}>Yearly (10 months' price)</option></select></div>
+    </div>
+    <p class="small muted">Choose a plan that covers your current active-student count. The invoice will use the selected plan and billing cycle. Your plan becomes active only after the platform owner verifies the payment.</p>
+    <div class="row"><button class="btn primary" id="inv" ${!(b.plans || []).some((p) => !['trial','custom'].includes(p.tier) && Number(b.students || 0) >= Number(p.min_students) && Number(b.students || 0) <= Number(p.max_students)) ? 'disabled' : ''}>${open ? 'Update selected plan and invoice' : 'Continue to purchase'}</button></div>
   </div>
-  <h2>Plans</h2><div class="table-wrap"><table><thead><tr><th>Tier</th><th>Active students</th><th class="num">Monthly</th><th class="num">Yearly</th><th class="num">Storage</th><th class="num">Sub-admins</th></tr></thead><tbody>
-  ${(b.plans || []).filter((p) => p.tier !== 'custom').map((p) => `<tr ${p.tier === b.tier ? 'style="font-weight:700"' : ''}><td>${esc(p.tier)}</td><td>${p.min_students}–${p.max_students}</td><td class="num">${p.monthly ? money(p.monthly) : 'Free 14 days'}</td><td class="num">${p.yearly ? money(p.yearly) : ''}</td><td class="num">${p.storage_gb} GB</td><td class="num">${p.sub_admins}</td></tr>`).join('')}
-  <tr><td>custom</td><td>2,000+</td><td colspan="4">Agreed with us</td></tr></tbody></table></div>
+  <h2>Compare plans</h2><div class="table-wrap"><table><thead><tr><th>Tier</th><th>Active students</th><th class="num">Monthly</th><th class="num">Yearly</th><th class="num">Storage</th><th class="num">Sub-admins</th><th></th></tr></thead><tbody>
+  ${(b.plans || []).filter((p) => p.tier !== 'trial').map((p) => `<tr ${p.tier === b.tier ? 'style="font-weight:700"' : ''}><td>${esc(planLabel(p.tier))}</td><td>${p.min_students}–${p.max_students}</td><td class="num">${p.monthly ? money(p.monthly) : 'Custom quote'}</td><td class="num">${p.yearly ? money(p.yearly) : 'Custom quote'}</td><td class="num">${p.storage_gb} GB</td><td class="num">${p.sub_admins}</td><td>${['trial','custom'].includes(p.tier) ? (p.tier === 'custom' ? 'Contact owner' : 'Trial') : (Number(b.students || 0) <= Number(p.max_students) && Number(b.students || 0) >= Number(p.min_students) ? 'Available' : 'Capacity mismatch')}</td></tr>`).join('')}
+  </tbody></table></div>
   <p class="small muted">Every paid plan includes every feature; tiers differ only by size. Teachers and parents are unlimited. Your tier is set by active students 7 days before renewal — students marked as left don't count.</p>
   <h2>Payment history</h2><div class="table-wrap"><table><tbody>${(b.slips || []).map((s) => `<tr><td>${fmtTime(s.created_at)}</td><td>${esc(s.txn_id)}</td><td class="num">${money(s.amount)}</td><td>${badge(s.status, s.status === 'verified' ? 'ok' : s.status === 'rejected' ? 'bad' : 'warn')} ${esc(s.reason || '')}</td></tr>`).join('') || '<tr><td class="muted">None yet</td></tr>'}</tbody></table></div>
 `);
@@ -2257,7 +2264,13 @@ route('/billing', async () => {
   }
 
   const bf = $('#bf'); if (bf) bf.onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/billing/slip', { form: new FormData(e.target) }), 'Slip uploaded — you will be told when it is confirmed'); render(); };
-  $('#inv').onclick = async () => { await act(() => api('/api/billing/invoice', { body: { cycle: $('#cy').value } }), 'Invoice created'); render(); };
+  const invoiceButton = $('#inv');
+  if (invoiceButton) invoiceButton.onclick = async () => {
+    const tier = $('#plan-tier')?.value;
+    if (!tier) return toast('No paid plan currently matches the active-student count. Contact the platform owner for a custom plan.');
+    await act(() => api('/api/billing/invoice', { body: { tier, cycle: $('#cy').value } }), 'Selected plan invoice created. Review the amount and payment details below.');
+    render();
+  };
 });
 
 // ---------- owner panel ----------
