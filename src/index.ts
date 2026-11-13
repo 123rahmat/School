@@ -276,9 +276,16 @@ async function createSchool(env: Env, b: { name: string; kind?: string; admin: {
   const today = pkt().date;
   await platformDb(env).prepare('INSERT INTO schools (id, name, kind, tier, status, renews_at, created_at) VALUES (?,?,?,?,?,?,?)')
     .bind(id, b.name, b.kind || 'school', 'trial', 'trial', addDays(today, 14), now()).run();
-  const ctx = await systemCtx(env, id);
-  await callSchoolJson(env, ctx, '/internal/init', { name: b.name, admin: b.admin });
-  return id;
+  try {
+    const ctx = await systemCtx(env, id);
+    await callSchoolJson(env, ctx, '/internal/init', { name: b.name, admin: b.admin });
+    return id;
+  } catch (error) {
+    // Do not leave a visible platform registry row if the private school database
+    // failed to initialise. The random Durable Object identity is never reused.
+    await platformDb(env).prepare('DELETE FROM schools WHERE id=?').bind(id).run();
+    throw error;
+  }
 }
 
 // ---------- school API: everything goes through the school's own object ----------
@@ -332,10 +339,9 @@ app.get('/api/billing', requireSession(['staff', 'guardian']), async (c) => {
   const slips = (await platformDb(c.env).prepare('SELECT * FROM billing_slips WHERE school_id=? ORDER BY created_at DESC LIMIT 24').bind(s.school_id).all()).results;
   const plans = (await platformDb(c.env).prepare('SELECT * FROM plans ORDER BY sort').all()).results;
   const announcements = (await platformDb(c.env).prepare('SELECT * FROM announcements WHERE school_id IS NULL OR school_id=? ORDER BY created_at DESC LIMIT 5').bind(s.school_id).all()).results;
-  const support = await platformDb(c.env).prepare('SELECT granted_until FROM support_access WHERE school_id=?').bind(s.school_id).first();
   const storageRequests = (await platformDb(c.env).prepare('SELECT id, blocks, status, created_at, decided_at, decision_note FROM storage_requests WHERE school_id=? ORDER BY created_at DESC LIMIT 10').bind(s.school_id).all()).results;
   return c.json({ ...base, institution_kind: sc.kind, cycle: sc.cycle, plan, plans, invoices, slips, students: sc.students, storage_bytes: sc.storage_bytes,
-    storage_limit_bytes: ctx.storageLimitBytes, accounts: c.env.PAYMENT_ACCOUNTS, announcements, support, storage_requests: storageRequests });
+    storage_limit_bytes: ctx.storageLimitBytes, accounts: c.env.PAYMENT_ACCOUNTS, announcements, storage_requests: storageRequests });
 });
 
 app.post('/api/billing/storage-request', requireSession(['staff']), async (c) => {
@@ -387,16 +393,6 @@ app.post('/api/billing/slip', requireSession(['staff']), async (c) => {
   // The invoice amount is authoritative; never accept a client-supplied amount.
   await platformDb(c.env).prepare('INSERT INTO billing_slips (id, invoice_id, school_id, txn_id, amount, file_key, created_at) VALUES (?,?,?,?,?,?,?)')
     .bind('bs_' + rid(10), inv.id, ctx.schoolId, txn, inv.amount, key, now()).run();
-  return c.json({ ok: true });
-});
-
-app.post('/api/billing/support-access', requireSession(['staff']), async (c) => {
-  await requireMainAdmin(c);
-  const { hours } = await c.req.json<any>();
-  const h = Math.max(0, Math.min(72, Number(hours) || 0));
-  const sid = c.get('sess').school_id;
-  if (!h) await platformDb(c.env).prepare('DELETE FROM support_access WHERE school_id=?').bind(sid).run();
-  else await platformDb(c.env).prepare('INSERT OR REPLACE INTO support_access VALUES (?,?)').bind(sid, new Date(Date.now() + h * 3600e3).toISOString()).run();
   return c.json({ ok: true });
 });
 
@@ -490,8 +486,7 @@ const owner = new Hono<V>();
 owner.use('*', requireSession(['owner']));
 owner.get('/overview', async (c) => {
   const schools = (await platformDb(c.env).prepare(`SELECT s.*, p.storage_gb AS base_storage_gb, p.sub_admins AS plan_sub_admins,
-     (SELECT COUNT(*) FROM billing_slips b WHERE b.school_id=s.id AND b.status='submitted') AS slips_waiting,
-     (SELECT granted_until FROM support_access a WHERE a.school_id=s.id) AS support_until
+     (SELECT COUNT(*) FROM billing_slips b WHERE b.school_id=s.id AND b.status='submitted') AS slips_waiting
      FROM schools s LEFT JOIN plans p ON p.tier=s.tier ORDER BY s.created_at DESC`).all()).results as any[];
   const storageRequests = (await platformDb(c.env).prepare(`SELECT r.*, s.name AS institution_name, s.kind AS institution_kind, s.extra_storage_gb
      FROM storage_requests r JOIN schools s ON s.id=r.school_id WHERE r.status='pending' ORDER BY r.created_at ASC`).all()).results as any[];
