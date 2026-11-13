@@ -1457,7 +1457,7 @@ route('/classes', async () => {
   const [rows, staff] = await Promise.all([S('/classes'), ME.isAdmin ? S('/staff') : []]);
   view(`<div class="row between"><h1>Classes</h1>${ME.role === 'admin' ? '<button class="btn primary" id="add">Add class</button>' : ''}</div>
   <div class="table-wrap"><table><thead><tr><th>Class</th><th>Class teacher</th><th>Subject teachers</th><th class="num">Students</th><th></th></tr></thead><tbody>
-  ${rows.map((c) => `<tr><td><a href="/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${s.teacher_name || '–'}`).join(', '))}</td><td class="num">${c.students}</td>
+  ${rows.map((c) => `<tr><td><a href="/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${(s.teachers || []).filter((t) => !t.to_date).map((t) => t.teacher_name).join(', ') || 'Unassigned'}`).join(', '))}</td><td class="num">${c.students}</td>
    <td>${ME.role === 'admin' ? `<button class="btn small" data-edit="${c.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No classes yet</td></tr>'}
   </tbody></table></div>`);
   const form = (c) => modal(`<h2>${c ? 'Edit class' : 'Add class'}</h2><form id="cf" class="form">
@@ -1465,8 +1465,11 @@ route('/classes', async () => {
     <div><label>Grade (number, for promotion order)</label><input name="grade" type="number" value="${esc(c?.grade ?? '')}"></div>
     <div><label>Room</label><input name="room" value="${esc(c?.room)}"></div>
     <div><label>Class teacher</label><select name="class_teacher_id"><option value="">—</option>${staff.map((t) => `<option value="${t.id}" ${c?.class_teacher_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
-    ${c ? `<div class="full"><h3>Subject teachers</h3>${c.subjects.map((s) => `<div class="row">${esc(s.subject)}: ${esc(s.teacher_name || '–')} <a href="#" data-rm="${s.id}">remove</a></div>`).join('')}
-      <div class="row" style="margin-top:8px"><input id="subj" placeholder="Subject"><select id="subt">${staff.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><button type="button" class="btn small" id="addsub">Add</button></div></div>` : ''}
+    ${c ? `<div class="full stack"><h3>Subjects and teacher assignments</h3>${c.subjects.map((s) => `<div class="card stack"><div class="row between"><b>${esc(s.subject)}</b><a href="#" data-rm="${s.id}">Remove subject</a></div>
+        ${(s.teachers || []).map((t) => `<div class="row between small"><span>${esc(t.teacher_name)} · from ${fmtDate(t.from_date)}${t.to_date ? ' · ended ' + fmtDate(t.to_date) : ' · current'}</span>${t.to_date ? '' : `<button type="button" class="btn small danger" data-end-assignment="${esc(t.assignment_id)}" data-subject-id="${esc(s.id)}">End assignment</button>`}</div>`).join('') || '<p class="small muted">No teacher assigned yet.</p>'}
+        <div class="row"><select data-teacher-for="${esc(s.id)}">${staff.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><input type="date" data-from-for="${esc(s.id)}" value="${today()}" aria-label="Assignment start date"><button type="button" class="btn small" data-add-assignment="${esc(s.id)}">Assign teacher</button></div>
+      </div>`).join('')}
+      <div class="row" style="margin-top:8px"><input id="subj" placeholder="New subject"><select id="subt"><option value="">No teacher yet</option>${staff.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><button type="button" class="btn small" id="addsub">Add subject</button></div></div>` : ''}
     <div class="full row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#cf', m).onsubmit = async (e) => {
       e.preventDefault(); const b = formData(e.target);
@@ -1485,11 +1488,21 @@ route('/classes', async () => {
     };
     if (c) {
       $('#addsub', m).onclick = async () => {
-        const subject = $('#subj', m).value, teacher_id = $('#subt', m).value;
-        if (!subject.trim() || !confirm('Assign ' + teacher_id + ' to teach ' + subject + ' in ' + c.name + '?')) return;
+        const subject = $('#subj', m).value.trim(), teacher_id = $('#subt', m).value;
+        if (!subject || !confirm('Add ' + subject + ' to ' + c.name + (teacher_id ? ' and assign the selected teacher?' : '?'))) return;
         await act(() => S(`/classes/${c.id}/subjects`, { body: { subject, teacher_id, confirm: true } }), 'Subject added'); closeModal(); render();
       };
-      $$('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject teacher assignment? Historical attendance and subject history remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
+      $('[data-add-assignment]', m).forEach((button) => button.onclick = async () => {
+        const sid = button.dataset.addAssignment, teacher_id = $(`[data-teacher-for="${sid}"]`, m).value, from_date = $(`[data-from-for="${sid}"]`, m).value;
+        if (!teacher_id || !from_date || !confirm('Assign this teacher to ' + c.name + ' from ' + fmtDate(from_date) + '?')) return;
+        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers`, { body: { teacher_id, from_date, confirm: true } }), 'Teacher assigned to subject'); render();
+      });
+      $('[data-end-assignment]', m).forEach((button) => button.onclick = async () => {
+        const sid = button.dataset.subjectId, aid = button.dataset.endAssignment;
+        if (!confirm('End this teacher assignment from today? Its historical record will remain.')) return;
+        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers/${aid}/end`, { body: { to_date: today(), confirm: true } }), 'Subject teacher assignment ended'); closeModal(); render();
+      });
+      $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject? All teacher assignment history will remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
   });
   if ($('#add')) $('#add').onclick = () => form(null);
@@ -1501,7 +1514,7 @@ route('/class/:id', async ({ id }) => {
   const staff = (ME.isFullAdmin || ME.canManageAttendance) ? await S('/staff') : [];
   view(`<div class="row between"><div><h1 style="margin:0">Class ${esc(d.class.name)}</h1><div class="muted">Class teacher: ${esc(d.class.class_teacher_name || '–')}${d.class.room ? ' · Room ' + esc(d.class.room) : ''}</div></div>
   <div class="row"><a class="btn" href="/attendance/${id}">Attendance</a><a class="btn" href="/register/${id}/${thisMonth()}">Monthly register</a>${ME.isFullAdmin ? '<button class="btn" id="rep">Replace teacher</button>' : ''}</div></div>
-  <h2>Subject teachers</h2><div class="card">${d.subjects.map((s) => `${esc(s.subject)}: ${esc(s.teacher_name || '–')}`).join(' · ') || '<span class="muted">None</span>'}</div>
+  <h2>Subject teachers</h2><div class="card stack">${d.subjects.map((s) => `<div><b>${esc(s.subject)}</b><div class="small">${(s.teachers || []).map((t) => `${esc(t.teacher_name)} · ${fmtDate(t.from_date)}${t.to_date ? ' – ' + fmtDate(t.to_date) : ' – current'}`).join('<br>') || '<span class="muted">No teacher assigned</span>'}</div></div>`).join('') || '<span class="muted">No subjects assigned</span>'}</div>
   <h2>Today: ${badge(d.today.status, d.today.status === 'submitted' ? 'ok' : 'warn')}</h2>
   <div class="table-wrap"><table><thead><tr><th>Reg</th><th>Student</th><th>Today</th>${d.fees ? '<th class="num">Fee this month</th><th>Status</th>' : ''}</tr></thead><tbody>
   ${d.students.map((s) => { const t = d.today.students.find((x) => x.id === s.id); const f = d.fees?.find((x) => x.student_name === s.name);
