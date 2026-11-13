@@ -186,7 +186,7 @@ body:has(.auth) { background: radial-gradient(1000px 520px at 80% -10%, #1B3570 
 .print-only { display: none; }
 @media print {
   :root { --bg: #fff; --card: #fff; --text: #000; --head: #000; --muted: #444; --line: #bbb; --brand: #000; --bg-2: #f2f2f2; }
-  .side, .top, .no-print, .btn { display: none !important; }
+  .side, .top, .tools-panel, .tools-scrim, .no-print, .btn { display: none !important; }
   .layout { display: block; } .content { padding: 0; max-width: none; }
   .card, .table-wrap, .stat { box-shadow: none; } .print-only { display: block; }
   body { background: #fff; color: #000; }
