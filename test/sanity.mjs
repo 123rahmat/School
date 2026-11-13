@@ -157,4 +157,12 @@ assert.match(css, /@media \(max-width: 860px\)/, 'The workspace must have a mobi
 assert.match(sw, /const VERSION = 'v12'/, 'The service worker shell cache must be refreshed for this UI release');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
 
+assert.match(worker, /const \{ cycle, tier \} = await c\.req\.json/, 'Subscription checkout must accept the plan explicitly selected by the main administrator');
+assert.match(worker, /Choose a paid plan/, 'Subscription checkout must reject missing or trial-only plan selections');
+assert.match(worker, /selected\.max_students/, 'Subscription checkout must validate selected plan capacity against active students');
+assert.match(worker, /UPDATE schools SET tier=\?, cycle=\? WHERE id=\?/, 'The selected plan and billing cycle must be stored before invoice generation');
+assert.match(app, /id="plan-tier"/, 'Billing must provide an actual subscription tier selector');
+assert.match(app, /body: \{ tier, cycle: \$\('#cy'\)\.value \}/, 'The selected plan and billing cycle must be submitted to the server');
+assert.match(sw, /const VERSION = 'v13'/, 'The service worker cache must refresh for the subscription checkout change');
+
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
