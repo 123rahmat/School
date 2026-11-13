@@ -379,12 +379,12 @@ function nav() {
   const items = [];
   if (ME.kind === 'owner') items.push(link('/owner', 'Owner panel'));
   else if (ME.kind === 'guardian') {
-    items.push(link('/', 'My children'), link('/submissions', 'My submissions'), link('/notices', 'Notices'), link('/threads', 'Messages'));
+    items.push(link('/', 'My children'), link('/timetable', 'Timetable'), link('/submissions', 'My submissions'), link('/notices', 'Notices'), link('/threads', 'Messages'));
   } else {
     items.push(link('/', ME.isAdmin ? 'Dashboard' : 'Today'));
     items.push(`<div class="group">People</div>`, link('/students', 'Students'));
     if (ME.isAdmin) items.push(link('/staff', 'Teachers & staff'));
-    items.push(link('/classes', 'Classes'));
+    items.push(link('/classes', 'Classes'), link('/timetable', 'Timetable'));
     // Class and subject assignments are managed from the Classes workspace.
     items.push(`<div class="group">Daily work</div>`, link('/attendance', 'Attendance'));
     if (ME.canFees || ME.classTeacherOf.length) items.push(link('/fees', 'Fees'));
@@ -417,7 +417,8 @@ function workspaceToolsHtml() {
     add('/', ME.isAdmin ? 'Dashboard' : 'Today', 'Your school at a glance', '⌂');
     add('/students', 'Students', 'Profiles, enrolment and records', '01');
     add('/classes', 'Classes', 'Class groups and teacher assignments', '02');
-    add('/attendance', 'Attendance', 'Daily registers and corrections', '03');
+    add('/timetable', 'Timetable', 'Weekly periods and room schedules', '03');
+    add('/attendance', 'Attendance', 'Daily registers and corrections', '04');
     if (ME.canFees || (ME.classTeacherOf || []).length) add('/fees', 'Fees', 'Vouchers and payment records', '04');
     if (ME.isAdmin) add('/staff', 'Teachers & staff', 'Accounts and responsibilities', '05');
     add('/results', 'Results', 'Upload and publish result files', '06');
@@ -1510,6 +1511,75 @@ route('/classes', async () => {
   });
   if ($('#add')) $('#add').onclick = () => form(null);
   $$('[data-edit]').forEach((b) => b.onclick = () => form(rows.find((c) => c.id === b.dataset.edit)));
+});
+
+route('/timetable', async () => {
+  const [slots, classes] = await Promise.all([S('/timetable'), S('/classes').catch(() => [])]);
+  const isManager = !!ME.isFullAdmin;
+  const staff = isManager ? await S('/staff') : [];
+  const days = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const subjects = classes.flatMap((cl) => (cl.subjects || []).map((subject) => ({ ...subject, class_id: cl.id, class_name: cl.name })));
+  const formatPeriod = (slot) => slot.start_time + '–' + slot.end_time;
+  view(`<div class="row between"><div><h1>Weekly timetable</h1><p class="small muted">Recurring lessons, effective dates and teacher/room availability.</p></div>${isManager ? '<button class="btn primary" id="tt-add">Add period</button>' : ''}</div>
+  <div class="grid">
+    <div class="stat"><div class="l">Scheduled periods</div><div class="n">${slots.length}</div></div>
+    <div class="stat"><div class="l">Classes in your timetable</div><div class="n">${new Set(slots.map((s) => s.class_id)).size}</div></div>
+    <div class="stat"><div class="l">Teachers scheduled</div><div class="n">${new Set(slots.map((s) => s.teacher_id)).size}</div></div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Day</th><th>Time</th><th>Class / subject</th><th>Teacher</th><th>Room</th><th>Effective dates</th>${isManager ? '<th></th>' : ''}</tr></thead><tbody>
+  ${slots.map((slot) => `<tr><td><b>${esc(days[slot.weekday] || 'Day')}</b></td><td class="num">${esc(formatPeriod(slot))}</td><td>${esc(slot.class_name)}<div class="small muted">${esc(slot.subject)}</div></td><td>${esc(slot.teacher_name)}</td><td>${esc(slot.room || slot.class_room || '–')}</td><td class="small">${fmtDate(slot.effective_from)} – ${slot.effective_to ? fmtDate(slot.effective_to) : 'ongoing'}<div>${badge(slot.is_current ? 'Current' : 'Upcoming', slot.is_current ? 'ok' : 'info')}</div></td>${isManager ? `<td><button class="btn small danger" data-cancel-slot="${esc(slot.id)}">Cancel</button></td>` : ''}</tr>`).join('') || `<tr><td colspan="${isManager ? 7 : 6}" class="muted">No timetable periods are scheduled for your accessible classes.</td></tr>`}
+  </tbody></table></div>
+  <p class="small muted">A period repeats every week on its selected weekday until its end date. The system prevents class, teacher and room conflicts before saving.</p>`);
+  const eligibleAssignments = (subject, from, to) => (subject?.teachers || []).filter((assignment) =>
+    assignment.from_date <= from && (to ? (!assignment.to_date || assignment.to_date >= to) : !assignment.to_date));
+  const add = $('#tt-add');
+  if (add) add.onclick = () => modal(`<h2>Add weekly period</h2><form id="tt-form" class="form">
+    <div class="full"><label>Class and subject</label><select id="tt-subject" required>${subjects.map((s) => `<option value="${esc(s.id)}">${esc(s.class_name)} — ${esc(s.subject)}</option>`).join('')}</select></div>
+    <div><label>Teacher</label><select id="tt-teacher" required></select></div>
+    <div><label>Weekday</label><select name="weekday" required>${days.slice(1).map((day, i) => `<option value="${i + 1}">${day}</option>`).join('')}</select></div>
+    <div><label>Start time</label><input name="start_time" type="time" required value="08:00"></div>
+    <div><label>End time</label><input name="end_time" type="time" required value="08:40"></div>
+    <div><label>Room (optional)</label><input name="room" maxlength="80" placeholder="Room 4 / Lab"></div>
+    <div><label>Effective from</label><input id="tt-from" name="effective_from" type="date" required value="${today()}"></div>
+    <div><label>Effective until (optional)</label><input id="tt-to" name="effective_to" type="date"></div>
+    <p id="tt-eligibility" class="full small muted"></p>
+    <div class="full row"><button class="btn primary">Save period</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (m) => {
+    const subjectSelect = $('#tt-subject', m), teacherSelect = $('#tt-teacher', m), fromInput = $('#tt-from', m), toInput = $('#tt-to', m);
+    const refreshTeachers = () => {
+      const subject = subjects.find((s) => s.id === subjectSelect.value);
+      const from = fromInput.value, to = toInput.value;
+      const eligible = from ? eligibleAssignments(subject, from, to) : [];
+      teacherSelect.innerHTML = eligible.map((a) => {
+        const name = staff.find((t) => t.id === a.teacher_id)?.name || a.teacher_id;
+        return `<option value="${esc(a.teacher_id)}">${esc(name)} · from ${fmtDate(a.from_date)}${a.to_date ? ' to ' + fmtDate(a.to_date) : ''}</option>`;
+      }).join('');
+      $('#tt-eligibility', m).textContent = eligible.length
+        ? 'Only teachers assigned to this subject for the entire selected date range are available.'
+        : 'No teacher has a subject assignment covering this date range. Add or extend a subject-teacher assignment in Classes first.';
+    };
+    subjectSelect.onchange = refreshTeachers;
+    fromInput.onchange = refreshTeachers;
+    toInput.onchange = refreshTeachers;
+    refreshTeachers();
+    $('#tt-form', m).onsubmit = async (event) => {
+      event.preventDefault();
+      const values = formData(event.target);
+      const subject = subjects.find((s) => s.id === subjectSelect.value);
+      if (!subject) return toast('Choose a valid class subject.');
+      const payload = { ...values, class_id: subject.class_id, class_subject_id: subject.id, teacher_id: teacherSelect.value, confirm: true };
+      if (!payload.teacher_id) return toast('No teacher is assigned to this subject for the selected dates.');
+      if (!confirm('Schedule ' + subject.subject + ' for ' + subject.class_name + ' on ' + days[Number(payload.weekday)] + ' from ' + payload.start_time + ' to ' + payload.end_time + '?')) return;
+      await act(() => S('/timetable', { body: payload }), 'Weekly period scheduled'); closeModal(); render();
+    };
+  });
+  $('[data-cancel-slot]').forEach((button) => button.onclick = async () => {
+    const reason = prompt('Reason for cancelling this timetable period?');
+    if (!reason?.trim()) return;
+    if (!confirm('Cancel this recurring timetable period? Its record will remain in the audit history.')) return;
+    await act(() => S('/timetable/' + encodeURIComponent(button.dataset.cancelSlot) + '/cancel', { body: { reason, confirm: true } }), 'Timetable period cancelled');
+    render();
+  });
 });
 
 route('/class/:id', async ({ id }) => {
