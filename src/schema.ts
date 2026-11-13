@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS class_subject_history (
   from_date TEXT NOT NULL, to_date TEXT, changed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS class_subject_history_class ON class_subject_history(class_id, subject, from_date);
+CREATE TABLE IF NOT EXISTS class_subject_teacher_assignments (
+  id TEXT PRIMARY KEY, class_subject_id TEXT NOT NULL, teacher_id TEXT NOT NULL,
+  from_date TEXT NOT NULL, to_date TEXT, changed_by TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS class_subject_teacher_active ON class_subject_teacher_assignments(teacher_id, from_date, to_date);
+CREATE INDEX IF NOT EXISTS class_subject_teacher_subject ON class_subject_teacher_assignments(class_subject_id, from_date, to_date);
+CREATE UNIQUE INDEX IF NOT EXISTS class_subject_teacher_open_unique ON class_subject_teacher_assignments(class_subject_id, teacher_id) WHERE to_date IS NULL;
 
 -- Weekly timetable, dated substitutions and syllabus library are intentionally excluded
 -- from the focused school workflow. Existing legacy tables are left untouched in
