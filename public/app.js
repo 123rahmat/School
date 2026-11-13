@@ -1492,7 +1492,7 @@ route('/classes', async () => {
         if (!subject || !confirm('Add ' + subject + ' to ' + c.name + (teacher_id ? ' and assign the selected teacher?' : '?'))) return;
         await act(() => S(`/classes/${c.id}/subjects`, { body: { subject, teacher_id, confirm: true } }), 'Subject added'); closeModal(); render();
       };
-      $('[data-add-assignment]', m).forEach((button) => button.onclick = async () => {
+      $$('[data-add-assignment]', m).forEach((button) => button.onclick = async () => {
         const sid = button.dataset.addAssignment, teacher_id = $(`[data-teacher-for="${sid}"]`, m).value, from_date = $(`[data-from-for="${sid}"]`, m).value;
         if (!teacher_id || !from_date || !confirm('Assign this teacher to ' + c.name + ' from ' + fmtDate(from_date) + '?')) return;
         await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers`, { body: { teacher_id, from_date, confirm: true } }), 'Teacher assigned to subject'); render();
@@ -1505,7 +1505,7 @@ route('/classes', async () => {
         if (!confirm('End this teacher assignment after ' + fmtDate(endDate) + '? Its history will be retained.')) return;
         await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers/${aid}/end`, { body: { to_date: endDate, confirm: true } }), 'Subject teacher end date saved'); closeModal(); render();
       });
-      $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject? All teacher assignment history will remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
+      $$('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject? All teacher assignment history will remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
   });
   if ($('#add')) $('#add').onclick = () => form(null);
