@@ -113,7 +113,10 @@ export class SchoolDO extends DurableObject<Env> {
       const a: Actor = { ...base, key: 's:' + s!.id, type: 'staff', id: s!.id, publicId: s!.public_id, name: s!.name, role: s!.role, subrole: s!.subrole, isMain: !!s!.is_main,
         permissions: new Set(permissions), scopeClasses: new Set(scopeClasses), scopeAll };
       for (const r of this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', s!.id)) { a.classTeacherOf.add(r.id); a.teaches.add(r.id); }
-      for (const r of this.q('SELECT class_id FROM class_subjects WHERE teacher_id=?', s!.id)) a.teaches.add(r.class_id);
+      const assignmentDate = pkt().date;
+      for (const r of this.q(`SELECT DISTINCT cs.class_id FROM class_subject_teacher_assignments a
+        JOIN class_subjects cs ON cs.id=a.class_subject_id
+        WHERE a.teacher_id=? AND a.from_date<=? AND (a.to_date IS NULL OR a.to_date>=?)`, s!.id, assignmentDate, assignmentDate)) a.teaches.add(r.class_id);
       return a;
     }
     const g = this.one('SELECT * FROM guardians WHERE id=?', ctx.refId);
@@ -843,7 +846,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (!this.isFullAdmin(a) && !this.hasPermission(a, 'staff.view') && !this.hasPermission(a, 'attendance.manage')) fail(403, 'Staff directory access has not been granted to this account');
       const cols = this.isFullAdmin(a) ? '*' : 'id, name, role, subjects, active';
       const rows = this.q(`SELECT ${cols} FROM staff WHERE active=? ORDER BY is_main DESC, role, name`, active);
-      return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT c.name, cs.subject FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=?', r.id) })));
+      return c.json(rows.map((r) => ({ ...r, classes: this.q('SELECT name FROM classes WHERE class_teacher_id=? AND active=1', r.id).map((x) => x.name), subject_classes: this.q('SELECT DISTINCT c.name, cs.subject FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id JOIN classes c ON c.id=cs.class_id WHERE a.teacher_id=? AND a.to_date IS NULL', r.id) })));
     });
     app.post('/staff', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -886,7 +889,7 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({
         staff: s,
         classTeacherOf: this.q('SELECT id, name FROM classes WHERE class_teacher_id=? AND active=1 ORDER BY grade,name', id),
-        subjects: this.q('SELECT cs.id,cs.subject,c.name AS class_name,c.id AS class_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE cs.teacher_id=? ORDER BY c.grade,c.name,cs.subject', id),
+        subjects: this.q('SELECT DISTINCT cs.id,cs.subject,c.name AS class_name,c.id AS class_id FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id JOIN classes c ON c.id=cs.class_id WHERE a.teacher_id=? AND a.to_date IS NULL ORDER BY c.grade,c.name,cs.subject', id),
         submissions: this.q('SELECT d.date, c.name AS class_name, d.submitted_at FROM attendance_days d JOIN classes c ON c.id=d.class_id WHERE d.submitted_by=? ORDER BY d.date DESC LIMIT 30', 's:' + id),
         notices: this.q('SELECT id, title, created_at FROM notices WHERE posted_by=? ORDER BY created_at DESC LIMIT 20', 's:' + id),
         cashHeld: this.q("SELECT p.id, p.amount, p.created_at, s.name AS student_name FROM payments p JOIN students s ON s.id=p.student_id WHERE p.held_by=? AND p.handover_id IS NULL AND p.status IN ('submitted','verified')", 's:' + id),
@@ -1004,7 +1007,7 @@ export class SchoolDO extends DurableObject<Env> {
       const classIds: string[] = [...new Set<string>((Array.isArray(b.transfer_class_ids) ? b.transfer_class_ids : []).map((id: unknown): string => String(id)))];
       const subjectIds: string[] = [...new Set<string>((Array.isArray(b.transfer_subject_ids) ? b.transfer_subject_ids : []).map((id: unknown): string => String(id)))];
       const validClasses = new Set(this.q('SELECT id FROM classes WHERE class_teacher_id=? AND active=1', oldId).map((r) => r.id));
-      const validSubjects = new Set(this.q('SELECT id FROM class_subjects WHERE teacher_id=?', oldId).map((r) => r.id));
+      const validSubjects = new Set(this.q('SELECT DISTINCT cs.id FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE a.teacher_id=? AND a.to_date IS NULL', oldId).map((r) => r.id));
       if (classIds.some((id) => !validClasses.has(id)) || subjectIds.some((id) => !validSubjects.has(id))) fail(400, 'One or more selected teaching assignments no longer belong to this teacher. Refresh and review again.');
       const newId = this.replaceTeacherProfile(a, old, { name, email, phone, subjects: b.subjects || null }, effective, {
         classIds, subjectIds,
@@ -1883,8 +1886,8 @@ export class SchoolDO extends DurableObject<Env> {
       if (aud === 'class') {
         const classId = String(b.target_id || '');
         this.classOf(a, classId);
-        const assignedSubject = this.one('SELECT subject FROM class_subjects WHERE class_id=? AND teacher_id=? AND lower(subject)=lower(?)', classId, a.id, String(b.subject || '').trim());
-        const hasAnySubject = !!this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, a.id);
+        const assignedSubject = this.one('SELECT cs.subject FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.teacher_id=? AND a.to_date IS NULL AND lower(cs.subject)=lower(?)', classId, a.id, String(b.subject || '').trim());
+        const hasAnySubject = !!this.one('SELECT 1 FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.teacher_id=? AND a.to_date IS NULL', classId, a.id);
         const mayManage = this.isFullAdmin(a) || (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, classId));
         if (!mayManage && !a.classTeacherOf.has(classId)) {
           if (!hasAnySubject) fail(403, 'You can only post a notice to a class where you teach a subject');
@@ -1959,7 +1962,7 @@ export class SchoolDO extends DurableObject<Env> {
       const keys = new Set<string>(['g:' + s.guardian_id]);
       const cl = this.one('SELECT class_teacher_id FROM classes WHERE id=?', s.class_id);
       if (cl?.class_teacher_id) keys.add('s:' + cl.class_teacher_id);
-      for (const t of this.q('SELECT DISTINCT teacher_id FROM class_subjects WHERE class_id=? AND teacher_id IS NOT NULL', s.class_id)) {
+      for (const t of this.q('SELECT DISTINCT a.teacher_id FROM class_subject_teacher_assignments a JOIN class_subjects cs ON cs.id=a.class_subject_id WHERE cs.class_id=? AND a.to_date IS NULL', s.class_id)) {
         // Subject teachers hear only when they have taken part in this thread.
         if (this.one('SELECT 1 FROM thread_messages WHERE student_id=? AND sender_key=? LIMIT 1', s.id, 's:' + t.teacher_id)) keys.add('s:' + t.teacher_id);
       }
