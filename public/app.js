@@ -486,7 +486,7 @@ function view(html) {
         <button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open workspace tools"><span class="tools-toggle-icon" aria-hidden="true">☷</span><span class="tools-toggle-text">Tools</span></button>
         <button class="btn small hidden" id="install">Install app</button>
       </div>
-      <div class="content">${billingBanner()}<div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
+      <div class="content"><div id="billing-banner-slot">${billingBanner()}</div><div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
     </div>
     <aside class="tools-panel" id="tools-panel" aria-label="Workspace tools">${workspaceToolsHtml()}</aside>
   </div>`;
@@ -625,26 +625,40 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 async function refreshMe() {
   const w = await api('/api/whoami', { quiet: true });
   ME = w.signedIn ? w : null;
+  BILL = null;
   setSessionHint(!!ME);
-  if (ME && ME.isMainAdmin) BILL = await api('/api/billing').catch(() => null);
+}
+
+// Billing banners are useful, but they are not needed to decide where to send a user.
+// Load them after the first workspace screen so sign-in is not blocked by a second API call.
+async function loadBillingStatus() {
+  if (!ME?.isMainAdmin) return;
+  const identity = ME.id;
+  const schoolId = ME.schoolId;
+  const result = await api('/api/billing', { quiet: true }).catch(() => null);
+  if (!result || ME?.id !== identity || ME?.schoolId !== schoolId) return;
+  BILL = result;
+  const slot = $('#billing-banner-slot');
+  if (slot) slot.innerHTML = billingBanner();
 }
 
 // ---------- sign in / sign up ----------
-function authPage(inner) {
+function authPage(inner, options = {}) {
+  const minimal = options.minimal === true;
   document.body.classList.add('auth-screen');
+  document.body.classList.toggle('auth-minimal', minimal);
   $('#app').innerHTML = `
     <main class="auth-page">
       <div id="connection-notice-slot">${connectionBannerHtml()}</div>
-      <div class="auth-frame">
-        <a class="auth-home" href="/" aria-label="Back to home">← Back to home</a>
+      <div class="auth-frame${minimal ? ' auth-frame-minimal' : ''}">
+        ${minimal ? '' : '<a class="auth-home" href="/about" aria-label="Product information">About the platform</a>'}
         <div class="auth-logo-stage" aria-label="Institution Manager">
-          <span class="auth-logo-orbit orbit-one"></span>
-          <span class="auth-logo-orbit orbit-two"></span>
+          ${minimal ? '' : '<span class="auth-logo-orbit orbit-one"></span><span class="auth-logo-orbit orbit-two"></span>'}
           <span class="auth-logo-glow"></span>
           <img class="auth-logo" src="/icon.svg" alt="Institution Manager">
         </div>
         <div class="auth card">${inner}</div>
-        <p class="auth-assurance">Secure sign-in · Your account stays yours</p>
+        ${minimal ? '' : '<p class="auth-assurance">Institution workspace</p>'}
       </div>
     </main>`;
 }
@@ -879,13 +893,11 @@ route('/admin', async () => {
 
 route('/login', async () => {
   authPage([
-    '<h1>Welcome back</h1>',
-    '<p class="muted small auth-description">Continue with the Google account registered with your institution.</p>',
     '<div id="gbtn" class="google-button-slot"></div>',
     '<p id="authmsg" class="small muted" role="status" aria-live="polite"></p>',
     '<div id="authnext"></div>',
-    '<p class="small muted auth-switch">New institution? <a href="/signup">Register your institution</a></p>',
-  ].join(''));
+    '<div class="login-links"><a href="/signup">Create institution</a><a href="/about">About</a></div>',
+  ].join(''), { minimal: true });
   await mountGoogleButton($('#gbtn'), async (credential) => {
     const r = await api('/api/auth/google', { body: { credential } });
     if (r.choose) {
@@ -902,6 +914,7 @@ route('/login', async () => {
           await refreshMe();
           if (!ME) throw new Error('Your secure session could not be created. Please retry sign-in.');
           go('/');
+          loadBillingStatus();
           flushOutbox();
         } catch (error) {
           button.disabled = false;
@@ -913,6 +926,7 @@ route('/login', async () => {
     await refreshMe();
     if (!ME) throw new Error('Google verified your account, but your secure session was not created. Please retry.');
     go('/');
+    loadBillingStatus();
     flushOutbox();
   }, 'signin_with', 'login');
 });
@@ -2423,5 +2437,6 @@ route('/owner', async () => {
   if (ME) {
     flushOutbox();
     flushOfflineSubmissions();
+    loadBillingStatus();
   }
 })();
