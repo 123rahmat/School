@@ -237,6 +237,17 @@ export class SchoolDO extends DurableObject<Env> {
     const contentType = String(file.type || '').split(';')[0].trim().toLowerCase();
     const allowedTypes = kind === 'results' ? ['application/pdf'] : kind === 'slips' ? ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] : [];
     if (!allowedTypes.includes(contentType)) fail(400, kind === 'results' ? 'Results must be uploaded as PDF files' : 'Upload a PDF, JPEG, PNG or WebP file');
+    // Browser-provided Content-Type is untrusted; compare it with the file signature.
+    const sig = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    const isPdf = sig[0] === 0x25 && sig[1] === 0x50 && sig[2] === 0x44 && sig[3] === 0x46 && sig[4] === 0x2d;
+    const isJpeg = sig[0] === 0xff && sig[1] === 0xd8 && sig[2] === 0xff;
+    const isPng = sig[0] === 0x89 && sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47 &&
+      sig[4] === 0x0d && sig[5] === 0x0a && sig[6] === 0x1a && sig[7] === 0x0a;
+    const isWebp = sig[0] === 0x52 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x46 &&
+      sig[8] === 0x57 && sig[9] === 0x45 && sig[10] === 0x42 && sig[11] === 0x50;
+    const signatureMatches = contentType === 'application/pdf' ? isPdf : contentType === 'image/jpeg' ? isJpeg :
+      contentType === 'image/png' ? isPng : contentType === 'image/webp' ? isWebp : false;
+    if (!signatureMatches) fail(400, 'The uploaded file content does not match its declared file type.');
     const key = `${ctx.schoolId}/${kind}/${rid(16)}-${(file.name || 'file').replace(/[^\w.-]/g, '_').slice(-60)}`;
     const reservation = 'up_' + rid(12);
     // Reserve synchronously before the network await. Concurrent uploads in this
