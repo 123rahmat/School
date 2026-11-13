@@ -9,7 +9,7 @@ export function renderSeoPage(origin: string): string {
     name: 'Institution Manager',
     applicationCategory: 'BusinessApplication',
     operatingSystem: 'Web browser; Android; iOS; Windows; macOS',
-    description: 'School and education institution management software for student records, staff, classes, attendance, fees, parent communication, results and reports.',
+    description: 'School management software for schools and academies in Pakistan, covering student records, staff, classes, attendance, fees, parent communication, results and reports.',
     url: canonical,
     image,
     featureList: [
@@ -29,9 +29,9 @@ export function renderSeoPage(origin: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>School Management Software for Schools &amp; Academies | Institution Manager</title>
-<meta name="description" content="Manage student records, classes, attendance, school fees, staff, parent communication and results in one secure school management workspace.">
-<meta name="keywords" content="school management software, school management system, student management system, school attendance software, school fee management, parent portal, academy management">
+<title>School Management Software in Pakistan | Institution Manager</title>
+<meta name="description" content="School management software for schools, colleges and academies in Pakistan. Manage students, attendance, fees, staff, parent communication and results in one workspace.">
+<meta name="keywords" content="school management software Pakistan, school management system Pakistan, student management system, school attendance software, school fee management Pakistan, parent portal, academy management">
 <meta name="robots" content="index,follow,max-image-preview:large">
 <meta name="theme-color" content="#0B1426">
 <link rel="canonical" href="${canonical}">
@@ -39,8 +39,8 @@ export function renderSeoPage(origin: string): string {
 <link rel="stylesheet" href="/app.css">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Institution Manager">
-<meta property="og:title" content="School Management Software | Institution Manager">
-<meta property="og:description" content="One organised workspace for student records, attendance, fees, staff, family communication and results.">
+<meta property="og:title" content="School Management Software in Pakistan | Institution Manager">
+<meta property="og:description" content="One organised workspace for student records, attendance, fees, staff, family communication and results in Pakistan.">
 <meta property="og:url" content="${canonical}">
 <meta property="og:image" content="${image}">
 <meta property="og:image:type" content="image/png">
@@ -98,6 +98,9 @@ export function renderSeoPage(origin: string): string {
     <article class="landing-card"><div class="landing-card-icon">J</div><h3>Offline-ready forms</h3><p>Save supported forms on the device while offline and sync them when a connection returns. The app distinguishes local pending work from server-confirmed submissions.</p></article>
   </div>
 </section>
+<section class="landing-section" id="plans">
+  <div class="landing-section-heading"><div class="landing-eyebrow">SIMPLE SUBSCRIPTION TIERS</div><h2>One complete system across every tier.</h2><p>Every tier includes the same application features, workflows and role permissions. Plans differ only by active-student capacity and included file storage. Mini Admins, teachers and parents are unlimited.</p></div>
+</section>
 <section class="landing-section landing-security" id="privacy">
   <div><div class="landing-eyebrow">DATA SEPARATION AND ACCESS</div><h2>Institution records stay within their own workspace.</h2><p>Each institution has a separate database. Backend permissions determine which records teachers, guardians and administrators can access. Private file downloads are checked against the user's permissions.</p><p class="small muted">Sign-in uses verified Google accounts. Password, email-code and phone-based login are not enabled.</p></div>
   <div class="security-points"><div><b>Google account sign-in</b><span>Verified account identity</span></div><div><b>Separate institution data</b><span>Independent school workspaces</span></div><div><b>Role-based permissions</b><span>Backend access checks</span></div><div><b>Protected files</b><span>Permission-checked downloads</span></div></div>
@@ -140,6 +143,12 @@ export function renderRobots(origin: string): string {
     'Disallow: /submissions',
     'Disallow: /devices',
     'Disallow: /holidays',
+    'Disallow: /voucher/',
+    'Disallow: /receipt/',
+    'Disallow: /class/',
+    'Disallow: /register/',
+    'Disallow: /outbox',
+    'Disallow: /billing',
     `Sitemap: ${new URL('/sitemap.xml', origin).toString()}`,
     ''
   ].join('\n');
