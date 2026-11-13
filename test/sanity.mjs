@@ -145,6 +145,16 @@ for (const selector of collectionSelectors) {
   }
 }
 assert.match(app, /layout\.classList\.toggle\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
+assert.match(app, /function workspaceToolsHtml\(\)/, 'A role-aware right-side workspace tools panel must exist');
+assert.match(app, /id="tools-panel"/, 'The workspace tools panel must be present in the authenticated layout');
+assert.match(app, /id="tools-toggle"/, 'The right-side panel must have a visible accessible toggle');
+assert.match(app, /institution\.workspace-tools-open/, 'The right-side panel preference must persist on the current device');
+assert.ok(app.includes("$('#side nav a').forEach") && app.includes("$('#tools-panel nav a').forEach"), 'Navigation link handlers must iterate collections, not single-element querySelector results');
+assert.match(app, /if \(mobileNav\(\)\) setNavOpen\(false\)/, 'Desktop navigation must stay open when a page link is selected');
+assert.match(css, /\.tools-panel\.open\s*\{\s*transform: translateX\(0\)/, 'The right tools panel must slide into view on compact screens');
+assert.match(css, /@media \(min-width: 1351px\)/, 'The full three-column workspace must be reserved for wide screens');
+assert.match(css, /@media \(max-width: 860px\)/, 'The workspace must have a mobile drawer layout');
+assert.match(sw, /const VERSION = 'v12'/, 'The service worker shell cache must be refreshed for this UI release');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
