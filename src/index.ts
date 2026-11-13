@@ -360,7 +360,10 @@ app.post('/api/billing/invoice', requireSession(['staff']), async (c) => {
   const { cycle } = await c.req.json<any>().catch(() => ({}));
   const sid = c.get('sess').school_id;
   if (cycle === 'monthly' || cycle === 'yearly') await platformDb(c.env).prepare('UPDATE schools SET cycle=? WHERE id=?').bind(cycle, sid).run();
-  await platformDb(c.env).prepare("UPDATE invoices SET status='cancelled' WHERE school_id=? AND status='open'").bind(sid).run();
+  const current: any = await platformDb(c.env).prepare('SELECT cycle FROM schools WHERE id=?').bind(sid).first();
+  const open: any = await platformDb(c.env).prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(sid).first();
+  if (open && open.cycle === current?.cycle) return c.json(open);
+  if (open) await platformDb(c.env).prepare("UPDATE invoices SET status='cancelled' WHERE id=? AND status='open'").bind(open.id).run();
   const inv = await makeInvoice(c.env, sid);
   return c.json(inv);
 });
@@ -408,10 +411,16 @@ async function tierFor(env: Env, students: number) {
 }
 
 async function makeInvoice(env: Env, schoolId: string) {
-  const s: any = await platformDb(env).prepare('SELECT * FROM schools WHERE id=?').bind(schoolId).first();
+  const db = platformDb(env);
+  const existing: any = await db.prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(schoolId).first();
+  if (existing) return existing;
+  const s: any = await db.prepare('SELECT * FROM schools WHERE id=?').bind(schoolId).first();
+  if (!s) fail(404, 'Institution not found');
   const p = await tierFor(env, s.students);
+  if (!p && (s.tier === 'trial' || s.price_override == null)) fail(400, 'No subscription tier covers the current student count');
   const tier = s.tier !== 'trial' && s.price_override != null ? s.tier : p.tier;
   const plan: any = s.tier !== 'trial' && s.price_override != null ? await planFor(env, s) : p;
+  if (!plan) fail(400, 'The institution subscription plan is unavailable');
   let amount = s.price_override ?? (s.cycle === 'yearly' ? plan.yearly : plan.monthly);
   const today = pkt().date;
   const start = s.status === 'paused' || s.renews_at < today ? today : s.renews_at;
@@ -419,9 +428,14 @@ async function makeInvoice(env: Env, schoolId: string) {
   if (s.extra_storage_gb) amount += (s.extra_storage_gb / 5) * (s.cycle === 'yearly' ? 2000 : 200);
   const inv = { id: 'inv_' + rid(10), school_id: schoolId, tier, cycle: s.cycle, amount, period_start: start, period_end: end,
     note: `${s.students} active students → ${plan.tier} tier`, status: 'open', created_at: now() };
-  await platformDb(env).prepare('INSERT INTO invoices (id, school_id, tier, cycle, amount, period_start, period_end, note, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .bind(inv.id, inv.school_id, inv.tier, inv.cycle, inv.amount, inv.period_start, inv.period_end, inv.note, inv.status, inv.created_at).run();
-  return inv;
+  // Insert only if no open invoice exists; the single SQLite statement is atomic.
+  const inserted = await db.prepare(`INSERT INTO invoices (id, school_id, tier, cycle, amount, period_start, period_end, note, status, created_at)
+    SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM invoices WHERE school_id=? AND status='open')`)
+    .bind(inv.id, inv.school_id, inv.tier, inv.cycle, inv.amount, inv.period_start, inv.period_end, inv.note, inv.status, inv.created_at, schoolId).run();
+  if (Number(inserted.meta?.changes || 0) === 1) return inv;
+  const winner: any = await db.prepare("SELECT * FROM invoices WHERE school_id=? AND status='open' ORDER BY created_at DESC LIMIT 1").bind(schoolId).first();
+  if (winner) return winner;
+  fail(409, 'An invoice is being generated. Please retry.');
 }
 
 async function confirmSlip(env: Env, slipId: string) {
@@ -541,7 +555,7 @@ owner.get('/slips/:id/file', async (c) => {
     'content-type': safeType, 'content-disposition': `inline; filename="${safeName}"`,
     'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
   } });
-});;
+});
 owner.post('/schools', async (c) => {
   const b = await c.req.json<any>();
   if (!b.name || !b.admin_name || !b.admin_email) fail(400, 'Institution name, administrator name and email are required');
