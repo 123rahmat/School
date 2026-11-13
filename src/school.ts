@@ -68,6 +68,16 @@ export class SchoolDO extends DurableObject<Env> {
       this.sql.exec("UPDATE guardians SET public_id=lower(hex(randomblob(16))) WHERE public_id IS NULL OR public_id=''");
       this.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS staff_public_id_idx ON staff(public_id)');
       this.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS guardians_public_id_idx ON guardians(public_id)');
+      // Backfill the legacy one-teacher field into the dated assignment table without
+      // deleting or rewriting class_subjects or class_subject_history records.
+      this.sql.exec(`INSERT OR IGNORE INTO class_subject_teacher_assignments
+        (id, class_subject_id, teacher_id, from_date, to_date, changed_by, created_at)
+        SELECT 'legacy_' || cs.id || '_' || cs.teacher_id, cs.id, cs.teacher_id,
+          COALESCE((SELECT MAX(h.from_date) FROM class_subject_history h
+            WHERE h.class_id=cs.class_id AND h.subject=cs.subject AND h.teacher_id=cs.teacher_id),
+            date('now')),
+          NULL, 'migration', datetime('now')
+        FROM class_subjects cs WHERE cs.teacher_id IS NOT NULL`);
     });
     this.app = this.routes();
   }
