@@ -740,14 +740,13 @@ function showInstallHelp() {
 }
 route('/admin', async () => {
   if (ME) return go(ME.kind === 'owner' ? '/owner' : '/');
-  authPage(`
-    <h1>Platform administration</h1>
-    <p class="muted small auth-description">Authorized platform owner access only. Continue with the Google account configured for platform administration.</p>
-    <div class="auth-help"><b>Restricted access</b><p>This sign-in is separate from institution registration and Main Admin accounts. It does not create an institution.</p></div>
-    <div id="gbtn" class="google-button-slot"></div>
-    <p id="authmsg" class="small muted" role="status" aria-live="polite"></p>
-    <div id="authnext"></div>
-    <p class="small muted auth-switch"><a href="/login">Return to institution sign-in</a></p>`);
+  document.title = 'Platform access | Institution Manager';
+  authPage([
+    '<div id="gbtn" class="google-button-slot"></div>',
+    '<p id="authmsg" class="small muted" role="status" aria-live="polite"></p>',
+    '<div id="authnext"></div>',
+    '<div class="login-links"><a href="/login">Institution login</a><a href="/about">About</a></div>',
+  ].join(''), { minimal: true });
   await mountGoogleButton($('#gbtn'), async (credential) => {
     await api('/api/auth/google', { body: { credential, role: 'platform_owner' } });
     await refreshMe();
