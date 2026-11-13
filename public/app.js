@@ -2190,7 +2190,7 @@ route('/owner', async () => {
   ${d.schools.map((s) => `<tr><td>${esc(s.name)}<div class="muted small">${esc(institutionLabel(s.kind))} · ${esc(s.id)}</div></td><td>${badge(s.status, s.status === 'active' ? 'ok' : s.status === 'trial' ? 'info' : 'bad')}</td><td>${esc(planLabel(s.tier))} · ${esc(s.cycle)}${s.price_override != null ? ` · ${money(s.price_override)} fixed` : ''}</td>
   <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 3).toFixed(2)} / ${(Number(s.base_storage_gb || 0) + Number(s.extra_storage_gb || 0)).toFixed(1)} GB</td>
   <td><button class="btn small" data-ed="${s.id}">Change</button></td></tr>`).join('')}
-  </tbody></table></div><p class="small muted">You manage institution accounts, subscriptions and storage allocations. Academic records remain private unless temporary support access is explicitly granted.</p>`);
+  </tbody></table></div><p class="small muted">You manage institution accounts, subscriptions and storage allocations. Academic records remain private; there is currently no remote support-access feature.</p>`);
   const storageQueue = document.createElement('section');
   storageQueue.className = 'stack';
   storageQueue.innerHTML = '<h2>Extra storage requests</h2>' +
