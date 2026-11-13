@@ -133,10 +133,7 @@ CREATE TABLE IF NOT EXISTS notices (
 );
 CREATE TABLE IF NOT EXISTS notice_reads (notice_id TEXT NOT NULL, user_key TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (notice_id, user_key));
 
-CREATE TABLE IF NOT EXISTS thread_messages (
-  id TEXT PRIMARY KEY, student_id TEXT NOT NULL, sender_key TEXT NOT NULL, sender_name TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS thread_student ON thread_messages(student_id, created_at);
+-- Parent/teacher communication is delivered through scoped student notices, not chat threads.
 
 CREATE TABLE IF NOT EXISTS results (
   id TEXT PRIMARY KEY, student_id TEXT, session TEXT NOT NULL, title TEXT NOT NULL, file_key TEXT NOT NULL, file_name TEXT,
@@ -154,12 +151,7 @@ CREATE INDEX IF NOT EXISTS file_reservations_created ON file_upload_reservations
 CREATE INDEX IF NOT EXISTS vouchers_status_due ON vouchers(status, due_date);
 CREATE INDEX IF NOT EXISTS payments_status_verified ON payments(status, verified_at);
 
--- Messages the admin sends from their own phone via WhatsApp or SMS (no paid gateway).
-CREATE TABLE IF NOT EXISTS phone_outbox (
-  id TEXT PRIMARY KEY, user_key TEXT NOT NULL, name TEXT, phone TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, sent_at TEXT, sent_by TEXT, channel TEXT
-);
-CREATE INDEX IF NOT EXISTS phone_outbox_status ON phone_outbox(status, created_at);
+-- Notifications are in-app only; no external phone-message outbox is created.
 
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY, user_key TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, link TEXT, created_at TEXT NOT NULL, read_at TEXT
@@ -197,12 +189,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   attendance_deadline_hour: '10',
   teacher_add_students: '0',
   teacher_verify_slips: '0',
-  teacher_upload_results: '0',
   cash_alert_days: '3',
   reminder_days_before: '3',
   result_fee_hold: '0',
   absence_alerts: '1',
   low_attendance_percent: '75',
   reg_prefix: '',
-  phone_messages: '1',
 };
