@@ -1085,7 +1085,26 @@ function bindStudentActions(s, p) {
     <div class="full row"><button class="btn primary">Mark as left</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     $('#lf', m).onsubmit = async (e) => { e.preventDefault(); if (!confirm('Mark ' + s.name + ' as a former student? Attendance, fees and receipts will be retained.')) return; await act(() => S(`/students/${s.id}/left`, { body: { ...formData(e.target), confirm: true } }), 'Marked as left'); closeModal(); render(); };
   }));
-  on('restore', async () => { if (!confirm('Restore ' + s.name + ' to the active student list?')) return; await act(() => S(`/students/${s.id}/restore`, { body: { confirm: true } }), 'Restored'); render(); });
+  on('restore', async () => {
+    const classes = await S('/classes');
+    if (!classes.length) return toast('Create an active class before restoring this student.');
+    const preferred = classes.some((x) => x.id === s.class_id) ? s.class_id : classes[0].id;
+    modal(`<h2>Restore ${esc(s.name)}</h2>
+      <p class="small muted">Choose the active class for this student. Previous attendance, fee records, receipts and class history will remain unchanged.</p>
+      <form id="restoreStudentForm" class="form">
+        <div class="full"><label>Active class *</label><select name="class_id" required>${classes.map((x) => `<option value="${x.id}" ${x.id === preferred ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+        <div class="full row"><button class="btn primary">Restore student</button><button type="button" class="btn" data-close>Cancel</button></div>
+      </form>`, (m) => {
+        $('#restoreStudentForm', m).onsubmit = async (e) => {
+          e.preventDefault();
+          const classId = formData(e.target).class_id;
+          const target = classes.find((x) => x.id === classId);
+          if (!target || !confirm('Restore ' + s.name + ' to ' + target.name + '? The plan student limit will be checked.')) return;
+          await act(() => S(`/students/${s.id}/restore`, { body: { confirm: true, class_id: classId } }), 'Restored to ' + target.name);
+          closeModal(); render();
+        };
+      });
+  });
   on('del', async () => { if (!confirm('Permanently delete ' + s.name + '? This is allowed only when no attendance or fee history exists.')) return; await act(() => S(`/students/${s.id}?confirm=1`, { method: 'DELETE' }), 'Deleted'); go('/students'); });
   on('cert', () => {
     const w = window.open('', '_blank');
@@ -2092,9 +2111,11 @@ route('/billing', async () => {
   <h2>${open ? 'Invoice to pay' : 'Pay for your plan'}</h2>
   <div class="card stack">
     ${open ? `<p><b>${money(open.amount)}</b> for ${fmtDate(open.period_start)} – ${fmtDate(open.period_end)} (${esc(open.tier)}, ${esc(open.cycle)}). <span class="muted small">${esc(open.note || '')}</span></p>
-      <p>Pay from any Easypaisa or JazzCash account to: <b>${esc(b.accounts)}</b>, then upload the transaction ID and slip below. Your plan is renewed as soon as it is confirmed.</p>
-      <form id="bf" class="form"><input type="hidden" name="invoice_id" value="${open.id}"><div><label>Transaction ID</label><input name="txn_id" required></div><div><label>Amount paid</label><input name="amount" type="number" value="${open.amount}"></div>
-      <div class="full"><label>Slip (image or PDF)</label><input type="file" name="file" accept="image/*,application/pdf"></div><div class="full"><button class="btn primary">Upload slip</button></div></form>`
+      ${String(b.accounts || '').trim()
+        ? `<p>Pay from any Easypaisa, JazzCash or bank account to: <b>${esc(b.accounts)}</b>, then upload the transaction ID and slip below. Your plan is renewed as soon as it is confirmed.</p>
+          <form id="bf" class="form"><input type="hidden" name="invoice_id" value="${open.id}"><div><label>Transaction ID</label><input name="txn_id" required></div><div><label>Amount paid</label><input name="amount" type="number" value="${open.amount}" required></div>
+          <div class="full"><label>Slip (image or PDF)</label><input type="file" name="file" accept="image/jpeg,image/png,image/webp,application/pdf" required></div><div class="full"><button class="btn primary">Upload slip</button></div></form>`
+        : `<div class="banner warn">Payment details have not been configured yet. Do not transfer money. Contact the platform administrator and check Billing again after the official account details appear.</div>`}`
     : '<p>No invoice is open. Create one to pay now:</p>'}
     <div class="row"><select id="cy"><option value="monthly" ${b.cycle === 'monthly' ? 'selected' : ''}>Monthly</option><option value="yearly" ${b.cycle === 'yearly' ? 'selected' : ''}>Yearly (10 months' price)</option></select><button class="btn" id="inv">${open ? 'Recreate invoice' : 'Create invoice'}</button></div>
   </div>
@@ -2103,8 +2124,7 @@ route('/billing', async () => {
   <tr><td>custom</td><td>2,000+</td><td colspan="4">Agreed with us</td></tr></tbody></table></div>
   <p class="small muted">Every paid plan includes every feature; tiers differ only by size. Teachers and parents are unlimited. Your tier is set by active students 7 days before renewal — students marked as left don't count.</p>
   <h2>Payment history</h2><div class="table-wrap"><table><tbody>${(b.slips || []).map((s) => `<tr><td>${fmtTime(s.created_at)}</td><td>${esc(s.txn_id)}</td><td class="num">${money(s.amount)}</td><td>${badge(s.status, s.status === 'verified' ? 'ok' : s.status === 'rejected' ? 'bad' : 'warn')} ${esc(s.reason || '')}</td></tr>`).join('') || '<tr><td class="muted">None yet</td></tr>'}</tbody></table></div>
-  <h2>Support access</h2><div class="card"><p class="small">The platform owner cannot see your institution's records. To let them help with a problem, grant temporary access; everything they do is logged.</p>
-  <div class="row">${b.support ? `<span>Access granted until ${fmtTime(b.support.granted_until)}</span><button class="btn" id="rev">Revoke</button>` : `<select id="hrs"><option value="2">2 hours</option><option value="8">8 hours</option><option value="24">24 hours</option></select><button class="btn" id="grant">Grant access</button>`}</div></div>`);
+`);
   if (ME?.isMainAdmin) {
     const usage = await S('/storage').catch(() => null);
     const used = Number(usage?.used ?? b.storage_bytes ?? 0);
@@ -2145,8 +2165,6 @@ route('/billing', async () => {
 
   const bf = $('#bf'); if (bf) bf.onsubmit = async (e) => { e.preventDefault(); await act(() => api('/api/billing/slip', { form: new FormData(e.target) }), 'Slip uploaded — you will be told when it is confirmed'); render(); };
   $('#inv').onclick = async () => { await act(() => api('/api/billing/invoice', { body: { cycle: $('#cy').value } }), 'Invoice created'); render(); };
-  const g = $('#grant'); if (g) g.onclick = async () => { await act(() => api('/api/billing/support-access', { body: { hours: Number($('#hrs').value) } }), 'Access granted'); render(); };
-  const rv = $('#rev'); if (rv) rv.onclick = async () => { await act(() => api('/api/billing/support-access', { body: { hours: 0 } }), 'Access revoked'); render(); };
 });
 
 // ---------- owner panel ----------
@@ -2168,9 +2186,9 @@ route('/owner', async () => {
   <h2>Renewals this week</h2><div class="card small">${d.renewalsThisWeek.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)}${s.slips_waiting ? ' (slip uploaded)' : ''}`).join('<br>') || '–'}</div>
   <h2>Trials ending in 7 days</h2><div class="card small">${d.trialsEnding.map((s) => `${esc(s.name)} — ${fmtDate(s.renews_at)} · ${s.students} students`).join('<br>') || '–'}</div>
   <div class="row between"><h2>All institutions</h2><div class="row"><button class="btn" id="ann">Announce</button><button class="btn" id="bill">Run billing now</button><button class="btn primary" id="new">Add institution</button></div></div>
-  <div class="table-wrap"><table><thead><tr><th>Institution</th><th>Status</th><th>Plan</th><th>Renews</th><th class="num">Students</th><th class="num">Storage</th><th>Support access</th><th></th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Institution</th><th>Status</th><th>Plan</th><th>Renews</th><th class="num">Students</th><th class="num">Storage</th><th></th></tr></thead><tbody>
   ${d.schools.map((s) => `<tr><td>${esc(s.name)}<div class="muted small">${esc(institutionLabel(s.kind))} · ${esc(s.id)}</div></td><td>${badge(s.status, s.status === 'active' ? 'ok' : s.status === 'trial' ? 'info' : 'bad')}</td><td>${esc(planLabel(s.tier))} · ${esc(s.cycle)}${s.price_override != null ? ` · ${money(s.price_override)} fixed` : ''}</td>
-  <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 3).toFixed(2)} / ${(Number(s.base_storage_gb || 0) + Number(s.extra_storage_gb || 0)).toFixed(1)} GB</td><td class="small">${s.support_until && s.support_until > new Date().toISOString() ? 'until ' + fmtTime(s.support_until) : '–'}</td>
+  <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 3).toFixed(2)} / ${(Number(s.base_storage_gb || 0) + Number(s.extra_storage_gb || 0)).toFixed(1)} GB</td>
   <td><button class="btn small" data-ed="${s.id}">Change</button></td></tr>`).join('')}
   </tbody></table></div><p class="small muted">You manage institution accounts, subscriptions and storage allocations. Academic records remain private unless temporary support access is explicitly granted.</p>`);
   const storageQueue = document.createElement('section');
