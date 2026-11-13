@@ -2085,8 +2085,10 @@ export class SchoolDO extends DurableObject<Env> {
         }
       }
       if (aud === 'student') {
-        if (!this.isFullAdmin(a) && !(a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, String(this.one('SELECT class_id FROM students WHERE id=?', b.target_id)?.class_id || '')))) fail(403, 'Only an administrator can send a notice to an individual student');
-        this.student(a, b.target_id);
+        const target = this.student(a, b.target_id);
+        const mayPostForStudent = this.isFullAdmin(a) || a.classTeacherOf.has(target.class_id) || a.teaches.has(target.class_id) ||
+          (a.role === 'subadmin' && this.hasPermission(a, 'notices.manage') && this.inClassScope(a, target.class_id));
+        if (!mayPostForStudent) fail(403, 'Only the student’s class teacher, assigned subject teacher or an authorized administrator can post an individual notice');
       }
       if (!['school', 'class', 'student', 'teachers', 'admins'].includes(aud)) fail(400, 'Choose an audience');
       const id = 'nt_' + rid(10);
