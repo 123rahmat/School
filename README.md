@@ -21,7 +21,7 @@ Built from the design plan (*School management system: design plan*, Nov 2026), 
 own Durable Object. The browser never chooses the school. Inside a school every request goes through one access
 layer (`loadActor`, `studentScope`, `student()`, `classOf()` in `src/school.ts`), so parents see only their own
 children, subject teachers only their classes and no fees, class teachers their class's fees, the accountant
-fees but not message threads. The platform owner sees billing and usage only, never school records.
+fees but not message threads. The platform owner sees billing and usage only, never school records. Remote support access to academic records is not implemented or offered.
 
 ## What is included
 
@@ -91,10 +91,7 @@ Run `npm ci` for a clean lockfile-based install, then `npm run check` to run Typ
 the repository sanity suite and a Wrangler production-bundle dry run. The same checks run in
 GitHub Actions on pushes and pull requests targeting the default branch.
 
-`npm test` is a static/configuration sanity suite, not a full live integration test.
-`test/e2e.mjs` and `test/ui.mjs` are legacy walkthroughs that still use the retired email/phone-code
-authentication flow. Do not treat them as valid tests of the current Google-only login until they
-are migrated to the current authentication flow.
+`npm test` is a static/configuration sanity suite, not a full live integration test. The old `test/e2e.mjs` and `test/ui.mjs` walkthroughs still use the retired email/phone-code authentication flow and are not valid tests of the current Google-only login. They are not run by CI. A real Google-authenticated browser test and production smoke test are still release requirements.
 
 
 ## Deploy to Cloudflare
