@@ -378,7 +378,7 @@ app.post('/api/billing/slip', requireSession(['staff']), async (c) => {
   let key: string | null = null;
   if (file && typeof file === 'object' && file.size) {
     if (file.size > 5 * 1024 * 1024) fail(400, 'File too large (max 5 MB)');
-    key = `platform/${ctx.schoolId}/slips/${rid(12)}-${file.name.replace(/[^\\w.-]/g, '_')}`;
+    key = `platform/${ctx.schoolId}/slips/${rid(12)}-${file.name.replace(/[^\w.-]/g, '_')}`;
     await c.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
   }
   // The invoice amount is authoritative; never accept a client-supplied amount.
@@ -536,7 +536,7 @@ owner.get('/slips/:id/file', async (c) => {
   if (!o) fail(404, 'No file');
   const storedType = String(o.httpMetadata?.contentType || '').split(';')[0].trim().toLowerCase();
   const safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(storedType) ? storedType : 'application/octet-stream';
-  const safeName = String(sl.file_key).split('/').pop()?.replace(/[^\\w.-]/g, '_').slice(0, 100) || 'payment-slip';
+  const safeName = String(sl.file_key).split('/').pop()?.replace(/[^\w.-]/g, '_').slice(0, 100) || 'payment-slip';
   return new Response(o.body, { headers: {
     'content-type': safeType, 'content-disposition': `inline; filename="${safeName}"`,
     'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
