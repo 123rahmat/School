@@ -514,7 +514,7 @@ async function runBilling(env: Env) {
 const owner = new Hono<V>();
 owner.use('*', requireSession(['owner']));
 owner.get('/overview', async (c) => {
-  const schools = (await platformDb(c.env).prepare(`SELECT s.*, p.storage_gb AS base_storage_gb, p.sub_admins AS plan_sub_admins,
+  const schools = (await platformDb(c.env).prepare(`SELECT s.*, p.storage_gb AS base_storage_gb,
      (SELECT COUNT(*) FROM billing_slips b WHERE b.school_id=s.id AND b.status='submitted') AS slips_waiting
      FROM schools s LEFT JOIN plans p ON p.tier=s.tier ORDER BY s.created_at DESC`).all()).results as any[];
   const storageRequests = (await platformDb(c.env).prepare(`SELECT r.*, s.name AS institution_name, s.kind AS institution_kind, s.extra_storage_gb
