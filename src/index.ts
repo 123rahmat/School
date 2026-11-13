@@ -197,7 +197,7 @@ app.post('/api/auth/logout', async (c) => {
   if (token) {
     await platformDb(c.env).prepare('UPDATE sessions SET revoked=1 WHERE token_hash=?').bind(await sha256(token)).run();
   }
-  deleteCookie(c, SESSION_COOKIE, { path: '/' });
+  deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true, sameSite: 'Lax' });
   deleteCookie(c, 'sid', { path: '/' });
   return c.json({ ok: true });
 });
@@ -276,7 +276,7 @@ async function createSchool(env: Env, b: { name: string; kind?: string; admin: {
   const id = 'sch_' + rid(12);
   const today = pkt().date;
   await platformDb(env).prepare('INSERT INTO schools (id, name, kind, tier, status, renews_at, created_at) VALUES (?,?,?,?,?,?,?)')
-    .bind(id, b.name, b.kind || 'school', 'trial', 'trial', addDays(today, 14), now()).run();
+    .bind(id, b.name, b.kind || 'school', 'trial', 'trial', addMonths(today, 1), now()).run();
   try {
     const ctx = await systemCtx(env, id);
     await callSchoolJson(env, ctx, '/internal/init', { name: b.name, admin: b.admin });
