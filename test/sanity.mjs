@@ -111,9 +111,13 @@ const collectionSelectors = [
   "$('[data-storage-reject]', storageQueue)", "$('[data-ok]')",
 ];
 for (const selector of collectionSelectors) {
-  const escaped = selector.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\assert.ok(!app.includes("$('[data-deldisc]').forEach") && !app.includes("$('[data-cancel]').forEach") && !app.includes("$('#side nav a').forEach") && !app.includes("$('[data-rm]', m).forEach") && !app.includes("$('[data-v]').forEach") && !app.includes("$('[data-r]').forEach") && !app.includes("$('[data-deln]').forEach") && !app.includes("$('[data-pub]').forEach") && !app.includes("$('[data-del]').forEach") && !app.includes("$('[data-a]').forEach") && !app.includes("$('[data-d]').forEach") && !app.includes("$('[data-st]').forEach") && !app.includes("$('[data-storage-approve]', storageQueue).forEach") && !app.includes("$('[data-storage-reject]', storageQueue).forEach") && !app.includes("$('[data-ok]').forEach"), 'Every panel must use the multi-match selector for collection event bindings');');
-  assert.doesNotMatch(app, new RegExp(`(?<!\\\\$)${escaped}\\\\.forEach\\\\s*\\\\(`),
-    `Collection event binding must use $(), not $(): ${selector}`);
+  const needle = selector + '.forEach';
+  let position = app.indexOf(needle);
+  while (position !== -1) {
+    assert.notEqual(app[position - 1], '$',
+      `Collection event binding must use $$(), not $(): ${selector}`);
+    position = app.indexOf(needle, position + needle.length);
+  }
 }
 assert.match(app, /layout\.classList\.toggle\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
