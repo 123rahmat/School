@@ -1457,7 +1457,7 @@ route('/classes', async () => {
   const [rows, staff] = await Promise.all([S('/classes'), ME.isAdmin ? S('/staff') : []]);
   view(`<div class="row between"><h1>Classes</h1>${ME.role === 'admin' ? '<button class="btn primary" id="add">Add class</button>' : ''}</div>
   <div class="table-wrap"><table><thead><tr><th>Class</th><th>Class teacher</th><th>Subject teachers</th><th class="num">Students</th><th></th></tr></thead><tbody>
-  ${rows.map((c) => `<tr><td><a href="/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${(s.teachers || []).filter((t) => !t.to_date).map((t) => t.teacher_name).join(', ') || 'Unassigned'}`).join(', '))}</td><td class="num">${c.students}</td>
+  ${rows.map((c) => `<tr><td><a href="/class/${c.id}">${esc(c.name)}</a></td><td>${esc(c.class_teacher_name || '–')}</td><td class="small">${esc(c.subjects.map((s) => `${s.subject}: ${(s.teachers || []).filter((t) => t.from_date <= today() && (!t.to_date || t.to_date >= today())).map((t) => t.teacher_name).join(', ') || 'Unassigned'}`).join(', '))}</td><td class="num">${c.students}</td>
    <td>${ME.role === 'admin' ? `<button class="btn small" data-edit="${c.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No classes yet</td></tr>'}
   </tbody></table></div>`);
   const form = (c) => modal(`<h2>${c ? 'Edit class' : 'Add class'}</h2><form id="cf" class="form">
