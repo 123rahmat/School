@@ -2345,8 +2345,8 @@ export class SchoolDO extends DurableObject<Env> {
           const handoverDate = assignment.from_date > effective ? assignment.from_date : effective;
           const assignmentEnd = addDays(handoverDate, -1);
           this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', assignmentEnd, assignment.id);
-          this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-            assignmentEnd, sub.class_id, sub.subject, old.id);
+          this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND (to_date IS NULL OR to_date>=?)',
+            assignmentEnd, sub.class_id, sub.subject, old.id, effective);
           if (subjectIds.has(sub.id)) {
             const alreadyAssigned = this.one('SELECT 1 FROM class_subject_teacher_assignments WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1',
               sub.id, newId, handoverDate, handoverDate);
@@ -2387,8 +2387,8 @@ export class SchoolDO extends DurableObject<Env> {
         const handoverDate = sub.from_date > from ? sub.from_date : from;
         const endDate = addDays(handoverDate, -1);
         this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', endDate, sub.assignment_id);
-        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-          endDate, classId, sub.subject, oldTeacherId);
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND (to_date IS NULL OR to_date>=?)',
+          endDate, classId, sub.subject, oldTeacherId, from);
         const alreadyAssigned = this.one('SELECT 1 FROM class_subject_teacher_assignments WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1',
           sub.id, teacherId, handoverDate, handoverDate);
         if (!alreadyAssigned) {
