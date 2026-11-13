@@ -778,7 +778,7 @@ route('/login', async () => {
         try {
           await api('/api/auth/google', { body: { credential, pick: Number(button.dataset.pick) } });
           await refreshMe();
-          if (!ME) throw new Error('Your secure session could not be created. Please retry sign-in.');
+          if (!ME) throw new Error('Your account could not be opened. Please try again.');
           go('/');
           loadBillingStatus();
           flushOutbox();
@@ -790,7 +790,7 @@ route('/login', async () => {
       return;
     }
     await refreshMe();
-    if (!ME) throw new Error('Google verified your account, but your secure session was not created. Please retry.');
+    if (!ME) throw new Error('Your Google account was verified, but we could not open the workspace. Please try again.');
     go('/');
     loadBillingStatus();
     flushOutbox();
