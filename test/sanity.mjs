@@ -125,8 +125,8 @@ assert.match(school, /async runCron\(ctx: Ctx\)/, 'Cron cleanup that awaits R2 d
 assert.match(school, /app\.delete\('\/notices\/:id', async \(c\) => \{/, 'Notice deletion handler must be async before awaiting its confirmation body');
 assert.match(school, /app\.post\('\/internal\/cron', async \(c\) => c\.json\(await this\.runCron/, 'The internal cron route must await asynchronous cleanup');
 
-assert.ok(!app.includes("route('/timetable'") && !app.includes("route('/syllabus'") && !app.includes('substitution-bonuses'), 'Focused school UI must not expose removed teaching modules');
-assert.ok(!school.includes("app.get('/timetable'") && !school.includes("app.post('/timetable'") && !school.includes("app.get('/syllabus'") && !school.includes("app.get('/substitutions'"), 'Focused school API must not expose removed teaching workflows');
+assert.ok(app.includes("route('/timetable'") && !app.includes("route('/syllabus'") && !app.includes('substitution-bonuses'), 'Keep the academic timetable while excluding retired syllabus and substitution modules');
+assert.ok(school.includes("app.get('/timetable'") && school.includes("app.post('/timetable'") && !school.includes("app.get('/syllabus'") && !school.includes("app.get('/substitutions'"), 'Keep the academic timetable API while excluding retired teaching workflows');
 assert.ok(!schema.includes('CREATE TABLE IF NOT EXISTS timetable_slots') && !schema.includes('CREATE TABLE IF NOT EXISTS class_substitutions') && !schema.includes('CREATE TABLE IF NOT EXISTS syllabus_documents'), 'New school databases must not create removed feature tables');
 assert.ok(css.includes('@media (max-width: 860px)'), 'Workspace must adapt navigation for phone and tablet widths');
 assert.ok(css.includes('@media (min-width: 601px) and (max-width: 860px)'), 'Tablet layout must use tablet-appropriate forms and cards');
