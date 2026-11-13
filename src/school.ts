@@ -1018,6 +1018,102 @@ export class SchoolDO extends DurableObject<Env> {
       return c.json({ ok: true, old_id: oldId, new_id: newId, old_name: old.name, new_name: name, cash });
     });
 
+    // ----- weekly timetable ----- 
+    app.get('/timetable', (c) => {
+      const a = c.get('actor');
+      const today = pkt().date;
+      let classIds: string[] = [];
+      if (a.type === 'guardian') {
+        classIds = [...new Set(a.children.map((studentId) => this.one("SELECT class_id FROM students WHERE id=? AND status='active'", studentId)?.class_id).filter((id): id is string => typeof id === 'string'))];
+      } else {
+        classIds = this.scopedClassIds(a);
+      }
+      if (!classIds.length) return c.json([]);
+      const placeholders = classIds.map(() => '?').join(',');
+      const rows = this.q(`SELECT slot.*, c.name AS class_name, c.room AS class_room,
+          cs.subject, t.name AS teacher_name
+        FROM class_timetable_slots slot
+        JOIN classes c ON c.id=slot.class_id
+        JOIN class_subjects cs ON cs.id=slot.class_subject_id AND cs.class_id=slot.class_id
+        JOIN staff t ON t.id=slot.teacher_id
+        WHERE slot.class_id IN (${placeholders}) AND slot.status='active'
+          AND (slot.effective_to IS NULL OR slot.effective_to>=?)
+        ORDER BY slot.weekday, slot.start_time, c.name, cs.subject`, ...classIds, today);
+      return c.json(rows.map((row) => ({ ...row, is_current: row.effective_from <= today && (!row.effective_to || row.effective_to >= today) })));
+    });
+    app.post('/timetable', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Review and confirm the timetable period before saving');
+      const classId = String(b.class_id || '');
+      const subjectId = String(b.class_subject_id || '');
+      const teacherId = String(b.teacher_id || '');
+      const weekday = Number(b.weekday);
+      const startTime = String(b.start_time || '');
+      const endTime = String(b.end_time || '');
+      const room = String(b.room || '').trim().slice(0, 80) || null;
+      const effectiveFrom = String(b.effective_from || pkt().date);
+      const effectiveTo = String(b.effective_to || '') || null;
+      const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value + 'T00:00:00Z')) && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
+      const validTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+      if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7) fail(400, 'Choose a valid weekday');
+      if (!validTime(startTime) || !validTime(endTime) || endTime <= startTime) fail(400, 'Choose valid start and end times. End time must be after start time.');
+      if (!validDate(effectiveFrom) || (effectiveTo && (!validDate(effectiveTo) || effectiveTo < effectiveFrom))) fail(400, 'Choose a valid effective date range.');
+      const classRow = this.one('SELECT id FROM classes WHERE id=? AND active=1', classId);
+      if (!classRow) fail(404, 'Active class not found');
+      const subject = this.one('SELECT id, subject FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      if (!subject) fail(400, 'Choose a subject belonging to this class');
+      const teacher = this.one("SELECT id, name FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId);
+      if (!teacher) fail(400, 'Choose an active teacher');
+      const assignment = this.one(`SELECT id FROM class_subject_teacher_assignments
+        WHERE class_subject_id=? AND teacher_id=? AND from_date<=?
+          AND ((? IS NULL AND to_date IS NULL) OR to_date IS NULL OR to_date>=?)
+        LIMIT 1`, subjectId, teacherId, effectiveFrom, effectiveTo, effectiveTo || effectiveFrom);
+      if (!assignment) fail(409, 'The teacher must be assigned to this subject for the complete timetable date range first.');
+      const slotId = 'tt_' + rid(12);
+      this.tx(() => {
+        const dates = [effectiveFrom, effectiveTo];
+        const dateRange = 'effective_from<=COALESCE(?, \'9999-12-31\') AND (effective_to IS NULL OR effective_to>=?)';
+        const base = `class_id=? AND weekday=? AND status='active' AND ${dateRange}
+          AND start_time<? AND end_time>?`;
+        const classConflict = this.one(`SELECT id FROM class_timetable_slots WHERE ${base} LIMIT 1`,
+          classId, weekday, effectiveTo, effectiveFrom, endTime, startTime);
+        if (classConflict) fail(409, 'This class already has a lesson during that period on the selected weekday.');
+        const teacherConflict = this.one(`SELECT id FROM class_timetable_slots WHERE teacher_id=? AND weekday=? AND status='active'
+          AND ${dateRange} AND start_time<? AND end_time>? LIMIT 1`,
+          teacherId, weekday, effectiveTo, effectiveFrom, endTime, startTime);
+        if (teacherConflict) fail(409, 'This teacher already has another class during that period.');
+        if (room) {
+          const roomConflict = this.one(`SELECT id FROM class_timetable_slots WHERE lower(COALESCE(room,''))=lower(?) AND weekday=? AND status='active'
+            AND ${dateRange} AND start_time<? AND end_time>? LIMIT 1`,
+            room, weekday, effectiveTo, effectiveFrom, endTime, startTime);
+          if (roomConflict) fail(409, 'This room is already booked during that period.');
+        }
+        this.run(`INSERT INTO class_timetable_slots
+          (id,class_id,class_subject_id,teacher_id,weekday,start_time,end_time,room,effective_from,effective_to,status,created_by,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,'active',?,?)`,
+          slotId, classId, subjectId, teacherId, weekday, startTime, endTime, room, effectiveFrom, effectiveTo, a.key, now());
+      });
+      this.audit(a, 'timetable.period.add', 'class', classId, { slot_id: slotId, subject: subject.subject, teacher_id: teacherId, weekday, start_time: startTime, end_time: endTime, room, effective_from: effectiveFrom, effective_to: effectiveTo });
+      this.notify('s:' + teacherId, 'Timetable period assigned', 'You are scheduled to teach ' + subject.subject + ' in ' + this.one('SELECT name FROM classes WHERE id=?', classId)?.name + ' on weekday ' + weekday + ' from ' + startTime + ' to ' + endTime + '.');
+      return c.json({ ok: true, id: slotId });
+    });
+    app.post('/timetable/:id/cancel', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm cancellation of this timetable period');
+      const reason = String(b.reason || '').trim().slice(0, 500);
+      if (!reason) fail(400, 'Enter a reason for cancelling this period');
+      const slot = this.one("SELECT * FROM class_timetable_slots WHERE id=? AND status='active'", c.req.param('id'));
+      if (!slot) fail(404, 'Active timetable period not found');
+      const changed = this.run("UPDATE class_timetable_slots SET status='cancelled', cancelled_by=?, cancelled_at=?, cancel_reason=? WHERE id=? AND status='active'",
+        a.key, now(), reason, slot.id);
+      if (!Number((changed as any)?.meta?.changes ?? 1)) fail(409, 'This timetable period has already been cancelled');
+      this.audit(a, 'timetable.period.cancel', 'class', slot.class_id, { slot_id: slot.id, reason });
+      this.notify('s:' + slot.teacher_id, 'Timetable period cancelled', reason);
+      return c.json({ ok: true });
+    });
+
     // ----- classes -----
     app.get('/classes', (c) => {
       const a = c.get('actor');
