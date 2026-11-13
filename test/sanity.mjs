@@ -110,7 +110,7 @@ assert.match(school, /x-submission-id/, 'School API must use stable submission I
 assert.ok(school.includes("app.get('/submissions'"), 'Server-confirmed submission history must be role-scoped');
 assert.match(schema, /CREATE TABLE IF NOT EXISTS api_submissions/, 'School database must retain server submission receipts');
 
-assert.match(sw, /const VERSION = 'v11'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v12'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
