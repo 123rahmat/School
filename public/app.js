@@ -344,15 +344,32 @@ document.addEventListener('click', (event) => {
 });
 
 async function render() {
-  const path = currentPath();
-  // Browser visitors see the public page; installed-app visitors go straight to sign-in.
-  if (!ME && path === '/' && isInstalledApp()) return go('/login');
-  if (!ME && !['/', '/login', '/signup', '/admin'].includes(path)) {
-    try { const w = await api('/api/whoami', { quiet: true }); if (w.signedIn) ME = w; } catch {}
-    if (!ME) return go(isInstalledApp() ? '/login' : '/');
+  let path = currentPath();
+  const authRoutes = ['/login', '/signup', '/admin'];
+  // Resolve the server cookie before showing any public or protected page.
+  if (!ME && !authRoutes.includes(path)) {
+    try { await refreshMe(); } catch { ME = null; setSessionHint(false); }
+    if (!ME) {
+      history.replaceState(null, '', '/login');
+      path = '/login';
+    } else {
+      path = currentPath();
+    }
   }
-  if (ME && ['/login', '/signup', '/admin'].includes(path)) return go(ME.kind === 'owner' ? '/owner' : '/');
-  if (ME && ME.kind === 'owner' && !path.startsWith('/owner') && path !== '/login') return go('/owner');
+  // A signed-in user should never be left on the login, signup, or public home screen.
+  if (ME && authRoutes.includes(path)) {
+    history.replaceState(null, '', ME.kind === 'owner' ? '/owner' : '/');
+    return render();
+  }
+  if (ME && ME.kind === 'owner' && !path.startsWith('/owner')) {
+    history.replaceState(null, '', '/owner');
+    return render();
+  }
+  // The root is the signed-in workspace. New or signed-out visitors go directly to sign-in.
+  if (!ME && path === '/') {
+    history.replaceState(null, '', '/login');
+    return render();
+  }
   for (const [re, fn] of routes) {
     const m = path.match(re);
     if (m) {
@@ -2373,21 +2390,20 @@ route('/owner', async () => {
 
 // ---------- start ----------
 (async () => {
-  const initialPath = currentPath();
-  let sessionHint = false;
-  try { sessionHint = localStorage.getItem(SESSION_HINT_KEY) === '1'; } catch {}
-  if (initialPath === '/' && !isInstalledApp() && !sessionHint) {
-    // First-time browser visitors see the landing page immediately; discover new sessions quietly.
-    render();
-    refreshMe().then(() => {
-      if (ME) render();
-    }).catch(() => {});
-  } else {
-    // A prior session hint is only a UI hint: always verify the cookie with the server.
-    // This avoids flashing the public page for returning users without trusting local storage.
-    try { await refreshMe(); } catch {}
-    render();
+  // The HTML shell shows only the brand and a subtle loader while the server validates
+  // the HttpOnly session cookie. localStorage is never treated as proof of authentication.
+  try { await refreshMe(); }
+  catch { ME = null; BILL = null; setSessionHint(false); }
+  const path = currentPath();
+  const authRoutes = ['/login', '/signup', '/admin'];
+  if (ME && authRoutes.includes(path)) {
+    history.replaceState(null, '', ME.kind === 'owner' ? '/owner' : '/');
+  } else if (!ME && !authRoutes.includes(path)) {
+    history.replaceState(null, '', '/login');
   }
-  flushOutbox();
-  flushOfflineSubmissions();
+  await render();
+  if (ME) {
+    flushOutbox();
+    flushOfflineSubmissions();
+  }
 })();
