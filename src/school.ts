@@ -1763,18 +1763,18 @@ export class SchoolDO extends DurableObject<Env> {
         if (originalPaid < 0) fail(409, 'The receipt exceeds the recorded amount paid on its voucher.');
 
         const latest = this.latestVoucher(p!.student_id);
-        if (latest && latest.id !== original.id && ['carried', 'settled'].includes(original.status)) {
+        if (latest && latest.id !== original.id && latest.month > original.month) {
           // The old balance was rolled into a newer voucher. Put the cancelled amount
-          // back into that current balance instead of hiding it in an old voucher.
+          // back into that current balance, even if the older voucher had been marked paid.
           const arrears = Number(latest.arrears) + Number(p!.amount);
           const total = Number(latest.current) - Number(latest.discount) + arrears + Number(latest.fine);
           const latestStatus = Number(latest.paid) >= total ? 'paid' : Number(latest.paid) > 0 ? 'partial' : 'unpaid';
-          this.run('UPDATE vouchers SET paid=? WHERE id=?', originalPaid, original.id);
+          const carryStatus = Number(latest.paid) >= arrears ? 'settled' : 'carried';
+          this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', originalPaid, carryStatus, original.id);
           this.run('UPDATE vouchers SET arrears=?, status=? WHERE id=?', arrears, latestStatus, latest.id);
           const arrearsLine = this.one("SELECT rowid FROM voucher_lines WHERE voucher_id=? AND label='Arrears' LIMIT 1", latest.id);
           if (arrearsLine) this.run("UPDATE voucher_lines SET amount=? WHERE rowid=?", arrears, arrearsLine.rowid);
           else this.run("INSERT INTO voucher_lines (voucher_id, label, amount) VALUES (?, 'Arrears', ?)", latest.id, arrears);
-          const carryStatus = Number(latest.paid) >= arrears ? 'settled' : 'carried';
           this.run("UPDATE vouchers SET status=? WHERE student_id=? AND month<? AND status IN ('carried','settled')",
             carryStatus, p!.student_id, latest.month);
         } else {
