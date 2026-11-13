@@ -1,5 +1,5 @@
 // Cache only public application assets. Authenticated API responses and private files are never cached here.
-const VERSION = 'v15';
+const VERSION = 'v16';
 const SHELL = ['/', '/app.js', '/app.css', '/icon.svg', '/manifest.webmanifest', '/fonts/plex-sans-var.woff2'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open('shell-' + VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
@@ -13,8 +13,14 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.startsWith('/files/')) return;
   // Never put private API responses, authentication state, or school files in Cache Storage.
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;
-  e.respondWith(fetch(e.request).then((r) => {
-    if (r.ok && SHELL.includes(url.pathname)) { const copy = r.clone(); caches.open('shell-' + VERSION).then((c) => c.put(e.request, copy)); }
-    return r;
-  }).catch(() => caches.match(e.request).then((r) => r || caches.match('/'))));
+  if (SHELL.includes(url.pathname)) {
+    // The install step precaches this exact version of the public app shell.
+    // Cache-first makes the login screen available immediately; a new SW version refreshes it.
+    e.respondWith(caches.match(e.request).then((cached) => cached || fetch(e.request).then((response) => {
+      if (response.ok) caches.open('shell-' + VERSION).then((cache) => cache.put(e.request, response.clone()));
+      return response;
+    })));
+    return;
+  }
+  e.respondWith(fetch(e.request).catch(() => caches.match(e.request).then((r) => r || caches.match('/'))));
 });
