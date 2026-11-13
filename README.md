@@ -13,7 +13,7 @@ Built from the design plan (*School management system: design plan*, Nov 2026), 
 | App files (installable PWA) | Workers static assets | `public/` |
 | Server logic, sign-in, billing, owner panel | Worker | `src/index.ts` |
 | One private database per school | Durable Object with SQLite | `src/school.ts`, `src/schema.ts` |
-| Platform records (schools, plans, invoices, sign-in lookup, sessions) | D1 | `migrations/0001_platform.sql` |
+| Platform records (schools, plans, invoices, sign-in lookup, sessions) | Platform Durable Object with SQLite | `src/platform.ts` |
 | Fee slips, result PDFs | R2 (private; every download is permission-checked) | |
 | Daily automation (vouchers, reminders, fines, summaries, billing) | Cron trigger, hourly | `scheduled()` in `src/index.ts` |
 
@@ -77,10 +77,6 @@ npm install
 ```
 
 ```bash
-npm run db:local
-```
-
-```bash
 npm run dev
 ```
 
@@ -103,18 +99,10 @@ are migrated to the current authentication flow.
 
 ## Deploy to Cloudflare
 
-```bash
-npx wrangler d1 create school-platform
-```
-
-Put the returned `database_id` into `wrangler.toml`, then:
+The platform registry and each institution database are SQLite databases managed by their respective Durable Objects. No D1 database or D1 migration command is required. Wrangler creates local Durable Object SQLite state automatically during local development.
 
 ```bash
 npx wrangler r2 bucket create school-files
-```
-
-```bash
-npx wrangler d1 migrations apply DB --remote
 ```
 
 Before production use, verify `OWNER_EMAIL`, `GOOGLE_CLIENT_ID`, optional `PUBLIC_CONTACT_EMAIL`, and
