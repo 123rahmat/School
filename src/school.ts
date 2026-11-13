@@ -842,11 +842,6 @@ export class SchoolDO extends DurableObject<Env> {
       if (!b.name || !b.email) fail(400, 'Name and a Google sign-in email are required');
       const role = ['teacher', 'subadmin', 'admin'].includes(b.role) ? b.role : 'teacher';
       if (role !== 'teacher') this.requireMain(a);
-      if (role === 'subadmin') {
-        const ctx = c.get('ctx');
-        const subAdmins = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role='subadmin'")?.n || 0);
-        if (subAdmins >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} Mini Admin account(s). Upgrade under Billing to add another.`);
-      }
       const email = normId(b.email), phone = normId(b.phone) || null;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
@@ -895,11 +890,6 @@ export class SchoolDO extends DurableObject<Env> {
       if (s!.is_main && !a.isMain) fail(403, 'Only the main admin can edit the main admin');
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Review the staff account changes and confirm before saving');
-      if (s!.active && b.role === 'subadmin' && s!.role !== 'subadmin') {
-        const ctx = c.get('ctx');
-        const subAdmins = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role='subadmin' AND id<>?", id)?.n || 0);
-        if (subAdmins >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} Mini Admin account(s). Upgrade under Billing to add another.`);
-      }
       const changes: Row = {};
       for (const k of ['name', 'email', 'phone', 'subjects', 'role', 'subrole']) if (k in b) {
         let v = b[k];
@@ -975,11 +965,6 @@ export class SchoolDO extends DurableObject<Env> {
       if (!s) return fail(404, 'Staff account not found');
       if (s.active) fail(409, 'This staff account is already active');
       if (s.is_main || (s.role === 'admin' && !a.isMain)) fail(403, 'Only the main admin can reactivate a full administrator account');
-      if (s.role === 'subadmin') {
-        const ctx = c.get('ctx');
-        const subAdmins = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role='subadmin'")?.n || 0);
-        if (subAdmins >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} Mini Admin account(s). Upgrade under Billing before reactivating this account.`);
-      }
       this.run('UPDATE staff SET active=1, left_at=NULL, left_reason=NULL WHERE id=? AND active=0', id);
       await this.syncLogin('staff', id, [s.email, s.phone]);
       this.audit(a, 'staff.reactivate', 'staff', id);
