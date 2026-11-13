@@ -551,24 +551,32 @@ export class SchoolDO extends DurableObject<Env> {
   async runCron(ctx: Ctx) {
     const t = pkt();
     const paused = ctx.schoolStatus === 'paused';
-    const ran = (k: string) => { if (this.one('SELECT 1 FROM meta WHERE key=?', k)) return true; this.run('INSERT INTO meta VALUES (?,?)', k, now()); return false; };
+    const hasRun = (k: string) => !!this.one('SELECT 1 FROM meta WHERE key=?', k);
+    const markRun = (k: string) => this.run('INSERT OR IGNORE INTO meta VALUES (?,?)', k, now());
     const sys = this.loadActor({ ...ctx, refId: 'system' });
     const isHoliday = !!this.one('SELECT 1 FROM holidays WHERE date=?', t.date) || t.weekday === 0;
 
     if (!paused) {
       // Monthly vouchers on the voucher day.
-      if (t.day >= (this.num('voucher_day') || 1) && !ran('vouchers:' + t.month) && this.q('SELECT 1 FROM fee_plans LIMIT 1').length) this.generateVouchers(sys, t.month);
+      const voucherKey = 'vouchers:' + t.month;
+      if (t.day >= (this.num('voucher_day') || 1) && !hasRun(voucherKey) && this.q('SELECT 1 FROM fee_plans LIMIT 1').length) {
+        this.generateVouchers(sys, t.month);
+        markRun(voucherKey);
+      }
 
       // Attendance not submitted by the deadline.
-      if (!isHoliday && t.hour >= (this.num('attendance_deadline_hour') || 10) && !ran('att-reminder:' + t.date)) {
+      const attendanceKey = 'att-reminder:' + t.date;
+      if (!isHoliday && t.hour >= (this.num('attendance_deadline_hour') || 10) && !hasRun(attendanceKey)) {
         const missing = this.q(`SELECT c.* FROM classes c WHERE c.active=1 AND NOT EXISTS
           (SELECT 1 FROM attendance_days d WHERE d.class_id=c.id AND d.date=? AND d.status='submitted')`, t.date);
         for (const c of missing) if (c.class_teacher_id) this.notify('s:' + c.class_teacher_id, 'Attendance not submitted', `${c.name}: please submit today's attendance.`, `#/attendance/${c.id}`);
         if (missing.length) this.notifyAdmins('Attendance pending', `${missing.length} class(es) have not submitted: ${missing.map((c) => c.name).join(', ')}`, { subrole: 'coordinator' });
+        markRun(attendanceKey);
       }
 
       // Late fines and fee reminders (once a day at 9 AM or later).
-      if (t.hour >= 9 && !ran('fees-daily:' + t.date)) {
+      const feesKey = 'fees-daily:' + t.date;
+      if (t.hour >= 9 && !hasRun(feesKey)) {
         const before = this.num('reminder_days_before') || 3;
         for (const v of this.q("SELECT * FROM vouchers WHERE status IN ('unpaid','partial')")) {
           const late = Math.round((Date.parse(t.date) - Date.parse(v.due_date)) / 864e5);
@@ -590,12 +598,15 @@ export class SchoolDO extends DurableObject<Env> {
           const s = this.one('SELECT name FROM staff WHERE id=?', String(r.held_by).slice(2));
           this.notifyAdmins('Cash held too long', `${s?.name || 'A teacher'} has held ${money(r.amt)} since ${String(r.since).slice(0, 10)}.`, { subrole: 'accountant', link: '#/cash' });
         }
+        markRun(feesKey);
       }
 
       // End-of-day summary for the main admin.
-      if (t.hour >= 18 && !ran('summary:' + t.date)) {
+      const summaryKey = 'summary:' + t.date;
+      if (t.hour >= 18 && !hasRun(summaryKey)) {
         const d = this.dashboard(sys);
         this.notifyAdmins('Daily summary', `Attendance ${d.attendance.percent}% (${d.attendance.submitted}/${d.attendance.classes} classes). Collected today ${money(d.fees.collectedToday)}. Slips waiting ${d.fees.slipsWaiting}. Cash with teachers ${money(d.fees.cashWithTeachers)}.`, { mainOnly: true, link: '#/' });
+        markRun(summaryKey);
       }
     }
 
@@ -1244,24 +1255,53 @@ export class SchoolDO extends DurableObject<Env> {
       const s = this.student(a, c.req.param('id'), 'edit');
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm the student leaving status and date before saving');
+      if (!['active', 'pending'].includes(s.status)) fail(409, 'Only an active or pending student can be marked as left');
       const reasons = ['transferred', 'left without notice', 'expelled', 'passed out', 'other'];
       if (!reasons.includes(b.reason)) fail(400, 'Choose a leaving reason');
-      this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", b.date || pkt().date, b.reason + (b.note ? `: ${b.note}` : ''), s.id);
-      this.audit(a, 'student.left', 'student', s.id, b);
+      const leavingDate = String(b.date || pkt().date);
+      const parsedDate = new Date(leavingDate + 'T00:00:00Z');
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(leavingDate) || !Number.isFinite(parsedDate.getTime()) ||
+          parsedDate.toISOString().slice(0, 10) !== leavingDate || leavingDate > pkt().date) {
+        fail(400, 'Enter a valid leaving date that is not in the future');
+      }
+      const enrollment = this.one('SELECT * FROM enrollments WHERE student_id=? AND to_date IS NULL ORDER BY from_date DESC LIMIT 1', s.id);
+      if (enrollment && leavingDate < enrollment.from_date) fail(400, 'Leaving date cannot be before the current class enrollment');
+      const className = this.one('SELECT name FROM classes WHERE id=?', s.class_id)?.name || '';
+      const reason = b.reason + (b.note ? `: ${String(b.note).trim().slice(0, 500)}` : '');
+      this.tx(() => {
+        this.run("UPDATE students SET status='left', left_date=?, left_reason=? WHERE id=?", leavingDate, reason, s.id);
+        if (enrollment) this.run("UPDATE enrollments SET to_date=?, outcome='left', class_name_snapshot=COALESCE(class_name_snapshot, ?) WHERE id=? AND to_date IS NULL",
+          leavingDate, className, enrollment.id);
+      });
+      this.audit(a, 'student.left', 'student', s.id, { ...b, date: leavingDate });
       await this.syncGuardian(s.guardian_id);
       return c.json({ ok: true });
     });
     app.post('/students/:id/restore', async (c) => {
       const a = c.get('actor');
+      const ctx = c.get('ctx');
       const s = this.student(a, c.req.param('id'), 'edit');
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm that this former student should be restored');
-      const classId = b.class_id || s.class_id;
-      this.run("UPDATE students SET status='active', left_date=NULL, left_reason=NULL, class_id=? WHERE id=?", classId, s.id);
-      this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)', rid(12), s.id, classId, this.currentSession().id, pkt().date);
-      this.audit(a, 'student.restore', 'student', s.id, { class_id: classId });
+      if (s.status !== 'left') fail(409, 'Only a former student can be restored');
+      const classId = String(b.class_id || s.class_id);
+      const destination = this.one('SELECT id, name FROM classes WHERE id=? AND active=1', classId);
+      if (!destination) fail(400, 'Choose an active class for this student before restoring');
+      if (!this.inClassScope(a, classId)) fail(403, 'The destination class is outside your assigned scope');
+      const activeCount = Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status!='left'")?.n || 0);
+      if (activeCount >= ctx.studentCap) fail(402, `Your plan allows ${ctx.studentCap} students. Upgrade under Billing before restoring another student.`);
+      const session = this.currentSession();
+      const effective = pkt().date;
+      this.tx(() => {
+        this.run("UPDATE enrollments SET to_date=?, outcome=COALESCE(outcome,'left') WHERE student_id=? AND to_date IS NULL",
+          s.left_date || effective, s.id);
+        this.run("UPDATE students SET status='active', left_date=NULL, left_reason=NULL, class_id=? WHERE id=?", classId, s.id);
+        this.run('INSERT INTO enrollments (id, student_id, class_id, session_id, from_date) VALUES (?,?,?,?,?)',
+          rid(12), s.id, classId, session.id, effective);
+      });
+      this.audit(a, 'student.restore', 'student', s.id, { class_id: classId, class_name: destination.name });
       await this.syncGuardian(s.guardian_id);
-      return c.json({ ok: true });
+      return c.json({ ok: true, class_id: classId });
     });
     app.delete('/students/:id', async (c) => {
       const a = c.get('actor'); this.requireMain(a);
@@ -1684,7 +1724,11 @@ export class SchoolDO extends DurableObject<Env> {
       const p = this.one("SELECT * FROM payments WHERE id=? AND status='submitted'", c.req.param('id')); if (!p) fail(404, 'Payment not found or already handled');
       if (!this.canVerify(a, p!)) fail(403, 'You cannot verify this payment');
       if (p!.submitted_by === a.key && a.type !== 'staff') fail(403, 'You cannot verify your own payment');
-      const receipt = this.tx(() => { this.run('UPDATE payments SET verified_by=? WHERE id=?', a.key, p!.id); return this.applyVerified(p!); });
+      const receipt = this.tx(() => {
+        this.run("UPDATE payments SET verified_by=? WHERE id=? AND status='submitted'", a.key, p!.id);
+        if (Number(this.one('SELECT changes() AS n')?.n || 0) !== 1) fail(409, 'This payment has already been handled. Refresh the page.');
+        return this.applyVerified(p!);
+      });
       this.audit(a, 'payment.verify', 'student', p!.student_id, { id: p!.id, receipt });
       return c.json({ ok: true, receipt });
     });
@@ -1694,8 +1738,12 @@ export class SchoolDO extends DurableObject<Env> {
       if (!this.canVerify(a, p!)) fail(403, 'You cannot reject this payment');
       if (confirm !== true) fail(400, 'Confirm that this payment slip should be rejected');
       if (!reason) fail(400, 'A reason is required');
-      this.run("UPDATE payments SET status='rejected', reason=?, verified_by=?, verified_at=? WHERE id=?", reason, a.key, now(), p!.id);
-      this.notifyParentOf(p!.student_id, 'Slip rejected', `Reason: ${reason}. Please upload again.`);
+      this.tx(() => {
+        this.run("UPDATE payments SET status='rejected', reason=?, verified_by=?, verified_at=? WHERE id=? AND status='submitted'",
+          String(reason).slice(0, 500), a.key, now(), p!.id);
+        if (Number(this.one('SELECT changes() AS n')?.n || 0) !== 1) fail(409, 'This payment has already been handled. Refresh the page.');
+      });
+      this.notifyParentOf(p!.student_id, 'Slip rejected', `Reason: ${String(reason).slice(0, 500)}. Please upload again.`);
       this.notifyClassTeacher(p!.class_id, 'Slip rejected', reason);
       this.audit(a, 'payment.reject', 'student', p!.student_id, { id: p!.id, reason });
       return c.json({ ok: true });
@@ -1706,11 +1754,40 @@ export class SchoolDO extends DurableObject<Env> {
       if (confirm !== true) fail(400, 'Confirm cancellation of this verified receipt');
       const p = this.one("SELECT * FROM payments WHERE id=? AND status='verified'", c.req.param('id')); if (!p) fail(404, 'Not found');
       this.tx(() => {
-        const v = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id)!;
-        const paid = v.paid - p!.amount;
-        this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', paid, v.status === 'carried' ? 'carried' : paid <= 0 ? 'unpaid' : 'partial', v.id);
-        this.run("UPDATE payments SET status='cancelled', reason=? WHERE id=?", reason, p!.id);
-        this.audit(a, 'receipt.cancel', 'student', p!.student_id, { id: p!.id, receipt: p!.receipt_no, reason });
+        this.run("UPDATE payments SET status='cancelled', reason=? WHERE id=? AND status='verified'", String(reason).trim().slice(0, 500), p!.id);
+        if (Number(this.one('SELECT changes() AS n')?.n || 0) !== 1) fail(409, 'This receipt has already been cancelled or changed.');
+
+        const original = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id);
+        if (!original) fail(409, 'The original voucher is missing. No financial changes were made.');
+        const originalPaid = Number(original.paid) - Number(p!.amount);
+        if (originalPaid < 0) fail(409, 'The receipt exceeds the recorded amount paid on its voucher.');
+
+        const latest = this.latestVoucher(p!.student_id);
+        if (latest && latest.id !== original.id && ['carried', 'settled'].includes(original.status)) {
+          // The old balance was rolled into a newer voucher. Put the cancelled amount
+          // back into that current balance instead of hiding it in an old voucher.
+          const arrears = Number(latest.arrears) + Number(p!.amount);
+          const total = Number(latest.current) - Number(latest.discount) + arrears + Number(latest.fine);
+          const latestStatus = Number(latest.paid) >= total ? 'paid' : Number(latest.paid) > 0 ? 'partial' : 'unpaid';
+          this.run('UPDATE vouchers SET paid=? WHERE id=?', originalPaid, original.id);
+          this.run('UPDATE vouchers SET arrears=?, status=? WHERE id=?', arrears, latestStatus, latest.id);
+          const arrearsLine = this.one("SELECT rowid FROM voucher_lines WHERE voucher_id=? AND label='Arrears' LIMIT 1", latest.id);
+          if (arrearsLine) this.run("UPDATE voucher_lines SET amount=? WHERE rowid=?", arrears, arrearsLine.rowid);
+          else this.run("INSERT INTO voucher_lines (voucher_id, label, amount) VALUES (?, 'Arrears', ?)", latest.id, arrears);
+          const carryStatus = Number(latest.paid) >= arrears ? 'settled' : 'carried';
+          this.run("UPDATE vouchers SET status=? WHERE student_id=? AND month<? AND status IN ('carried','settled')",
+            carryStatus, p!.student_id, latest.month);
+        } else {
+          const total = this.voucherTotal(original);
+          const status = originalPaid >= total ? 'paid' : originalPaid > 0 ? 'partial' : 'unpaid';
+          this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', originalPaid, status, original.id);
+          if (latest) {
+            const carryStatus = Number(latest.paid) >= Number(latest.arrears) ? 'settled' : 'carried';
+            this.run("UPDATE vouchers SET status=? WHERE student_id=? AND month<? AND status IN ('carried','settled')",
+              carryStatus, p!.student_id, latest.month);
+          }
+        }
+        this.audit(a, 'receipt.cancel', 'student', p!.student_id, { id: p!.id, receipt: p!.receipt_no, reason: String(reason).trim().slice(0, 500) });
       });
       return c.json({ ok: true });
     });
