@@ -333,6 +333,10 @@ document.addEventListener('click', (event) => {
 
 async function render() {
   let path = currentPath();
+  if (path === '/outbox' || path.startsWith('/threads') || path.startsWith('/thread/')) {
+    history.replaceState(null, '', '/notices');
+    path = '/notices';
+  }
   const authRoutes = ['/login', '/signup', '/admin'];
   // Resolve the server cookie before showing any public or protected page.
   if (!ME && !authRoutes.includes(path)) {
@@ -379,7 +383,7 @@ function nav() {
   const items = [];
   if (ME.kind === 'owner') items.push(link('/owner', 'Owner panel'));
   else if (ME.kind === 'guardian') {
-    items.push(link('/', 'My children'), link('/timetable', 'Timetable'), link('/submissions', 'My submissions'), link('/notices', 'Notices'), link('/threads', 'Messages'));
+    items.push(link('/', 'My children'), link('/timetable', 'Timetable'), link('/submissions', 'My submissions'), link('/notices', 'Notices'));
   } else {
     items.push(link('/', ME.isAdmin ? 'Dashboard' : 'Today'));
     items.push(`<div class="group">People</div>`, link('/students', 'Students'));
@@ -390,8 +394,6 @@ function nav() {
     if (ME.canFees || ME.classTeacherOf.length) items.push(link('/fees', 'Fees'));
     items.push(link('/cash', 'Cash held'));
     items.push(link('/notices', 'Notices'));
-    if (ME.subrole !== 'accountant' && ME.role !== 'subadmin') items.push(link('/threads', 'Messages'));
-    if (ME.role === 'admin' || ME.subrole === 'office') items.push(link('/outbox', 'WhatsApp / SMS', ME.outbox ? ` <span class="badge warn">${ME.outbox}</span>` : ''));
     items.push(link('/results', 'Results'), link('/requests', 'Change requests'));
     if (ME.isAdmin) { items.push(`<div class="group">School</div>`, link('/settings', 'Settings')); }
     items.push(link('/submissions', 'Submission history'));
@@ -410,7 +412,6 @@ function workspaceToolsHtml() {
   } else if (ME.kind === 'guardian') {
     add('/', 'My children', 'Profiles and school information', '01');
     add('/notices', 'School notices', 'Announcements from the institution', '02');
-    add('/threads', 'Messages', 'Contact the school team', '03');
     add('/submissions', 'My submissions', 'Track forms sent from this device', '04');
     add('/notifications', 'Notifications', 'Important account updates', '05', ME.unread ? String(ME.unread) : '');
   } else {
@@ -421,7 +422,7 @@ function workspaceToolsHtml() {
     add('/attendance', 'Attendance', 'Daily registers and corrections', '04');
     if (ME.canFees || (ME.classTeacherOf || []).length) add('/fees', 'Fees', 'Vouchers and payment records', '04');
     if (ME.isAdmin) add('/staff', 'Teachers & staff', 'Accounts and responsibilities', '05');
-    add('/results', 'Results', 'Upload and publish result files', '06');
+    add('/results', 'Results', 'Published student results', '06');
     add('/notices', 'Notices', 'School and class announcements', '07');
     if (ME.isMainAdmin) add('/billing', 'Billing', 'Plan, renewal and storage', '08');
     add('/notifications', 'Notifications', 'Updates for your account', '09', ME.unread ? String(ME.unread) : '');
@@ -473,7 +474,7 @@ function view(html) {
       <div class="top">
         <button class="btn menu" id="menu" aria-label="Open navigation" aria-controls="side" aria-expanded="false" title="Navigation">☰</button>
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
-        <button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open workspace tools"><span class="tools-toggle-icon" aria-hidden="true">☷</span><span class="tools-toggle-text">Tools</span></button>
+        <button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open account and settings"><span class="tools-toggle-icon" aria-hidden="true">♙</span><span class="tools-toggle-text">Account</span></button>
         <button class="btn small hidden" id="install">Install app</button>
       </div>
       <div class="content"><div id="billing-banner-slot">${billingBanner()}</div><div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
@@ -1897,7 +1898,6 @@ route('/notices', async () => {
     <div id="ts" class="hidden"><label>Student (reg no or name)</label><input id="sq" placeholder="Type to search"><input type="hidden" name="target_student" id="sid"><div id="sres" class="small"></div></div>
     <div class="full"><label>Title</label><input name="title" required></div>
     <div class="full"><label>Message (English or Urdu)</label><textarea name="body" required dir="auto"></textarea></div>
-    <p class="full small muted">This notice is delivered in the app. To send a phone message, use the WhatsApp/SMS queue from your own device.</p>
     <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     const fillNoticeSubjects = () => {
       const classId = $('#notice-class', m).value;
@@ -1954,7 +1954,7 @@ route('/results', async () => {
   const [rows, classes] = await Promise.all([S('/results'), S('/classes')]);
   const groups = {};
   for (const r of rows) { const k = `${r.class_id || 'none'}|${r.title}`; (groups[k] ||= { class_id: r.class_id, class_name: r.class_name || 'Unmatched', title: r.title, items: [] }).items.push(r); }
-  const canUpload = ME.isAdmin || (ME.settings.teacher_upload_results === '1' && ME.classTeacherOf.length);
+  const canUpload = false;
   view(`<div class="row between"><h1>Results</h1>${canUpload ? '<button class="btn primary" id="up">Upload results</button>' : ''}</div>
   <p class="muted small">Upload one PDF per student. Files named by registration number (e.g. <code>2026-0142.pdf</code>) go to the right student automatically. Results stay hidden from parents until you press Publish.</p>
   ${Object.values(groups).map((g) => { const hidden = g.items.filter((x) => !x.published_at).length;
