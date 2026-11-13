@@ -105,17 +105,17 @@ assert.ok(css.includes('@media (max-width: 600px)'), 'Phone layout must use phon
 assert.ok(css.includes('minmax(0, 1fr)'), 'Workspace columns must shrink without forcing viewport overflow');
 assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
 const collectionSelectors = [
-  "$('[data-deldisc]')", "$('[data-cancel]')", "$('#side nav a')", "$('[data-rm]', m)",
-  "$('[data-v]')", "$('[data-r]')", "$('[data-deln]')", "$('[data-pub]')", "$('[data-del]')",
-  "$('[data-a]')", "$('[data-d]')", "$('[data-st]')", "$('[data-storage-approve]', storageQueue)",
-  "$('[data-storage-reject]', storageQueue)", "$('[data-ok]')",
+  " $('[data-deldisc]')".trim(), " $('[data-cancel]')".trim(), " $('#side nav a')".trim(), " $('[data-rm]', m)".trim(),
+  " $('[data-v]')".trim(), " $('[data-r]')".trim(), " $('[data-deln]')".trim(), " $('[data-pub]')".trim(), " $('[data-del]')".trim(),
+  " $('[data-a]')".trim(), " $('[data-d]')".trim(), " $('[data-st]')".trim(), " $('[data-storage-approve]', storageQueue)".trim(),
+  " $('[data-storage-reject]', storageQueue)".trim(), " $('[data-ok]')".trim(),
 ];
 for (const selector of collectionSelectors) {
   const needle = selector + '.forEach';
   let position = app.indexOf(needle);
   while (position !== -1) {
-    assert.notEqual(app[position - 2], '
-      `Collection event binding must use $$(), not $(): ${selector}`);
+    assert.notEqual(app[position - 2], String.fromCharCode(36),
+      `Collection event binding must use the multi-match selector: ${selector}`);
     position = app.indexOf(needle, position + needle.length);
   }
 }
