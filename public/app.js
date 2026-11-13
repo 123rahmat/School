@@ -2051,7 +2051,7 @@ route('/settings', async () => {
       ${f('cash_alert_days', 'Alert when cash held longer than (days)')}${f('low_attendance_percent', 'Low attendance warning below (%)')}
       ${f('reg_prefix', 'Registration number prefix', 'text', 'Empty = current year, e.g. 2026-0001')}
       <div class="full stack">${t('teacher_set_fees', 'Class teachers can set the fee for their own class and its students')}${t('teacher_add_students', 'Class teachers can add students to their own class (admin confirms)')}${t('teacher_verify_slips', 'Class teachers can verify payment slips for their class')}
-      ${t('phone_messages', 'Queue WhatsApp/SMS for parents and teachers, sent from the admin\'s own phone')}${t('teacher_upload_results', 'Class teachers can upload results for their class')}${t('absence_alerts', 'Alert parents of absence and late arrival')}${t('result_fee_hold', 'Hide results until fees are cleared')}</div>
+      ${t('absence_alerts', 'Alert parents of absence and late arrival')}${t('result_fee_hold', 'Hide results until fees are cleared')}</div>
       ${ME.isMainAdmin ? '<div class="full"><button class="btn primary">Save settings</button></div>' : '<p class="full muted small">Only the main admin can change settings.</p>'}</form>`;
   }
   if (tab === 'holidays') {
