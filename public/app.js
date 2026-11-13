@@ -142,8 +142,7 @@ function submissionLabelFor(path, method) {
   if (p.startsWith('/change-requests')) return 'Submit a change request';
   if (p === '/payments') return 'Submit fee payment';
   if (p.startsWith('/fees/') || p.includes('/fee')) return 'Fee management update';
-  if (p === '/results' || p.startsWith('/results/')) return 'Upload or manage examination result';
-  if (p.startsWith('/staff')) return 'Teacher or staff record update';
+    if (p.startsWith('/staff')) return 'Teacher or staff record update';
   if (p.startsWith('/classes')) return 'Class or teacher assignment update';
   if (p.startsWith('/notices')) return 'Post or manage a school notice';
   if (p.startsWith('/threads')) return 'Send a school message';
@@ -379,79 +378,77 @@ window.addEventListener('popstate', render);
 function nav() {
   if (!ME) return '';
   const p = currentPath();
-  const link = (href, label, extra = '') => `<a href="${href}" class="${(href === '/' ? p === '/' : p.startsWith(href)) ? 'active' : ''}">${label}${extra}</a>`;
+  const link = (href, label, icon, extra = '') => `<a href="${href}" class="${(href === '/' ? p === '/' : p.startsWith(href)) ? 'active' : ''}"><span class="nav-icon" aria-hidden="true">${icon}</span><span class="nav-label">${label}</span>${extra}</a>`;
   const items = [];
-  if (ME.kind === 'owner') items.push(link('/owner', 'Owner panel'));
-  else if (ME.kind === 'guardian') {
-    items.push(link('/', 'My children'), link('/timetable', 'Timetable'), link('/submissions', 'My submissions'), link('/notices', 'Notices'));
-  } else {
-    items.push(link('/', ME.isAdmin ? 'Dashboard' : 'Today'));
-    items.push(`<div class="group">People</div>`, link('/students', 'Students'));
-    if (ME.isAdmin) items.push(link('/staff', 'Teachers & staff'));
-    items.push(link('/classes', 'Classes'), link('/timetable', 'Timetable'));
-    // Class and subject assignments are managed from the Classes workspace.
-    items.push(`<div class="group">Daily work</div>`, link('/attendance', 'Attendance'));
-    if (ME.canFees || ME.classTeacherOf.length) items.push(link('/fees', 'Fees'));
-    items.push(link('/cash', 'Cash held'));
-    items.push(link('/notices', 'Notices'));
-    items.push(link('/results', 'Results'), link('/requests', 'Change requests'));
-    if (ME.isAdmin) { items.push(`<div class="group">School</div>`, link('/settings', 'Settings')); }
-    items.push(link('/submissions', 'Submission history'));
-    if (ME.isMainAdmin) items.push(link('/billing', 'Billing'));
+  if (ME.kind === 'owner') items.push(link('/owner', 'Platform overview', '⌂'));
+  else if (ME.kind === 'guardian') items.push(link('/', 'My children', '♧'), link('/timetable', 'Timetable', '▦'), link('/notices', 'Notices', '▤'));
+  else {
+    items.push(link('/', ME.isAdmin ? 'Dashboard' : 'Today', '⌂'));
+    items.push('<div class="group">People</div>', link('/students', 'Students', '♧'));
+    if (ME.isAdmin) items.push(link('/staff', 'Teachers & staff', '♙'));
+    items.push(link('/classes', 'Classes', '▦'), link('/timetable', 'Timetable', '▤'));
+    items.push('<div class="group">Daily work</div>', link('/attendance', 'Attendance', '✓'));
+    if (ME.canFees || (ME.classTeacherOf || []).length) items.push(link('/fees', 'Fees', '₹'));
+    if (ME.canFees || ME.isAdmin) items.push(link('/cash', 'Cash held', '▣'));
+    items.push(link('/notices', 'Notices', '▤'));
+    if (ME.canDecideRequests || ME.isAdmin) items.push(link('/requests', 'Change requests', '↺'));
   }
-  items.push(`<div class="group">Me</div>`, link('/notifications', 'Notifications', ME.unread ? ` <span class="badge bad">${ME.unread}</span>` : ''), `<a href="#" id="logout">Sign out</a>`);
   return items.join('');
 }
 
 function workspaceToolsHtml() {
   if (!ME) return '';
   const items = [];
-  const add = (href, label, hint, icon, meta = '') => items.push({ href, label, hint, icon, meta });
-  if (ME.kind === 'owner') {
-    add('/owner', 'Platform overview', 'Institutions, billing and storage', '⌂');
-  } else if (ME.kind === 'guardian') {
-    add('/', 'My children', 'Profiles and school information', '01');
-    add('/notices', 'School notices', 'Announcements from the institution', '02');
-    add('/submissions', 'My submissions', 'Track forms sent from this device', '04');
-    add('/notifications', 'Notifications', 'Important account updates', '05', ME.unread ? String(ME.unread) : '');
+  const add = (href, label, hint, icon) => items.push({ href, label, hint, icon });
+  if (ME.kind === 'owner') add('/owner', 'Platform overview', 'Institutions and platform operations', '⌂');
+  else if (ME.kind === 'guardian') {
+    add('/', 'My children', 'Profiles and school information', '♧');
+    add('/timetable', 'Timetable', 'Class schedules and periods', '▦');
+    add('/notices', 'Notices', 'Updates for your children', '▤');
   } else {
     add('/', ME.isAdmin ? 'Dashboard' : 'Today', 'Your school at a glance', '⌂');
-    add('/students', 'Students', 'Profiles, enrolment and records', '01');
-    add('/classes', 'Classes', 'Class groups and teacher assignments', '02');
-    add('/timetable', 'Timetable', 'Weekly periods and room schedules', '03');
-    add('/attendance', 'Attendance', 'Daily registers and corrections', '04');
-    if (ME.canFees || (ME.classTeacherOf || []).length) add('/fees', 'Fees', 'Vouchers and payment records', '04');
-    if (ME.isAdmin) add('/staff', 'Teachers & staff', 'Accounts and responsibilities', '05');
-    add('/results', 'Results', 'Published student results', '06');
-    add('/notices', 'Notices', 'School and class announcements', '07');
-    if (ME.isMainAdmin) add('/billing', 'Billing', 'Plan, renewal and storage', '08');
-    add('/notifications', 'Notifications', 'Updates for your account', '09', ME.unread ? String(ME.unread) : '');
+    add('/students', 'Students', 'Profiles, enrolment and records', '♧');
+    add('/classes', 'Classes', 'Class groups and teacher assignments', '▦');
+    add('/timetable', 'Timetable', 'Weekly periods and room schedules', '▤');
+    add('/attendance', 'Attendance', 'Daily registers and corrections', '✓');
+    if (ME.canFees || (ME.classTeacherOf || []).length) add('/fees', 'Fees', 'Vouchers and payment records', '₹');
+    add('/notices', 'Notices', 'Student and school notices', '▤');
   }
-  const role = ME.kind === 'owner' ? 'Platform owner' : ME.kind === 'guardian' ? 'Parent / guardian' : (ME.subrole || ME.role || 'Staff');
   const workspace = ME.kind === 'owner' ? 'Platform workspace' : (ME.schoolName || 'Institution workspace');
-  const initials = String(ME.name || 'U').trim().split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
   const dateLabel = new Date().toLocaleDateString('en-PK', { timeZone: 'Asia/Karachi', weekday: 'long', day: 'numeric', month: 'short' });
-  return `
-    <div class="tools-head">
-      <div><span class="tools-kicker">WORKSPACE</span><h2>Quick access</h2></div>
-      <button type="button" class="tools-close" id="tools-close" aria-label="Close workspace panel" title="Close panel">×</button>
-    </div>
+  return `<div class="tools-head"><div><span class="tools-kicker">WORKSPACE</span><h2>Quick access</h2></div><button type="button" class="tools-close" id="tools-close" aria-label="Close workspace panel" title="Close panel">×</button></div>
     <div class="tools-date"><span class="tools-date-dot"></span><span>${esc(dateLabel)}</span></div>
-    <div class="tools-profile">
-      <div class="tools-avatar" aria-hidden="true">${esc(initials || 'U')}</div>
-      <div class="tools-profile-copy"><b>${esc(ME.name || 'Account')}</b><span>${esc(role)}</span></div>
-    </div>
-    <div class="tools-workspace-name"><span>ACTIVE WORKSPACE</span><b>${esc(workspace)}</b>${ME.schoolStatus ? `<small class="tools-status ${ME.schoolStatus === 'active' || ME.schoolStatus === 'trial' ? 'is-ok' : 'is-warn'}">${esc(ME.schoolStatus)}</small>` : ''}</div>
+    <div class="tools-workspace-name"><span>ACTIVE WORKSPACE</span><b>${esc(workspace)}</b></div>
     <div class="tools-section-label">SHORTCUTS</div>
-    <nav class="tools-links" aria-label="Quick access links">
-      ${items.map((item) => `<a href="${item.href}" class="tools-link ${currentPath() === item.href ? 'active' : ''}">
-        <span class="tools-link-icon" aria-hidden="true">${esc(item.icon)}</span>
-        <span class="tools-link-copy"><b>${esc(item.label)}</b><small>${esc(item.hint)}</small></span>
-        ${item.meta ? `<span class="tools-link-count">${esc(item.meta)}</span>` : '<span class="tools-link-arrow" aria-hidden="true">↗</span>'}
-      </a>`).join('')}
-    </nav>
-    <div class="tools-note"><span class="tools-note-mark">i</span><p>Shortcuts are tailored to your account. The school server checks your permissions whenever you open a page or perform an action.</p></div>
-  `;
+    <nav class="tools-links" aria-label="Quick access links">${items.map((item) => `<a href="${item.href}" class="tools-link ${currentPath() === item.href ? 'active' : ''}"><span class="tools-link-icon" aria-hidden="true">${esc(item.icon)}</span><span class="tools-link-copy"><b>${esc(item.label)}</b><small>${esc(item.hint)}</small></span><span class="tools-link-arrow" aria-hidden="true">↗</span></a>`).join('')}</nav>
+    <div class="tools-note"><span class="tools-note-mark">i</span><p>Quick links follow your role. The school server checks permissions whenever you open a page or save a change.</p></div>`;
+}
+
+function accountMenuHtml() {
+  if (!ME) return '';
+  const role = ME.kind === 'owner' ? 'Platform owner' : ME.kind === 'guardian' ? 'Parent / guardian' : (ME.subrole || ME.role || 'Staff');
+  const initials = String(ME.name || 'U').trim().split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
+  const links = [];
+  if (ME.kind === 'owner') links.push('<a href="/owner"><span aria-hidden="true">⌂</span><span>Platform administration</span></a>');
+  else {
+    links.push(`<a href="/notifications"><span aria-hidden="true">◉</span><span>Notifications</span>${ME.unread ? `<b class="badge bad">${ME.unread}</b>` : ''}</a>`);
+    links.push('<a href="/submissions"><span aria-hidden="true">▤</span><span>Submission history</span></a>');
+    if (ME.isMainAdmin) {
+      links.push('<a href="/settings"><span aria-hidden="true">⚙</span><span>Institution settings</span></a>');
+      links.push('<a href="/billing"><span aria-hidden="true">↗</span><span>Upgrade and billing</span></a>');
+    }
+  }
+  return `<div class="account-menu">
+    <button type="button" class="account-toggle" id="account-toggle" aria-controls="account-panel" aria-expanded="false" aria-label="Open account menu" title="Account"><span class="account-avatar">${esc(initials || 'U')}</span><span class="account-toggle-caret" aria-hidden="true">⌄</span></button>
+    <div class="account-panel hidden" id="account-panel" role="menu" aria-label="Account menu">
+      <div class="account-panel-user"><span class="account-avatar account-avatar-large">${esc(initials || 'U')}</span><span><b>${esc(ME.name || 'Account')}</b><small>${esc(role)}</small></span></div>
+      ${ME.schoolName ? `<div class="account-panel-school">${esc(ME.schoolName)}</div>` : ''}
+      <nav class="account-panel-links">${links.join('')}</nav>
+      <button type="button" class="account-panel-link hidden" id="install"><span aria-hidden="true">⇩</span><span>Install app</span></button>
+      <div class="account-panel-divider"></div>
+      <button type="button" class="account-signout" id="account-logout"><span aria-hidden="true">↪</span><span>Sign out</span></button>
+    </div>
+  </div>`;
 }
 
 function view(html) {
@@ -462,20 +459,12 @@ function view(html) {
   <div class="layout">
     <button type="button" class="nav-scrim" id="nav-scrim" aria-label="Close navigation" tabindex="-1"></button>
     <button type="button" class="tools-scrim" id="tools-scrim" aria-label="Close workspace tools" tabindex="-1"></button>
-    <aside class="side" id="side">
-      <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
-      <nav>${nav()}</nav>
-      <div class="muted small" style="padding:12px 10px">
-        <div>${esc(ME?.name || '')}${ME?.role && ME.role !== 'parent' ? ' · ' + esc(ME.subrole || ME.role) : ''}</div>
-        ${ME?.userId ? `<div class="account-id-label">Account ID</div><code class="account-id-value">${esc(ME.userId)}</code>` : ''}
-      </div>
-    </aside>
+    <aside class="side" id="side"><div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div><nav>${nav()}</nav></aside>
     <div class="main">
       <div class="top">
         <button class="btn menu" id="menu" aria-label="Open navigation" aria-controls="side" aria-expanded="false" title="Navigation">☰</button>
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
-        <button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open account and settings"><span class="tools-toggle-icon" aria-hidden="true">♙</span><span class="tools-toggle-text">Account</span></button>
-        <button class="btn small hidden" id="install">Install app</button>
+        <div class="top-actions"><button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open workspace tools"><span class="tools-toggle-icon" aria-hidden="true">☷</span><span class="tools-toggle-text">Tools</span></button>${accountMenuHtml()}</div>
       </div>
       <div class="content"><div id="billing-banner-slot">${billingBanner()}</div><div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
     </div>
@@ -483,10 +472,26 @@ function view(html) {
   </div>`;
   const layout = $('.layout'), side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
   const toolsPanel = $('#tools-panel'), toolsButton = $('#tools-toggle'), toolsScrim = $('#tools-scrim');
+  const accountButton = $('#account-toggle'), accountPanel = $('#account-panel');
   const mobileNav = () => window.matchMedia('(max-width: 860px)').matches;
   const compactTools = () => window.matchMedia('(max-width: 1350px)').matches;
-  menu.setAttribute('aria-expanded', String(!mobileNav()));
-  menu.setAttribute('aria-label', mobileNav() ? 'Open navigation' : 'Collapse navigation');
+  const setAccountOpen = (open) => {
+    if (!accountPanel || !accountButton) return;
+    accountPanel.classList.toggle('hidden', !open);
+    accountButton.setAttribute('aria-expanded', String(open));
+  };
+  const setNavOpen = (open) => {
+    if (mobileNav()) {
+      side.classList.toggle('open', open);
+      scrim.classList.toggle('open', open);
+      if (open && toolsOpen) setToolsOpen(false);
+    } else {
+      side.classList.remove('open');
+      scrim.classList.remove('open');
+    }
+    menu.setAttribute('aria-expanded', String(mobileNav() && open));
+    menu.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  };
   let toolsOpen = false;
   try {
     const saved = localStorage.getItem('institution.workspace-tools-open');
@@ -512,43 +517,49 @@ function view(html) {
     if (persist) { try { localStorage.setItem('institution.workspace-tools-open', open ? '1' : '0'); } catch {} }
     applyToolsState();
   };
-  const setNavOpen = (open) => {
-    if (mobileNav()) {
-      side.classList.toggle('open', open);
-      scrim.classList.toggle('open', open);
-      if (open && toolsOpen) setToolsOpen(false);
-    } else {
-      layout.classList.toggle('nav-collapsed', !open);
-      side.classList.remove('open');
-      scrim.classList.remove('open');
-    }
-    menu.setAttribute('aria-expanded', String(open));
-    menu.setAttribute('aria-label', open ? 'Collapse navigation' : 'Expand navigation');
-  };
+  menu.setAttribute('aria-expanded', 'false');
+  menu.setAttribute('aria-label', 'Open navigation');
   applyToolsState();
-  menu.onclick = () => setNavOpen(mobileNav() ? !side.classList.contains('open') : layout.classList.contains('nav-collapsed'));
+  menu.onclick = () => setNavOpen(!side.classList.contains('open'));
   scrim.onclick = () => setNavOpen(false);
   toolsButton.onclick = () => setToolsOpen(!toolsOpen);
   toolsScrim.onclick = () => setToolsOpen(false);
   const closeTools = $('#tools-close'); if (closeTools) closeTools.onclick = () => setToolsOpen(false);
+  if (accountButton) accountButton.onclick = () => setAccountOpen(accountPanel.classList.contains('hidden'));
+  document.onpointerdown = (event) => {
+    if (event.target instanceof Element && !event.target.closest('.account-menu')) setAccountOpen(false);
+  };
   $$('#side nav a').forEach((a) => a.addEventListener('click', () => { if (mobileNav()) setNavOpen(false); }));
   $$('#tools-panel nav a').forEach((a) => a.addEventListener('click', () => { if (compactTools()) setToolsOpen(false); }));
-  document.onkeydown = (event) => {
-    if (event.key !== 'Escape') return;
-    if (mobileNav()) setNavOpen(false);
-    setToolsOpen(false);
-  };
-  window.onresize = applyToolsState;
-  const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
-    e.preventDefault();
+  const doLogout = async () => {
     if (!navigator.onLine) {
       toast('Connect to the internet to sign out securely. Your pending school submissions will remain saved on this device.');
       return;
     }
+    const logoutButton = $('#account-logout');
+    if (logoutButton) logoutButton.disabled = true;
     try { await api('/api/auth/logout', { body: {} }); }
-    catch { toast('Could not sign out from the server. Please try again.'); return; }
-      ME = null; BILL = null; 
-      go('/login');
+    catch {
+      if (logoutButton) logoutButton.disabled = false;
+      toast('Could not sign out from the server. Please try again.');
+      return;
+    }
+    ME = null;
+    BILL = null;
+    history.replaceState(null, '', '/login');
+    await render();
+  };
+  const logoutButton = $('#account-logout');
+  if (logoutButton) logoutButton.onclick = doLogout;
+  document.onkeydown = (event) => {
+    if (event.key !== 'Escape') return;
+    if (mobileNav()) setNavOpen(false);
+    setToolsOpen(false);
+    setAccountOpen(false);
+  };
+  window.onresize = () => {
+    if (!mobileNav()) setNavOpen(false);
+    applyToolsState();
   };
   setupSearch();
   setupInstall();
@@ -1005,31 +1016,30 @@ route('/student/:id', async ({ id }) => {
   const month = query().month || thisMonth();
   const p = await S(`/students/${id}?month=${month}`);
   const s = p.student;
-  const isParent = ME.kind === 'guardian';
-  const tabs = [['overview', 'Details'], ['attendance', 'Attendance'], ...(p.vouchers ? [['fees', 'Fees']] : []), ['results', 'Results'], ['notices', 'Notices'],
-    ...(ME.subrole === 'accountant' || ME.role === 'subadmin' ? [] : [['messages', 'Messages']]), ...(ME.isAdmin ? [['history', 'Change history']] : [])];
+  const canPostNotice = ME.kind === 'staff' && (ME.isAdmin || ME.canManageNotices || (ME.classTeacherOf || []).includes(s.class_id) || (ME.teaches || []).includes(s.class_id));
+  const tabs = [['overview', 'Details'], ['attendance', 'Attendance'], ...(p.vouchers ? [['fees', 'Fees']] : []), ['results', 'Results'], ['notices', 'Notices'], ...(ME.isAdmin ? [['history', 'Change history']] : [])];
   let body = '';
   if (tab === 'overview') body = `
     <div class="card form">
-      ${[['Registration no', s.reg_no], ['Class', s.class_name], ["Father's name", s.father_name], ['Parent phone', s.parent_phone], ['Parent email', s.parent_email], ['Date of birth', fmtDate(s.dob)],
-        ['Gender', s.gender], ['Admission date', fmtDate(s.admission_date)], ['Address', s.address], ['Added', new Date(s.created_at).toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })]]
-        .filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => `<div><label>${k}</label>${esc(v || '–')}</div>`).join('')}
+      ${[['Registration no', s.reg_no], ['Class', s.class_name], ["Father's name", s.father_name], ['Parent phone', s.parent_phone], ['Parent email', s.parent_email], ['Date of birth', fmtDate(s.dob)], ['Gender', s.gender], ['Admission date', fmtDate(s.admission_date)], ['Address', s.address], ['Added', new Date(s.created_at).toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })]].filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => `<div><label>${k}</label>${esc(v || '–')}</div>`).join('')}
       ${s.status === 'left' ? `<div class="full banner warn">Left on ${fmtDate(s.left_date)} — ${esc(s.left_reason)}</div>` : ''}
     </div>
     <h3>Class history</h3>
     <div class="table-wrap"><table><tbody>${p.classHistory.map((e) => `<tr><td>${esc(e.session_name)}</td><td>${esc(e.class_name)}</td><td>from ${fmtDate(e.from_date)}</td><td>${esc(e.outcome || '')}</td></tr>`).join('')}</tbody></table></div>`;
   if (tab === 'attendance') body = attendanceCalendar(p, month, id);
   if (tab === 'fees') body = feesTab(p, s);
-  if (tab === 'results') body = p.resultsHeld ? '<div class="banner warn">Results are held until fees are cleared.</div>' : `<div class="card">${p.results.map((r) => `<div class="list-item row between"><div><b>${esc(r.title)}</b> <span class="muted small">· ${esc(r.session)}</span> ${r.published_at ? badge('published', 'ok') : badge('hidden', 'warn')}</div><a class="btn small" target="_blank" href="/api/s/result-file/${r.id}">Open PDF</a></div>`).join('') || '<span class="muted">No results yet</span>'}</div>`;
-  if (tab === 'notices') body = `<div class="card">${p.notices.map((n) => noticeItem(n)).join('') || '<span class="muted">No notices</span>'}</div>`;
-  if (tab === 'messages') { go('/thread/' + id); return; }
+  if (tab === 'results') body = p.resultsHeld ? '<div class="banner warn">Results are held until fees are cleared.</div>' : `<div class="card">${p.results.map((r) => `<div class="list-item row between"><div><b>${esc(r.title)}</b> <span class="muted small">· ${esc(r.session)}</span> ${r.published_at ? badge('published', 'ok') : badge('archived', 'warn')}</div><a class="btn small" target="_blank" href="/api/s/result-file/${r.id}">Open PDF</a></div>`).join('') || '<span class="muted">No previous results</span>'}</div>`;
+  if (tab === 'notices') body = `<div class="card">${p.notices.map((n) => noticeItem(n)).join('') || '<span class="muted">No notices yet</span>'}</div>`;
   if (tab === 'history') body = `<div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>${p.history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td>${esc(h.user_name)}</td><td>${esc(h.action)}</td><td class="small">${esc(h.detail || '')}</td></tr>`).join('')}</tbody></table></div>`;
   view(`
   <div class="row between"><div><h1 style="margin:0">${esc(s.name)} ${s.status !== 'active' ? badge(s.status, 'warn') : ''}</h1><div class="muted">s/o ${esc(s.father_name)} · ${esc(s.class_name)} · ${esc(s.reg_no)}</div></div>
-  <div class="row">${studentActions(s)}</div></div>
+  <div class="row">${studentActions(s)}${canPostNotice ? '<button type="button" class="btn primary" id="add-student-notice">Update notice</button>' : ''}</div></div>
   <div class="tabs" style="margin-top:14px">${tabs.map(([k, l]) => `<a href="/student/${id}?tab=${k}" class="${tab === k ? 'active' : ''}">${l}</a>`).join('')}</div>
   ${body}`);
   bindStudentActions(s, p);
+  bindNoticeActions(p.notices);
+  const addNotice = $('#add-student-notice');
+  if (addNotice) addNotice.onclick = () => openStudentNotice(s);
 });
 
 function studentActions(s) {
@@ -1574,7 +1584,7 @@ route('/timetable', async () => {
       await act(() => S('/timetable', { body: payload }), 'Weekly period scheduled'); closeModal(); render();
     };
   });
-  $('[data-cancel-slot]').forEach((button) => button.onclick = async () => {
+  $$('[data-cancel-slot]').forEach((button) => button.onclick = async () => {
     const reason = prompt('Reason for cancelling this timetable period?');
     if (!reason?.trim()) return;
     if (!confirm('Cancel this recurring timetable period? Its record will remain in the audit history.')) return;
@@ -1876,45 +1886,93 @@ route('/cash', async () => {
   });
 });
 
-// ---------- notices ----------
 function noticeItem(n) {
-  const aud = { school: 'Whole school', class: 'Class ' + (n.target_name || ''), student: 'Parents of ' + (n.target_name || ''), teachers: 'All teachers', admins: 'Admins' }[n.audience];
-  return `<div class="list-item"><div class="row between"><b>${esc(n.title)}</b>${n.can_delete ? `<a href="#" data-deln="${n.id}" class="small">remove</a>` : ''}</div>
-  <div style="white-space:pre-wrap">${esc(n.body)}</div><div class="muted small">${esc(aud)}${n.subject ? ' · Subject: ' + esc(n.subject) : ''} · ${esc(n.poster_name || '')} · ${fmtTime(n.created_at)}${n.read_count !== undefined ? ` · read by ${n.read_count}` : ''}</div></div>`;
+  const aud = { school: 'Whole school', class: 'Class ' + (n.target_name || ''), student: 'Student: ' + (n.target_name || ''), teachers: 'All teachers', admins: 'Admins' }[n.audience];
+  return `<div class="list-item"><div class="row between"><b>${esc(n.title)}</b><span class="row">${n.can_edit ? `<a href="#" data-edn="${n.id}" class="small">edit</a>` : ''}${n.can_delete ? `<a href="#" data-deln="${n.id}" class="small">remove</a>` : ''}</span></div>
+    <div style="white-space:pre-wrap" dir="auto">${esc(n.body)}</div><div class="muted small">${esc(aud)}${n.subject ? ' · ' + esc(n.subject) : ''} · ${esc(n.poster_name || '')} · ${fmtTime(n.created_at)}${n.read_count !== undefined ? ` · read by ${n.read_count}` : ''}</div></div>`;
+}
+function bindNoticeActions(rows = []) {
+  const byId = new Map(rows.map((n) => [n.id, n]));
+  $$('[data-deln]').forEach((a) => a.onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm('Remove this notice for everyone?')) return;
+    await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE', body: { confirm: true } }), 'Notice removed');
+    render();
+  });
+  $$('[data-edn]').forEach((a) => a.onclick = (e) => {
+    e.preventDefault();
+    const n = byId.get(a.dataset.edn);
+    if (n) openNoticeEditor(n);
+  });
+}
+function openNoticeEditor(n) {
+  modal(`<h2>Update notice</h2><form id="edit-notice-form" class="form">
+    <div class="full"><label>Title</label><input name="title" value="${esc(n.title)}" required maxlength="120"></div>
+    <div class="full"><label>Notice</label><textarea name="body" required dir="auto">${esc(n.body)}</textarea></div>
+    <div class="full row"><button class="btn primary">Save changes</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+    $('#edit-notice-form', m).onsubmit = async (e) => {
+      e.preventDefault();
+      await act(() => S('/notices/' + n.id, { method: 'PATCH', body: { ...formData(e.target), confirm: true } }), 'Notice updated');
+      closeModal(); render();
+    };
+  });
+}
+async function openStudentNotice(student) {
+  const classes = await S('/classes');
+  const cls = classes.find((x) => x.id === student.class_id);
+  const isClassTeacher = (ME.classTeacherOf || []).includes(student.class_id);
+  const canManageClass = ME.isAdmin || ME.canManageNotices || isClassTeacher;
+  const ownSubjects = (cls?.subjects || []).filter((x) => x.teacher_id === ME.id);
+  const subjectOptions = canManageClass
+    ? '<option value="">General student notice</option>' + (cls?.subjects || []).map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('')
+    : ownSubjects.map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('');
+  if (!canManageClass && !ownSubjects.length) { toast('Only this student’s class teacher or an assigned subject teacher can update their notice.'); return; }
+  modal(`<h2>Notice for ${esc(student.name)}</h2><p class="small muted">Only this student’s parent will see this notice in the child’s record.</p>
+    <form id="student-notice-form" class="form">
+      <div class="full"><label>Subject / area</label><select name="subject" ${canManageClass ? '' : 'required'}>${subjectOptions}</select></div>
+      <div class="full"><label>Title</label><input name="title" required maxlength="120"></div>
+      <div class="full"><label>Notice update</label><textarea name="body" required dir="auto" maxlength="4000"></textarea></div>
+      <div class="full row"><button class="btn primary">Save student notice</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (m) => {
+    $('#student-notice-form', m).onsubmit = async (e) => {
+      e.preventDefault(); const b = formData(e.target);
+      await act(() => S('/notices', { body: { audience: 'student', target_id: student.id, subject: b.subject || null, title: b.title, body: b.body, confirm: true } }));
+      toast('Notice added to ' + student.name + '’s record.');
+      closeModal(); go('/student/' + student.id + '?tab=notices');
+    };
+  });
 }
 route('/notices', async () => {
   const [rows, classes] = await Promise.all([S('/notices'), ME.kind === 'staff' ? S('/classes') : []]);
-  view(`<div class="row between"><h1>Notices</h1>${ME.kind === 'staff' ? '<button class="btn primary" id="new">New notice</button>' : ''}</div>
-  <div class="card">${rows.map(noticeItem).join('') || '<span class="muted">No notices yet</span>'}</div>`);
+  view(`<div class="row between"><h1>Notices</h1>${ME.kind === 'staff' ? '<button class="btn primary" id="new">New notice</button>' : ''}</div><div class="card">${rows.map(noticeItem).join('') || '<span class="muted">No notices yet</span>'}</div>`);
   for (const n of rows) S(`/notices/${n.id}/read`, { body: {} }).catch(() => {});
-  $$('[data-deln]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this notice for everyone? Teachers cannot edit or remove notices after posting; only the class teacher or authorized administrator can remove it.')) return; await act(() => S('/notices/' + a.dataset.deln, { method: 'DELETE', body: { confirm: true } }), 'Removed'); render(); });
+  bindNoticeActions(rows);
   const nb = $('#new'); if (nb) nb.onclick = () => modal(`<h2>New notice</h2><form id="nf" class="form">
     <div><label>Send to</label><select name="audience" id="aud">
-      ${ME.role === 'admin' || ME.subrole === 'office' ? '<option value="school">Whole school (all parents and staff)</option>' : ''}
-      <option value="class">One class</option><option value="student">One student's parents</option>
+      ${ME.role === 'admin' || ME.subrole === 'office' ? '<option value="school">Whole school</option>' : ''}
+      <option value="class">One class</option><option value="student">One student’s parent</option>
       ${ME.role === 'admin' || ME.subrole === 'coordinator' ? '<option value="teachers">All teachers</option>' : ''}${ME.isMainAdmin ? '<option value="admins">Admins only</option>' : ''}</select></div>
     <div id="tc"><label>Class</label><select name="target_class" id="notice-class">${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-      <div class="full" style="margin-top:8px"><label>Subject</label><select name="subject" id="notice-subject"><option value="">Class-wide notice</option></select><div class="small muted" id="notice-subject-help">Subject teachers must choose their own assigned subject. Class teachers and administrators may post class-wide notices.</div></div></div>
-    <div id="ts" class="hidden"><label>Student (reg no or name)</label><input id="sq" placeholder="Type to search"><input type="hidden" name="target_student" id="sid"><div id="sres" class="small"></div></div>
-    <div class="full"><label>Title</label><input name="title" required></div>
-    <div class="full"><label>Message (English or Urdu)</label><textarea name="body" required dir="auto"></textarea></div>
-    <div class="full row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
+      <div class="full" style="margin-top:8px"><label>Subject (optional)</label><select name="subject" id="notice-subject"><option value="">Class-wide notice</option></select><div class="small muted" id="notice-subject-help">Subject teachers can post only for their assigned subjects.</div></div></div>
+    <div id="ts" class="hidden"><label>Student</label><input id="sq" placeholder="Search by name or registration number"><input type="hidden" name="target_student" id="sid"><div id="sres" class="small"></div></div>
+    <div class="full"><label>Title</label><input name="title" required maxlength="120"></div><div class="full"><label>Notice</label><textarea name="body" required dir="auto" maxlength="4000"></textarea></div>
+    <div class="full row"><button class="btn primary">Save notice</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
     const fillNoticeSubjects = () => {
-      const classId = $('#notice-class', m).value;
-      const cls = classes.find((x) => x.id === classId);
+      const classId = $('#notice-class', m).value, cls = classes.find((x) => x.id === classId);
       const ownSubjects = (cls?.subjects || []).filter((x) => x.teacher_id === ME.id);
       const isClassTeacher = (ME.classTeacherOf || []).includes(classId);
-      const canManageClass = ME.isFullAdmin || ME.canManageNotices || isClassTeacher;
-      const options = canManageClass
-        ? '<option value="">Class-wide notice</option>' + (cls?.subjects || []).map((x) => '<option value="' + esc(x.subject) + '">' + esc(x.subject) + '</option>').join('')
-        : ownSubjects.map((x) => '<option value="' + esc(x.subject) + '">' + esc(x.subject) + '</option>').join('');
+      const canManageClass = ME.isAdmin || ME.canManageNotices || isClassTeacher;
+      const options = canManageClass ? '<option value="">Class-wide notice</option>' + (cls?.subjects || []).map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('') : ownSubjects.map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('');
       $('#notice-subject', m).innerHTML = options || '<option value="">No assigned subject</option>';
       $('#notice-subject', m).required = !canManageClass;
-      $('#notice-subject-help', m).textContent = canManageClass
-        ? 'Optional: leave blank for the whole class, or select a subject.'
-        : 'You can post only to a subject assigned to you. The class teacher or administrator controls later removal.';
+      $('#notice-subject-help', m).textContent = canManageClass ? 'Leave blank for a class-wide notice, or choose a subject.' : 'You can post only for a subject currently assigned to you.';
     };
-    const sync = () => { const audience = $('#aud', m).value; $('#tc', m).classList.toggle('hidden', audience !== 'class'); $('#ts', m).classList.toggle('hidden', audience !== 'student'); if (audience === 'class') fillNoticeSubjects(); };
+    const sync = () => {
+      const audience = $('#aud', m).value;
+      $('#tc', m).classList.toggle('hidden', audience !== 'class');
+      $('#ts', m).classList.toggle('hidden', audience !== 'student');
+      if (audience === 'class') fillNoticeSubjects();
+    };
     $('#aud', m).onchange = sync; $('#notice-class', m).onchange = fillNoticeSubjects; sync();
     $('#sq', m).oninput = async (e) => {
       const r = await S('/search?q=' + encodeURIComponent(e.target.value)).catch(() => ({ students: [] }));
@@ -1924,64 +1982,12 @@ route('/notices', async () => {
     $('#nf', m).onsubmit = async (e) => {
       e.preventDefault(); const b = formData(e.target);
       const target_id = b.audience === 'class' ? b.target_class : b.audience === 'student' ? b.target_student : null;
-      if (!confirm('Send this notice to ' + (b.audience === 'class' ? classes.find((c) => c.id === target_id)?.name + (b.subject ? ' · ' + b.subject : '') : b.audience) + '? It will be visible to the selected audience.')) return;
+      if (b.audience === 'student' && !target_id) return toast('Choose a student first.');
+      const audienceText = b.audience === 'student' ? 'that student’s parent' : b.audience === 'class' ? classes.find((c) => c.id === target_id)?.name : b.audience;
+      if (!confirm('Save this notice for ' + audienceText + '?')) return;
       const r = await act(() => S('/notices', { body: { audience: b.audience, target_id, subject: b.subject || null, title: b.title, body: b.body, confirm: true } }));
-      toast(`Sent to ${r.recipients} people`); closeModal(); render();
+      toast(`Notice saved for ${r.recipients} recipient(s).`); closeModal(); render();
     };
-  });
-});
-
-// ---------- messages ----------
-route('/threads', async () => {
-  const rows = await S('/threads');
-  const kids = ME.kind === 'guardian' ? ME.children : [];
-  view(`<h1>Messages</h1><p class="muted small">One conversation per student between the parent and the student's teachers. The institution administrator can read all of them. Phone numbers stay private.</p>
-  ${kids.length ? `<div class="row" style="margin-bottom:12px">${kids.map((k) => `<a class="btn" href="/thread/${k.id}">Message ${esc(k.name)}'s teachers</a>`).join('')}</div>` : ''}
-  <div class="card">${rows.map((r) => `<a class="list-item" style="display:block;color:inherit" href="/thread/${r.student_id}"><b>${esc(r.name)}</b> <span class="muted small">· ${esc(r.class_name)} · ${fmtTime(r.created_at)}</span><div class="muted small">${esc(r.sender_name)}: ${esc(r.body.slice(0, 120))}</div></a>`).join('') || '<span class="muted">No conversations yet. Open a student and choose Messages to start one.</span>'}</div>`);
-});
-route('/thread/:id', async ({ id }) => {
-  const d = await S('/threads/' + id);
-  const myKey = (ME.kind === 'guardian' ? 'g:' : 's:') + ME.id;
-  view(`<div class="row between"><h1>Messages about ${esc(d.student.name)}</h1>${ME.kind === 'staff' ? `<a class="btn" href="/student/${id}">Profile</a>` : ''}</div>
-  <div class="card"><div class="msgs" id="msgs">${d.messages.map((m) => `<div class="msg ${m.sender_key === myKey ? 'me' : ''}"><div class="who">${esc(m.sender_name)} · ${fmtTime(m.created_at)}</div><div style="white-space:pre-wrap" dir="auto">${esc(m.body)}</div></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
-  <form id="mf" class="row" style="margin-top:12px"><textarea name="body" required placeholder="Write a message" style="flex:1;min-height:48px" dir="auto"></textarea><button class="btn primary">Send</button></form></div>`);
-  const box = $('#msgs'); box.scrollTop = box.scrollHeight;
-  $('#mf').onsubmit = async (e) => { e.preventDefault(); await act(() => S('/threads/' + id, { body: formData(e.target) })); render(); };
-});
-
-// ---------- results ----------
-route('/results', async () => {
-  const [rows, classes] = await Promise.all([S('/results'), S('/classes')]);
-  const groups = {};
-  for (const r of rows) { const k = `${r.class_id || 'none'}|${r.title}`; (groups[k] ||= { class_id: r.class_id, class_name: r.class_name || 'Unmatched', title: r.title, items: [] }).items.push(r); }
-  const canUpload = false;
-  view(`<div class="row between"><h1>Results</h1>${canUpload ? '<button class="btn primary" id="up">Upload results</button>' : ''}</div>
-  <p class="muted small">Upload one PDF per student. Files named by registration number (e.g. <code>2026-0142.pdf</code>) go to the right student automatically. Results stay hidden from parents until you press Publish.</p>
-  ${Object.values(groups).map((g) => { const hidden = g.items.filter((x) => !x.published_at).length;
-    return `<div class="card"><div class="row between"><h3 style="margin:0">${esc(g.class_name)} — ${esc(g.title)}</h3>
-    ${ME.isAdmin && g.class_id && hidden ? `<button class="btn primary small" data-pub="${g.class_id}" data-title="${esc(g.title)}">Publish ${hidden} to parents</button>` : hidden ? '' : badge('published', 'ok')}</div>
-    <div class="table-wrap" style="margin-top:10px"><table><tbody>${g.items.map((r) => `<tr><td>${r.student_id ? `<a href="/student/${r.student_id}?tab=results">${esc(r.student_name)}</a> <span class="muted small">${esc(r.reg_no)}</span>` : `<b>${esc(r.file_name)}</b> ${ME.isAdmin ? `<button class="btn small" data-assign="${r.id}">Assign to student</button>` : ''}`}</td>
-    <td>${r.published_at ? badge('published', 'ok') : badge('hidden', 'warn')}</td><td><a target="_blank" href="/api/s/result-file/${r.id}">Open</a></td><td>${ME.role === 'admin' || !r.published_at ? `<a href="#" data-del="${r.id}" class="small">delete</a>` : ''}</td></tr>`).join('')}</tbody></table></div></div>`; }).join('') || '<div class="card muted">No results uploaded yet.</div>'}`);
-  const up = $('#up'); if (up) up.onclick = () => modal(`<h2>Upload results</h2><form id="uf" class="form">
-    <div><label>Title</label><input name="title" placeholder="Mid-term 2026" required></div><div><label>Session</label><input name="session" placeholder="2026-2027"></div>
-    <div class="full"><label>PDF files (one per student, named by registration number)</label><input type="file" name="files" multiple accept="application/pdf" required></div>
-    <div class="full row"><button class="btn primary">Upload</button><button type="button" class="btn" data-close>Cancel</button></div><div class="full" id="out"></div></form>`, (m) => {
-    $('#uf', m).onsubmit = async (e) => {
-      e.preventDefault();
-      if (!confirm('Upload these result PDFs into the institution result records? They remain hidden from parents until an administrator publishes them.')) return;
-      const r = await act(() => S('/results', { form: new FormData(e.target) }));
-      $('#out', m).innerHTML = r.results.map((x) => `<div class="small">${x.ok ? '✓' : '⚠'} ${esc(x.file)} ${x.ok ? '→ ' + esc(x.student) : '— ' + esc(x.error)}</div>`).join('') + '<button type="button" class="btn" data-close>Done</button>';
-      $$('[data-close]', m).forEach((b) => b.onclick = () => { closeModal(); render(); });
-    };
-  });
-  $$('[data-pub]').forEach((b) => b.onclick = async () => { if (!confirm('Publish this result to parents in the selected class? It will become visible in parent accounts.')) return; const r = await act(() => S('/results/publish', { body: { class_id: b.dataset.pub, title: b.dataset.title, confirm:true } })); toast(`Published ${r.published}; parents notified`); render(); });
-  $$('[data-del]').forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this result PDF? It goes to the recycle bin for 30 days and may disappear from student view.')) return; await act(() => S('/results/' + a.dataset.del + '?confirm=1', { method: 'DELETE' }), 'Deleted'); render(); });
-  $$('[data-assign]').forEach((b) => b.onclick = async () => {
-    const q = prompt('Registration number of the student?'); if (!q) return;
-    const r = await S('/search?q=' + encodeURIComponent(q)); const s = r.students.find((x) => x.reg_no === q) || r.students[0];
-    if (!s) return toast('No student found');
-    if (!confirm(`Assign this result to ${s.name} (${s.reg_no}, ${s.class_name})? The student and parent will see it after publication.`)) return;
-    await act(() => S(`/results/${b.dataset.assign}/assign`, { body: { student_id: s.id, confirm:true } }), 'Assigned'); render();
   });
 });
 
@@ -1998,38 +2004,7 @@ route('/requests', async () => {
   $$('[data-d]').forEach((b) => b.onclick = async () => { if (!confirm('Decline this request?')) return; await act(() => S(`/change-requests/${b.dataset.d}/decide`, { body: { approve: false, confirm: true } }), 'Declined'); render(); });
 });
 
-// ---------- WhatsApp / SMS from the admin's own phone ----------
-const intlPhone = (p) => { const d = String(p).replace(/\D/g, ''); return d.startsWith('0') ? '92' + d.slice(1) : d; };
-route('/outbox', async () => {
-  const sentView = query().status === 'sent';
-  const [rows, classes] = await Promise.all([S('/outbox' + (sentView ? '?status=sent' : '')), S('/classes')]);
-  ME.outbox = sentView ? ME.outbox : rows.length;
-  // Same text → one group, so SMS can go to many numbers at once.
-  const groups = {};
-  for (const r of rows) (groups[r.text] ||= []).push(r);
-  view(`<div class="row between"><h1>WhatsApp / SMS</h1><div class="row">
-    <a class="btn ${sentView ? '' : 'primary'}" href="/outbox">To send (${sentView ? '…' : rows.length})</a><a class="btn ${sentView ? 'primary' : ''}" href="/outbox?status=sent">Sent</a>
-    <button class="btn" id="compose">New message</button></div></div>
-  <p class="muted small">These go out from <b>your own phone number</b>, using WhatsApp or SMS on this device, so there's no extra cost. Tap <b>WhatsApp</b>: the chat opens with the text ready, you press send, and it's marked done. On a phone, <b>SMS to all</b> sends one text to the whole group.</p>
-  ${sentView ? `<div class="table-wrap"><table><tbody>${rows.map((r) => `<tr><td>${fmtTime(r.sent_at)}</td><td>${esc(r.name)} <span class="muted small">${esc(r.kind)} · ${esc(r.phone)}</span></td><td>${badge(r.status === 'sent' ? r.channel || 'sent' : 'skipped', r.status === 'sent' ? 'ok' : '')}</td><td class="small" style="white-space:pre-wrap">${esc(r.text)}</td></tr>`).join('') || '<tr><td class="muted">Nothing yet</td></tr>'}</tbody></table></div>`
-  : Object.entries(groups).map(([text, list], gi) => `<div class="card"><div class="row between"><div style="white-space:pre-wrap;flex:1" dir="auto">${esc(text)}</div>
-    <div class="row">${list.length > 1 ? `<a class="btn small" data-smsall="${gi}" href="sms:${list.map((r) => r.phone).join(',')}?body=${encodeURIComponent(text)}">SMS to all ${list.length}</a>` : ''}<button class="btn small" data-skipall="${gi}">Skip all</button></div></div>
-    <div class="table-wrap" style="margin-top:10px"><table><tbody>${list.map((r) => `<tr id="r_${r.id}"><td>${esc(r.name)} <span class="muted small">${esc(r.kind)}</span></td><td>${esc(r.phone)}</td>
-    <td class="row"><a class="btn small primary" target="_blank" data-send="${r.id}" data-ch="whatsapp" href="https://wa.me/${intlPhone(r.phone)}?text=${encodeURIComponent(r.text)}">WhatsApp</a>
-    <a class="btn small" data-send="${r.id}" data-ch="sms" href="sms:${esc(r.phone)}?body=${encodeURIComponent(r.text)}">SMS</a></td></tr>`).join('')}</tbody></table></div></div>`).join('') || '<div class="card muted">Nothing to send. Absence alerts, fee reminders, receipts and notices show up here automatically.</div>'}`);
-  const glist = Object.values(groups);
-  const mark = (ids, channel, status = 'sent') => S('/outbox/mark', { body: { ids, channel, status } }).catch(() => {});
-  $$('[data-send]').forEach((a) => a.addEventListener('click', () => { mark([a.dataset.send], a.dataset.ch); const tr = $('#r_' + a.dataset.send); if (tr) tr.style.opacity = '.4'; }));
-  $$('[data-smsall]').forEach((a) => a.addEventListener('click', () => { mark(glist[a.dataset.smsall].map((r) => r.id), 'sms'); setTimeout(render, 1500); }));
-  $$('[data-skipall]').forEach((b) => b.onclick = async () => { await mark(glist[b.dataset.skipall].map((r) => r.id), null, 'skipped'); render(); });
-  $('#compose').onclick = () => modal(`<h2>New WhatsApp / SMS</h2><form id="cf" class="form">
-    <div><label>To</label><select name="to"><option value="parents">Parents</option><option value="teachers">Teachers</option><option value="all">Parents and teachers</option></select></div>
-    <div><label>Class (parents only)</label><select name="class_id"><option value="">All classes</option>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
-    <div class="full"><label>Title</label><input name="title" required></div><div class="full"><label>Message (English or Urdu)</label><textarea name="text" required dir="auto"></textarea></div>
-    <div class="full row"><button class="btn primary">Add to send list</button><button type="button" class="btn" data-close>Cancel</button></div></form>`, (m) => {
-    $('#cf', m).onsubmit = async (e) => { e.preventDefault(); const r = await act(() => S('/outbox/compose', { body: formData(e.target) })); toast(`${r.queued} message(s) ready to send`); closeModal(); render(); };
-  });
-});
+// Phone-message queues are removed. Parents receive notices and notifications inside their school account.
 
 // ---------- notifications ----------
 route('/notifications', async () => {
