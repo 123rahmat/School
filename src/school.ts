@@ -1171,12 +1171,13 @@ export class SchoolDO extends DurableObject<Env> {
       if (!subject) fail(404, 'Subject not found');
       const today = pkt().date;
       this.tx(() => {
-        const assignments = this.q('SELECT id, from_date FROM class_subject_teacher_assignments WHERE class_subject_id=? AND (to_date IS NULL OR to_date>=?)', subjectId, today);
+        const assignments = this.q('SELECT id, teacher_id, from_date FROM class_subject_teacher_assignments WHERE class_subject_id=? AND (to_date IS NULL OR to_date>=?)', subjectId, today);
         for (const assignment of assignments) {
           const endDate = assignment.from_date > today ? addDays(assignment.from_date, -1) : today;
           this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', endDate, assignment.id);
+          this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND from_date=? AND (to_date IS NULL OR to_date>=?)',
+            endDate, classId, subject.subject, assignment.teacher_id, assignment.from_date, today);
         }
-        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND (to_date IS NULL OR to_date>=?)', today, classId, subject.subject, today);
         this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
       });
       this.audit(a, 'class.subject.remove', 'class', classId, subjectId);
