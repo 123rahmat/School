@@ -16,22 +16,17 @@
 </head>
 <body>
 <div id="app">
-  <div class="landing-shell boot-landing">
-    <header class="landing-nav">
-      <a class="landing-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
-      <div class="landing-nav-actions"><a class="btn" href="/login">Sign in</a><a class="btn primary" href="/signup">Create account</a></div>
-    </header>
-    <main>
-      <section class="landing-hero">
-        <div class="landing-hero-copy">
-          <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
-          <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
-          <p class="landing-lead">Manage student records, staff, classes, attendance, fees, communication and results in one organised institution workspace.</p>
-          <div class="landing-actions"><a class="btn primary" href="/login">Use in browser</a><a class="btn" href="/signup">Create an institution account</a></div>
-        </div>
-      </section>
-    </main>
-  </div>
+  <main class="boot-screen" role="status" aria-live="polite" aria-label="Checking your secure sign-in">
+    <div class="boot-logo-stage">
+      <span class="boot-orbit boot-orbit-one"></span>
+      <span class="boot-orbit boot-orbit-two"></span>
+      <span class="boot-logo-glow"></span>
+      <img class="boot-logo" src="/icon.svg" alt="Institution Manager">
+    </div>
+    <div class="boot-brand">Institution Manager</div>
+    <div class="boot-progress" aria-hidden="true"><span></span></div>
+    <p class="boot-message">Checking your secure sign-in…</p>
+  </main>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-box" id="modal-box"></div></div>
