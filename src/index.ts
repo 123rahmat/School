@@ -534,8 +534,14 @@ owner.get('/slips/:id/file', async (c) => {
   const sl: any = await platformDb(c.env).prepare('SELECT file_key FROM billing_slips WHERE id=?').bind(c.req.param('id')).first();
   const o = sl?.file_key && (await c.env.FILES.get(sl.file_key));
   if (!o) fail(404, 'No file');
-  return new Response(o.body, { headers: { 'content-type': o.httpMetadata?.contentType || 'application/octet-stream' } });
-});
+  const storedType = String(o.httpMetadata?.contentType || '').split(';')[0].trim().toLowerCase();
+  const safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(storedType) ? storedType : 'application/octet-stream';
+  const safeName = String(sl.file_key).split('/').pop()?.replace(/[^\\w.-]/g, '_').slice(0, 100) || 'payment-slip';
+  return new Response(o.body, { headers: {
+    'content-type': safeType, 'content-disposition': `inline; filename="${safeName}"`,
+    'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
+  } });
+});;
 owner.post('/schools', async (c) => {
   const b = await c.req.json<any>();
   if (!b.name || !b.admin_name || !b.admin_email) fail(400, 'Institution name, administrator name and email are required');
