@@ -52,6 +52,10 @@ export class SchoolDO extends DurableObject<Env> {
     this.sql = state.storage.sql;
     state.blockConcurrencyWhile(async () => {
       for (const stmt of SCHOOL_SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) this.sql.exec(stmt);
+      // Retire legacy external phone-message queues and free-form chats from existing school databases.
+      this.sql.exec('DROP TABLE IF EXISTS phone_outbox');
+      this.sql.exec('DROP TABLE IF EXISTS thread_messages');
+      this.sql.exec("DELETE FROM settings WHERE key IN ('phone_messages','teacher_upload_results')");
       // Columns added after the first release (older school databases get them here).
       for (const alter of [
         'ALTER TABLE vouchers ADD COLUMN fine_locked INTEGER NOT NULL DEFAULT 0',
