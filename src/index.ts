@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Env, Ctx, now, rid, sha256, normId, pkt, addDays, addMonths, HttpError, fail, platformDb } from './util';
+import { renderRobots, renderSeoPage, renderSitemap } from './seo';
 export { SchoolDO } from './school';
 export { PlatformDO } from './platform';
 
@@ -643,6 +644,17 @@ app.get('/api/whoami', async (c) => {
   if (!r.ok) return c.json({ signedIn: false });
   return c.json({ signedIn: true, schoolId: s.school_id, institutionType: ctx.institutionType, ...(await r.json<any>()), schoolStatus: ctx.schoolStatus });
 });
+
+// Public, server-rendered SEO surface. The private application shell remains no-index.
+app.get('/about', (c) => new Response(renderSeoPage(new URL(c.req.url).origin), {
+  headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' },
+}));
+app.get('/robots.txt', (c) => new Response(renderRobots(new URL(c.req.url).origin), {
+  headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+}));
+app.get('/sitemap.xml', (c) => new Response(renderSitemap(new URL(c.req.url).origin), {
+  headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' },
+}));
 
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
 
