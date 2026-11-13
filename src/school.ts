@@ -524,8 +524,12 @@ export class SchoolDO extends DurableObject<Env> {
   }
 
   applyVerified(p: Row) {
-    const v = this.one('SELECT * FROM vouchers WHERE id=?', p.voucher_id)!;
-    const paid = v.paid + p.amount;
+    const v = this.one('SELECT * FROM vouchers WHERE id=?', p.voucher_id);
+    if (!v) fail(404, 'Voucher not found');
+    if (v!.status === 'carried') fail(409, 'This voucher has been carried into a newer one. Verify payment against the latest voucher.');
+    const balance = this.voucherBalance(v!);
+    if (!(Number(p.amount) > 0) || Number(p.amount) > balance) fail(409, `Payment exceeds the remaining voucher balance of ${money(balance)}.`);
+    const paid = v!.paid + p.amount;
     const status = paid >= this.voucherTotal(v) ? 'paid' : 'partial';
     const receipt = Number(this.one('SELECT COALESCE(MAX(receipt_no),0) AS n FROM payments')!.n) + 1;
     this.run('UPDATE vouchers SET paid=?, status=? WHERE id=?', paid, status, v.id);
@@ -1616,6 +1620,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (v!.status === 'carried') fail(400, 'This voucher was carried into a newer one. Pay the latest voucher.');
       const amount = Math.round(Number(b.amount));
       if (!(amount > 0)) fail(400, 'Enter the amount');
+      if (amount > this.voucherBalance(v!)) fail(400, `Amount cannot exceed the remaining balance of ${money(this.voucherBalance(v!))}.`);
       const method = String(b.method);
       const txn = b.txn_id ? String(b.txn_id).trim().toUpperCase() : null;
       let status = 'submitted', held: string | null = null;
