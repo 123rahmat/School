@@ -1,5 +1,5 @@
 // Cache only public application assets. Authenticated API responses and private files are never cached here.
-const VERSION = 'v14';
+const VERSION = 'v15';
 const SHELL = ['/', '/app.js', '/app.css', '/icon.svg', '/manifest.webmanifest', '/fonts/plex-sans-var.woff2'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open('shell-' + VERSION).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
