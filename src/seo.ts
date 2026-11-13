@@ -2,7 +2,7 @@ const escXml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&l
 
 export function renderSeoPage(origin: string): string {
   const canonical = new URL('/about', origin).toString();
-  const image = new URL('/icon.svg', origin).toString();
+  const image = new URL('/icon-512.png', origin).toString();
   const structuredData = {
     '@context': 'https://schema.org',
     '@type': 'SoftwareApplication',
@@ -43,6 +43,9 @@ export function renderSeoPage(origin: string): string {
 <meta property="og:description" content="One organised workspace for student records, attendance, fees, staff, family communication and results.">
 <meta property="og:url" content="${canonical}">
 <meta property="og:image" content="${image}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="School Management Software | Institution Manager">
 <meta name="twitter:description" content="Manage everyday school operations in one organised institution workspace.">
