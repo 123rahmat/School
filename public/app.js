@@ -1495,7 +1495,7 @@ route('/classes', async () => {
       $$('[data-add-assignment]', m).forEach((button) => button.onclick = async () => {
         const sid = button.dataset.addAssignment, teacher_id = $(`[data-teacher-for="${sid}"]`, m).value, from_date = $(`[data-from-for="${sid}"]`, m).value;
         if (!teacher_id || !from_date || !confirm('Assign this teacher to ' + c.name + ' from ' + fmtDate(from_date) + '?')) return;
-        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers`, { body: { teacher_id, from_date, confirm: true } }), 'Teacher assigned to subject'); render();
+        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers`, { body: { teacher_id, from_date, confirm: true } }), 'Teacher assigned to subject'); closeModal(); render();
       });
       $$('[data-end-assignment]', m).forEach((button) => button.onclick = async () => {
         const sid = button.dataset.subjectId, aid = button.dataset.endAssignment;
