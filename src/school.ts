@@ -1953,7 +1953,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
       if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
       const o = await this.env.FILES.get(r!.file_key); if (!o) fail(404, 'File missing');
-      return new Response(o.body, { headers: {
+      return new Response(o!.body, { headers: {
         'content-type': 'application/pdf',
         'content-disposition': `inline; filename="${String(r!.file_name || 'result.pdf').replace(/[^\w.-]/g, '_').slice(0, 100)}"`,
         'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
