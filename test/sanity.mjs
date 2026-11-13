@@ -34,6 +34,14 @@ assert.match(worker, /app\.post\('\/api\/auth\/google'/, 'Google sign-in endpoin
 assert.match(worker, /app\.post\('\/api\/signup\/google'/, 'Google-based institution signup endpoint must exist');
 assert.match(worker, /app\.post\('\/api\/auth\/logout'/, 'Server-side session revocation endpoint must exist');
 assert.match(worker, /Billing cycle must be monthly or yearly/, 'Platform owner cannot set one-time or unsupported subscription cycles');
+assert.match(worker, /The invoice amount is authoritative; never accept a client-supplied amount/, 'Subscription slips must not trust client-supplied payment amounts');
+assert.match(worker, /status='submitted'.*status='open'/s, 'Subscription payment confirmation must use conditional state transitions');
+assert.match(worker, /submitted amount does not match the invoice/, 'Subscription payment confirmation must reject amount mismatches');
+assert.match(worker, /WHERE NOT EXISTS \(SELECT 1 FROM invoices WHERE school_id=\? AND status='open'\)/, 'Invoice generation must avoid duplicate open invoices');
+assert.match(worker, /safeType = \['application\\/pdf', 'image\\/jpeg', 'image\\/png', 'image\\/webp'\]/, 'Owner billing uploads must use a safe inline content-type allowlist');
+assert.match(school, /safeType = \['application\\/pdf', 'image\\/jpeg', 'image\\/png', 'image\\/webp'\]/, 'School file downloads must use a safe inline content-type allowlist');
+assert.match(school, /'x-content-type-options': 'nosniff'/, 'Private school file responses must prevent MIME sniffing');
+
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
 assert.match(worker, /RSASSA-PKCS1-v1_5/, "Google ID token signature must be verified using Google's RSA signing key");
 assert.match(worker, /oauth2\/v3\/certs/, 'Google signing keys must come from the official JWKS endpoint');
