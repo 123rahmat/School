@@ -4,12 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/sanity.mjs",
+    "test": "node test/sanity.mjs && npm run test:dates",
     "dev": "wrangler dev --local --port 8787",
     "typecheck": "tsc",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "test:dates": "node --experimental-strip-types test/date.mjs"
   },
   "repository": {
     "type": "git",
