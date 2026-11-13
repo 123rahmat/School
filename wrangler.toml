@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/files/*"]
+run_worker_first = ["/api/*", "/files/*", "/about", "/robots.txt", "/sitemap.xml"]
 
 [[durable_objects.bindings]]
 name = "SCHOOL"
