@@ -972,7 +972,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (b.confirm !== true) fail(400, 'Confirm this staff account reactivation before continuing');
       const id = c.req.param('id');
       const s = this.one('SELECT * FROM staff WHERE id=?', id);
-      if (!s) fail(404, 'Staff account not found');
+      if (!s) return fail(404, 'Staff account not found');
       if (s.active) fail(409, 'This staff account is already active');
       if (s.is_main || (s.role === 'admin' && !a.isMain)) fail(403, 'Only the main admin can reactivate a full administrator account');
       if (s.role === 'subadmin') {
