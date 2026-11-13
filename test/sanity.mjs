@@ -114,7 +114,16 @@ for (const selector of collectionSelectors) {
   const needle = selector + '.forEach';
   let position = app.indexOf(needle);
   while (position !== -1) {
-    assert.notEqual(app[position - 1], '$',
+    assert.notEqual(app[position - 2], '
+      `Collection event binding must use $$(), not $(): ${selector}`);
+    position = app.indexOf(needle, position + needle.length);
+  }
+}
+assert.match(app, /layout\.classList\.toggle\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
+assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
+
+console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
+,
       `Collection event binding must use $$(), not $(): ${selector}`);
     position = app.indexOf(needle, position + needle.length);
   }
