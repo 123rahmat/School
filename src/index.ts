@@ -341,8 +341,9 @@ app.get('/api/billing', requireSession(['staff', 'guardian']), async (c) => {
   const plans = (await platformDb(c.env).prepare('SELECT * FROM plans ORDER BY sort').all()).results;
   const announcements = (await platformDb(c.env).prepare('SELECT * FROM announcements WHERE school_id IS NULL OR school_id=? ORDER BY created_at DESC LIMIT 5').bind(s.school_id).all()).results;
   const storageRequests = (await platformDb(c.env).prepare('SELECT id, blocks, status, created_at, decided_at, decision_note FROM storage_requests WHERE school_id=? ORDER BY created_at DESC LIMIT 10').bind(s.school_id).all()).results;
+  const paymentSetting: any = await platformDb(c.env).prepare("SELECT setting_value FROM platform_settings WHERE setting_key='payment_instructions'").first();
   return c.json({ ...base, institution_kind: sc.kind, cycle: sc.cycle, plan, plans, invoices, slips, students: sc.students, storage_bytes: sc.storage_bytes,
-    storage_limit_bytes: ctx.storageLimitBytes, accounts: c.env.PAYMENT_ACCOUNTS, announcements, storage_requests: storageRequests });
+    storage_limit_bytes: ctx.storageLimitBytes, accounts: paymentSetting?.setting_value || c.env.PAYMENT_ACCOUNTS || '', announcements, storage_requests: storageRequests });
 });
 
 app.post('/api/billing/storage-request', requireSession(['staff']), async (c) => {
@@ -511,6 +512,18 @@ owner.get('/overview', async (c) => {
     byStatus: schools.reduce((a: any, s) => ((a[s.status] = (a[s.status] || 0) + 1), a), {}),
     renewalsThisWeek: schools.filter((s) => s.renews_at >= today && s.renews_at <= addDays(today, 7)),
     trialsEnding: schools.filter((s) => s.status === 'trial' && s.renews_at <= addDays(today, 7)) });
+});
+owner.get('/settings', async (c) => {
+  const row: any = await platformDb(c.env).prepare("SELECT setting_value, updated_at FROM platform_settings WHERE setting_key='payment_instructions'").first();
+  return c.json({ paymentInstructions: row?.setting_value || c.env.PAYMENT_ACCOUNTS || '', updatedAt: row?.updated_at || null });
+});
+owner.post('/settings/payment-instructions', async (c) => {
+  const body = await c.req.json<any>();
+  const value = String(body.paymentInstructions || '').trim();
+  if (value.length > 1200) fail(400, 'Payment instructions must be 1,200 characters or fewer.');
+  await platformDb(c.env).prepare("INSERT INTO platform_settings (setting_key, setting_value, updated_at) VALUES ('payment_instructions', ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at")
+    .bind(value, now()).run();
+  return c.json({ ok: true, configured: !!value });
 });
 owner.post('/storage-requests/:id/approve', async (c) => {
   const id = c.req.param('id');
