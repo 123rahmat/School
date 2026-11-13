@@ -197,7 +197,7 @@ assert.match(platform, /\['starter',0,500,1000,10000,5,1000000,1\]/, 'New Starte
 assert.match(app, /Unlimited Mini Admins, teachers and parents/, 'The billing page must explain that staff roles are unlimited across tiers');
 assert.doesNotMatch(app.slice(app.indexOf("// ---------- billing (main admin) ----------"), app.indexOf("// ---------- owner panel ----------")), /sub_admins|Sub-admins/, 'The billing comparison must not imply different staff limits by tier');
 assert.match(app, /async function loadBillingStatus\(\)/, 'Billing banners must load separately from the critical sign-in check');
-assert.doesNotMatch(app.slice(app.indexOf('async function refreshMe()'), app.indexOf('// ---------- sign in / sign up ----------')), /\/api\/billing/, 'Session discovery must not wait for the billing API');
+assert.doesNotMatch(app.slice(app.indexOf('async function refreshMe()'), app.indexOf('// Billing banners')), /\/api\/billing/, 'Session discovery must not wait for the billing API');
 assert.match(app, /authPage\([\s\S]*?\{ minimal: true \}/, 'The login route must use the minimal sign-in layout');
 assert.doesNotMatch(app.slice(app.indexOf("route('/login'"), app.indexOf("route('/signup'")), /Welcome back|Secure sign-in|auth-description/, 'The login form must not show unnecessary welcome or security copy');
 assert.match(html, /class="boot-screen"/, 'The initial shell must show only the branded loading experience');
