@@ -2277,6 +2277,7 @@ route('/billing', async () => {
 route('/owner', async () => {
   if (ME.kind !== 'owner') return go('/');
   const d = await api('/api/owner/overview');
+  const paymentSettings = await api('/api/owner/settings');
   view(`<h1>Owner panel</h1>
   <div class="grid">
     <div class="stat"><div class="n">${d.slips.length}</div><div class="l">Slips to confirm</div></div>
@@ -2297,6 +2298,18 @@ route('/owner', async () => {
   <td>${fmtDate(s.renews_at)}</td><td class="num">${s.students}</td><td class="num">${(s.storage_bytes / 1024 ** 3).toFixed(2)} / ${(Number(s.base_storage_gb || 0) + Number(s.extra_storage_gb || 0)).toFixed(1)} GB</td>
   <td><button class="btn small" data-ed="${s.id}">Change</button></td></tr>`).join('')}
   </tbody></table></div><p class="small muted">You manage institution accounts, subscriptions and storage allocations. Academic records remain private; there is currently no remote support-access feature.</p>`);
+  const paymentCard = document.createElement('section');
+  paymentCard.className = 'card stack';
+  paymentCard.innerHTML = '<div><h2>Official subscription payment instructions</h2><p class="small muted">Enter only verified platform-owned payment details and clear transfer instructions. These details are shown to school main administrators on their Billing page. Leave blank to disable slip submission until payment is configured.</p></div>' +
+    '<label for="platform-payment-instructions">Payment instructions and account details</label>' +
+    '<textarea id="platform-payment-instructions" rows="4" maxlength="1200" placeholder="Add verified Easypaisa, JazzCash or bank account details, account holder name, and payment reference instructions.">' + esc(paymentSettings.paymentInstructions || '') + '</textarea>' +
+    '<div class="row between"><small class="muted">Maximum 1,200 characters · changes apply to new billing page loads</small><button class="btn primary" id="save-platform-payment">Save official payment details</button></div>';
+  $('.content').append(paymentCard);
+  $('#save-platform-payment').onclick = async () => {
+    const value = $('#platform-payment-instructions', paymentCard).value.trim();
+    await act(() => api('/api/owner/settings/payment-instructions', { body: { paymentInstructions: value } }), value ? 'Official payment instructions saved' : 'Payment instructions cleared; checkout slip upload is disabled');
+    render();
+  };
   const storageQueue = document.createElement('section');
   storageQueue.className = 'stack';
   storageQueue.innerHTML = '<h2>Extra storage requests</h2>' +
