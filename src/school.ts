@@ -1938,7 +1938,13 @@ export class SchoolDO extends DurableObject<Env> {
       } else fail(404, 'Not found');
       const o = await this.env.FILES.get(key); if (!o) fail(404, 'File missing');
       this.audit(a, 'file.download', kind, key);
-      return new Response(o!.body, { headers: { 'content-type': o!.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'private, max-age=300' } });
+      const storedType = String(o.httpMetadata?.contentType || '').split(';')[0].trim().toLowerCase();
+      const safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(storedType) ? storedType : 'application/octet-stream';
+      const safeName = String(c.req.param('name') || 'download').replace(/[^\\w.-]/g, '_').slice(0, 100);
+      return new Response(o.body, { headers: {
+        'content-type': safeType, 'content-disposition': `inline; filename="${safeName}"`,
+        'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
+      } });
     });
 
     app.get('/result-file/:id', async (c) => {
@@ -1947,7 +1953,11 @@ export class SchoolDO extends DurableObject<Env> {
       if (r!.student_id) this.student(a, r!.student_id); else this.requireAdmin(a);
       if (a.type === 'guardian' && !r!.published_at) fail(404, 'Not found');
       const o = await this.env.FILES.get(r!.file_key); if (!o) fail(404, 'File missing');
-      return new Response(o!.body, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${String(r!.file_name || 'result.pdf').replace(/[^\w.-]/g, '_')}"`, 'cache-control': 'private, max-age=300' } });
+      return new Response(o.body, { headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': `inline; filename="${String(r.file_name || 'result.pdf').replace(/[^\\w.-]/g, '_').slice(0, 100)}"`,
+        'x-content-type-options': 'nosniff', 'cache-control': 'no-store, private',
+      } });
     });
 
     // ----- phone outbox: admin sends from own WhatsApp / SMS -----
