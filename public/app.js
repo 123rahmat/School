@@ -525,13 +525,12 @@ function view(html) {
   const closeTools = $('#tools-close'); if (closeTools) closeTools.onclick = () => setToolsOpen(false);
   $$('#side nav a').forEach((a) => a.addEventListener('click', () => { if (mobileNav()) setNavOpen(false); }));
   $$('#tools-panel nav a').forEach((a) => a.addEventListener('click', () => { if (compactTools()) setToolsOpen(false); }));
-  const closeDrawers = (event) => {
+  document.onkeydown = (event) => {
     if (event.key !== 'Escape') return;
-    setNavOpen(false);
+    if (mobileNav()) setNavOpen(false);
     setToolsOpen(false);
   };
-  document.addEventListener('keydown', closeDrawers);
-  window.addEventListener('resize', applyToolsState, { passive: true });
+  window.onresize = applyToolsState;
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
