@@ -27,18 +27,6 @@ const badge = (text, kind = '') => `<span class="badge ${kind}">${esc(text)}</sp
 
 let ME = null;
 let BILL = null;
-const isInstalledApp = () => {
-  try { return !!(window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true); }
-  catch { return navigator.standalone === true; }
-};
-const SESSION_HINT_KEY = 'institution.session-present';
-const setSessionHint = (active) => {
-  try {
-    if (active) localStorage.setItem(SESSION_HINT_KEY, '1');
-    else localStorage.removeItem(SESSION_HINT_KEY);
-  } catch {}
-};
-
 // Payment accounts the admin has added (any company: Easypaisa, JazzCash, any bank…)
 let ACCOUNTS = null;
 async function loadAccounts(force) { if (!ACCOUNTS || force) ACCOUNTS = await S('/payment-accounts').catch(() => []); return ACCOUNTS; }
@@ -100,7 +88,7 @@ async function api(path, opts = {}) {
   if ([500, 502, 503, 504].includes(r.status) && isSchoolApi && isWrite && !!ME && !opts.noQueue) {
     return queueOrThrow(new Error('The school server connection was interrupted.'));
   }
-  if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null; setSessionHint(false); if (!opts.quiet) go(isInstalledApp() ? '/login' : '/'); throw new Error('Please sign in'); }
+  if (r.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/signup')) { ME = null;  if (!opts.quiet) go('/login'); throw new Error('Please sign in'); }
   if (!r.ok) {
     const err = new Error((data && data.error) || (data && data.message) || 'Request failed');
     err.status = r.status; err.data = data; if (submissionId) err.submissionId = submissionId; throw err;
@@ -348,7 +336,7 @@ async function render() {
   const authRoutes = ['/login', '/signup', '/admin'];
   // Resolve the server cookie before showing any public or protected page.
   if (!ME && !authRoutes.includes(path)) {
-    try { await refreshMe(); } catch { ME = null; setSessionHint(false); }
+    try { await refreshMe(); } catch { ME = null;  }
     if (!ME) {
       history.replaceState(null, '', '/login');
       path = '/login';
@@ -557,8 +545,8 @@ function view(html) {
     }
     try { await api('/api/auth/logout', { body: {} }); }
     catch { toast('Could not sign out from the server. Please try again.'); return; }
-      ME = null; BILL = null; setSessionHint(false);
-      go(isInstalledApp() ? '/login' : '/');
+      ME = null; BILL = null; 
+      go('/login');
   };
   setupSearch();
   setupInstall();
@@ -609,7 +597,7 @@ function setupSearch() {
 }
 
 let installEvt = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; setupInstall(); setupLandingInstall(); });
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; setupInstall(); });
 function setupInstall() {
   const b = $('#install'); if (!b) return;
   b.classList.remove('hidden');
@@ -627,7 +615,6 @@ async function refreshMe() {
   const w = await api('/api/whoami', { quiet: true });
   ME = w.signedIn ? w : null;
   BILL = null;
-  setSessionHint(!!ME);
 }
 
 // Billing banners are useful, but they are not needed to decide where to send a user.
@@ -751,130 +738,6 @@ function showInstallHelp() {
       : 'In Chrome or Edge, use the install icon in the address bar or the browser menu and choose Install Institution Manager.';
   modal(`<h2>Install Institution Manager</h2><p class="muted">You can use Institution Manager in your browser without installing anything.</p><div class="card"><b>To install on this device</b><p>${esc(steps)}</p></div><div class="row"><a class="btn primary" href="/login" data-close>Use in browser</a><button class="btn" data-close>Close</button></div>`);
 }
-function setupLandingInstall() {
-  const b = $('#landing-install');
-  if (!b) return;
-  b.onclick = async () => {
-    if (!installEvt) return showInstallHelp();
-    const prompt = installEvt;
-    installEvt = null;
-    try {
-      await prompt.prompt();
-      await prompt.userChoice;
-    } catch { showInstallHelp(); }
-    setupLandingInstall();
-  };
-}
-async function loadLandingContact() {
-  const target = $('#landing-contact-email');
-  if (!target) return;
-  const cfg = await api('/api/config').catch(() => ({}));
-  if (cfg.contactEmail) {
-    target.innerHTML = `<a href="mailto:${esc(cfg.contactEmail)}">${esc(cfg.contactEmail)}</a>`;
-  } else {
-    target.textContent = 'Public support email is not configured yet. You can still create an account or sign in above.';
-  }
-}
-function landingPage() {
-  document.body.classList.remove('auth-screen', 'auth-minimal');
-  document.title = 'Institution Manager | Education management in one workspace';
-  $('#app').innerHTML = `
-  <div class="landing-shell">
-    <div id="connection-notice-slot">${connectionBannerHtml()}</div>
-    <header class="landing-nav">
-      <a class="landing-brand" href="/" aria-label="Institution Manager home"><img src="/icon.svg" alt=""><span>Institution Manager</span></a>
-      <nav aria-label="Main navigation">
-        <a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a><a href="#" data-scroll="contact">Contact</a>
-      </nav>
-      <div class="landing-nav-actions"><a class="btn" href="/login">Sign in</a><a class="btn primary" href="/signup">Create account</a></div>
-    </header>
-    <main>
-      <section class="landing-hero">
-        <div class="landing-hero-copy">
-          <div class="landing-eyebrow"><span></span> EDUCATION OPERATIONS, ONE WORKSPACE</div>
-          <h1>Spend less time chasing records. Spend more time supporting learning.</h1>
-          <p class="landing-lead">Institution Manager brings everyday institution operations into one organised workspace: student records, staff, classes, attendance, fees, parent communication, results and reports.</p>
-          <div class="landing-actions landing-entry-actions"><a class="btn primary" href="/login">Use in browser</a><button class="btn" id="landing-install" type="button">Install app</button></div>
-          <div class="landing-secondary-actions"><a href="/signup">New institution? Create an account</a><span>Use the browser or install on a supported phone, tablet or desktop.</span></div>
-          <p class="landing-note">Start with a 14-day trial for up to 50 learners. No password, email code or phone login is used.</p>
-        </div>
-        <div class="landing-preview" aria-label="Illustration of an education management dashboard">
-          <div class="preview-top"><span class="preview-mark">SM</span><div><b>Institution overview</b><small>Daily operations at a glance</small></div><span class="preview-live">WORKSPACE</span></div>
-          <div class="preview-stats"><div><small>Students</small><b>Records</b><span>Admissions and profiles</span></div><div><small>Attendance</small><b>Daily</b><span>Class-by-class tracking</span></div><div><small>Finance</small><b>Fees</b><span>Vouchers and receipts</span></div></div>
-          <div class="preview-panel"><div class="preview-panel-head"><b>Keep the day organised</b><span>OVERVIEW</span></div><div class="preview-row"><span><i class="preview-dot blue"></i>Classes and sections</span><b>Organised</b></div><div class="preview-row"><span><i class="preview-dot green"></i>Attendance records</span><b>Trackable</b></div><div class="preview-row"><span><i class="preview-dot violet"></i>Parent communication</span><b>Connected</b></div><div class="preview-progress"><span></span></div><small>One workspace for your institution's routine work</small></div>
-          <div class="preview-footer"><span>Student records</span><span>Fees</span><span>Results</span><span>Notices</span></div>
-        </div>
-      </section>
-      <section class="landing-ribbon" aria-label="Platform benefits"><span>One institution workspace</span><span>Role-based access</span><span>Browser or installable app</span><span>School forms queue offline</span></section>
-      <section class="landing-section" id="institutions">
-        <div class="landing-section-heading"><div class="landing-eyebrow">WHO IT SERVES</div><h2>Made for the people who keep an education institution moving.</h2><p>Give each institution its own workspace, then give each person the tools and access appropriate to their role.</p></div>
-        <div class="landing-card-grid three">
-          <article class="landing-card"><div class="landing-card-icon">01</div><h3>Institution administrators</h3><p>Manage admissions, staff, classes, fee plans, reports, notices and day-to-day operations from one place.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">02</div><h3>Teachers and office teams</h3><p>Work with assigned classes, student information, attendance, notices and the tasks permitted by your role.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">03</div><h3>Parents and guardians</h3><p>See linked children, attendance, fee information, published results, notices and school messages.</p></article>
-        </div>
-      </section>
-      <section class="landing-section landing-features" id="features">
-        <div class="landing-section-heading"><div class="landing-eyebrow">WHAT THE SYSTEM DOES</div><h2>The essential work, connected.</h2><p>Keep records in one place and reduce repeated manual work across the institution.</p></div>
-        <div class="landing-card-grid">
-          <article class="landing-card"><div class="landing-card-icon">A</div><h3>Student admissions and profiles</h3><p>Create student records, assign registration numbers, import spreadsheets, manage guardians and keep a record of changes.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">B</div><h3>Staff and responsibilities</h3><p>Add teachers and office staff, assign roles, manage class teachers and subject responsibilities, and revoke access when needed.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">C</div><h3>Classes, sections and subjects</h3><p>Organise learning groups, assign class teachers and connect subjects with the teachers who teach them.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">D</div><h3>Attendance and registers</h3><p>Record daily attendance, review and submit registers, manage corrections and view monthly attendance summaries.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">E</div><h3>Fees and payment records</h3><p>Set fee heads and class plans, generate vouchers, record discounts, track arrears and manage submitted payment slips.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">F</div><h3>Receipts and collection reports</h3><p>Verify payments, issue numbered receipts, track cash handovers and review collection and outstanding-fee reports.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">G</div><h3>Notices and parent communication</h3><p>Share notices with the right audience, keep student-related message threads and track notification reads.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">H</div><h3>Results and documents</h3><p>Upload result documents for individual students or groups, control publication and keep files access-protected.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">I</div><h3>Reports, history and backups</h3><p>Review dashboards, audit important actions, monitor storage and export institution data for backup.</p></article>
-          <article class="landing-card"><div class="landing-card-icon">J</div><h3>Offline-ready forms</h3><p>Supported school forms and file uploads can be saved on the device and queued until the connection returns. The app shows what is still pending locally and what the school server has confirmed.</p></article>
-        </div>
-      </section>
-      <section class="landing-section landing-workflow" id="how-it-works">
-        <div class="landing-section-heading"><div class="landing-eyebrow">GET STARTED</div><h2>A clear path from registration to daily use.</h2></div>
-        <div class="landing-steps">
-          <article><span>01</span><div><h3>Create the institution workspace</h3><p>Register the institution and create its main administrator profile using a verified Google account.</p></div></article>
-          <article><span>02</span><div><h3>Set up classes and staff</h3><p>Add teachers, create classes and sections, and assign class teachers and subjects.</p></div></article>
-          <article><span>03</span><div><h3>Add students and guardians</h3><p>Enter records individually or import a spreadsheet. Add the Google email each staff member or guardian will use.</p></div></article>
-          <article><span>04</span><div><h3>Run everyday operations</h3><p>Record attendance, manage fees, communicate with families, publish results and review reports.</p></div></article>
-        </div>
-      </section>
-      <section class="landing-section landing-security" id="security">
-        <div><div class="landing-eyebrow">ACCESS AND PRIVACY</div><h2>People see the information their role allows.</h2><p>Each institution has its own data space. Teachers work with assigned classes, guardians see only linked children, and administrative access is controlled by roles. Files are delivered through permission-checked routes.</p><p class="small muted">Sign-in uses verified Google accounts. Password login, email OTP and phone-based login are not enabled.</p></div>
-        <div class="security-points"><div><b>Google account sign-in</b><span>Verified email identity</span></div><div><b>Institution data separation</b><span>Independent institution workspaces</span></div><div><b>Role-based permissions</b><span>Access checked by the backend</span></div><div><b>Private file access</b><span>Downloads checked against user permissions</span></div></div>
-      </section>
-      <section class="landing-cta">
-        <div><div class="landing-eyebrow">READY TO GET ORGANISED?</div><h2>Start with your institution's workspace.</h2><p>Create your account and complete the guided setup. You can also sign in to an existing account.</p></div>
-        <div class="landing-actions landing-entry-actions"><a class="btn primary" href="/login">Use in browser</a><button class="btn" id="landing-install-bottom" type="button">Install app</button></div>
-        <p class="small muted"><a href="/signup">Create a new institution account</a></p>
-      </section>
-    </main>
-    <footer class="landing-footer" id="contact">
-      <div><a class="landing-brand" href="/"><img src="/icon.svg" alt=""><span>Institution Manager</span></a><p class="small muted">A practical workspace for student records, staff, attendance, fees and communication.</p></div>
-      <div><b>Explore</b><a href="#" data-scroll="features">Features</a><a href="#" data-scroll="institutions">Who it serves</a><a href="#" data-scroll="how-it-works">How it works</a></div>
-      <div><b>Account</b><a href="/signup">Create account</a><a href="/login">Sign in</a><a href="/admin">Platform admin</a><button id="landing-install-footer" class="landing-footer-link" type="button">Install app</button></div>
-      <div><b>Contact us</b><p class="small muted">For product enquiries, onboarding and support:</p><p id="landing-contact-email" class="small muted">Loading contact details…</p><p class="small muted">Contact details are published by the platform team.</p></div>
-      <div class="landing-copyright">© <span id="landing-year"></span> Institution Manager. All rights reserved. <span>Use in browser · Install when supported</span></div>
-    </footer>
-  </div>`;
-  $$('[data-scroll]').forEach((link) => link.addEventListener('click', (event) => {
-    event.preventDefault();
-    const section = document.getElementById(link.dataset.scroll);
-    if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }));
-  const year = $('#landing-year');
-  if (year) year.textContent = String(new Date().getFullYear());
-  ['landing-install','landing-install-bottom','landing-install-footer'].forEach((id) => {
-    const b = $('#' + id);
-    if (b) b.onclick = () => {
-      const original = $('#landing-install');
-      if (original) original.click();
-      else showInstallHelp();
-    };
-  });
-  setupLandingInstall();
-  loadLandingContact();
-}
-
 route('/admin', async () => {
   if (ME) return go(ME.kind === 'owner' ? '/owner' : '/');
   authPage(`
@@ -894,6 +757,7 @@ route('/admin', async () => {
 });
 
 route('/login', async () => {
+  document.title = 'Log in | Institution Manager';
   authPage([
     '<div id="gbtn" class="google-button-slot"></div>',
     '<p id="authmsg" class="small muted" role="status" aria-live="polite"></p>',
@@ -933,6 +797,7 @@ route('/login', async () => {
   }, 'signin_with', 'login');
 });
 route('/signup', async () => {
+  document.title = 'Create institution | Institution Manager';
   authPage(`
     <h1 id="signup-heading">Let’s set up your institution</h1>
     <p id="signup-description" class="muted small auth-description">Create a private workspace for your organisation using your Google account.</p>
@@ -996,7 +861,7 @@ route('/setup', async () => {
 
 // ---------- home ----------
 route('/', async () => {
-  if (!ME) return landingPage();
+  if (!ME) return go('/login');
   if (ME.kind === 'guardian') return parentHome();
   if (!ME.isAdmin) return teacherHome();
   const d = await S('/dashboard');
@@ -2427,7 +2292,7 @@ route('/owner', async () => {
   // The HTML shell shows only the brand and a subtle loader while the server validates
   // the HttpOnly session cookie. localStorage is never treated as proof of authentication.
   try { await refreshMe(); }
-  catch { ME = null; BILL = null; setSessionHint(false); }
+  catch { ME = null; BILL = null;  }
   const path = currentPath();
   const authRoutes = ['/login', '/signup', '/admin'];
   if (ME && authRoutes.includes(path)) {
