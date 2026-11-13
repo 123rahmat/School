@@ -110,7 +110,7 @@ assert.match(school, /x-submission-id/, 'School API must use stable submission I
 assert.ok(school.includes("app.get('/submissions'"), 'Server-confirmed submission history must be role-scoped');
 assert.match(schema, /CREATE TABLE IF NOT EXISTS api_submissions/, 'School database must retain server submission receipts');
 
-assert.match(sw, /const VERSION = 'v12'/, 'PWA shell/cache version must be updated');
+assert.match(sw, /const VERSION = 'v14'/, 'PWA shell/cache version must be updated');
 assert.match(sw, /self\.skipWaiting\(\)/, 'Updated service worker must activate promptly');
 assert.ok(sw.includes("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/')) return;"), 'Service worker must never cache private API responses or private files');
 
@@ -154,7 +154,7 @@ assert.match(app, /if \(mobileNav\(\)\) setNavOpen\(false\)/, 'Desktop navigatio
 assert.match(css, /\.tools-panel\.open\s*\{\s*transform: translateX\(0\)/, 'The right tools panel must slide into view on compact screens');
 assert.match(css, /@media \(min-width: 1351px\)/, 'The full three-column workspace must be reserved for wide screens');
 assert.match(css, /@media \(max-width: 860px\)/, 'The workspace must have a mobile drawer layout');
-assert.match(sw, /const VERSION = 'v12'/, 'The service worker shell cache must be refreshed for this UI release');
+assert.match(sw, /const VERSION = 'v14'/, 'The service worker shell cache must be refreshed for this UI release');
 assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
 
 assert.match(worker, /const \{ cycle, tier \} = await c\.req\.json/, 'Subscription checkout must accept the plan explicitly selected by the main administrator');
@@ -163,12 +163,27 @@ assert.match(worker, /selected\.max_students/, 'Subscription checkout must valid
 assert.match(worker, /UPDATE schools SET tier=\?, cycle=\? WHERE id=\?/, 'The selected plan and billing cycle must be stored before invoice generation');
 assert.match(app, /id="plan-tier"/, 'Billing must provide an actual subscription tier selector');
 assert.match(app, /body: \{ tier, cycle: \$\('#cy'\)\.value \}/, 'The selected plan and billing cycle must be submitted to the server');
-assert.match(sw, /const VERSION = 'v13'/, 'The service worker cache must refresh for the subscription checkout change');
+assert.match(sw, /const VERSION = 'v14'/, 'The service worker cache must refresh for the subscription checkout change');
 
 assert.match(platform, /CREATE TABLE IF NOT EXISTS platform_settings/, 'Platform payment settings must persist in the platform database');
 assert.match(worker, /owner\.post\('\/settings\/payment-instructions'/, 'Only the authenticated platform owner may configure official payment instructions');
 assert.match(worker, /paymentSetting\?\.setting_value/, 'School billing must receive the platform owner configured payment instructions');
 assert.match(app, /id="platform-payment-instructions"/, 'The platform owner must have a UI to configure real payment instructions');
 assert.match(app, /api\('\/api\/owner\/settings\/payment-instructions'/, 'The owner payment settings form must save through the protected API');
+
+assert.match(html, /class="boot-screen"/, 'The initial HTML must show the animated sign-in check, not the public landing page');
+assert.doesNotMatch(html, /class="landing-shell boot-landing"/, 'The public landing page must not flash during app startup');
+assert.match(app, /try \{ await refreshMe\(\); \}/, 'Startup must verify the server session before rendering a destination');
+assert.match(app, /if \(!ME && path === '\/'\)[\s\S]*?history\.replaceState\(null, '', '\/login'\)/, 'Signed-out visits to the root must route to login, not the public landing page');
+assert.match(app, /if \(ME && authRoutes\.includes\(path\)\)[\s\S]*?history\.replaceState/, 'Signed-in users must be redirected away from login and signup');
+assert.match(css, /\.boot-screen\{/, 'The secure session check must have a dedicated loading screen');
+assert.match(css, /@media\(prefers-reduced-motion:reduce\)\{\.boot-logo/, 'The boot animation must respect reduced-motion accessibility preferences');
+const billingInvoiceRoute = worker.slice(worker.indexOf("app.post('/api/billing/invoice'"), worker.indexOf("app.post('/api/billing/slip'"));
+assert.doesNotMatch(billingInvoiceRoute, /UPDATE schools SET tier=/, 'Creating an invoice must not grant the paid tier before payment verification');
+assert.match(billingInvoiceRoute, /status='submitted'/, 'A pending payment slip must prevent replacing its invoice');
+assert.match(worker, /async function makeInvoice\(env: Env, schoolId: string, selection\?/, 'Invoice generation must support an explicitly selected tier and billing cycle');
+assert.match(app, /const selectedTier = open\?\.tier \|\| b\.tier/, 'Billing must retain the selected plan when showing its open invoice');
+assert.match(app, /selected-plan-summary/, 'Billing must explain the selected plan capacity, storage and admin allowance');
+assert.match(sw, /const VERSION = 'v14'/, 'The installed app cache must refresh for authenticated startup');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
