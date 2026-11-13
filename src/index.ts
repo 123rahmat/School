@@ -49,7 +49,6 @@ async function ctxFor(env: Env, schoolId: string, kind: 'staff' | 'guardian', re
   return {
     schoolId, kind, refId, institutionType: s.kind, schoolStatus: s.status,
     studentCap: Number(p?.max_students || 50),
-    subAdminCap: Math.max(0, Number(p?.sub_admins || 0)),
     storageLimitBytes: Math.round((p.storage_gb + s.extra_storage_gb) * 1024 ** 3),
   };
 }
