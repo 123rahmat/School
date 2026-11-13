@@ -1,7 +1,7 @@
 {
   "name": "school",
   "version": "1.0.0",
-  "description": "",
+  "description": "Private multi-tenant school management software for student records, attendance, fees, staff, parent communication and results.",
   "main": "index.js",
   "scripts": {
     "test": "node test/sanity.mjs && npm run test:dates",
@@ -16,7 +16,15 @@
     "type": "git",
     "url": "git+https://github.com/123rahmat/School.git"
   },
-  "keywords": [],
+  "keywords": [
+    "school management software",
+    "school management system",
+    "student management",
+    "school attendance",
+    "school fee management",
+    "parent communication",
+    "academy management"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
