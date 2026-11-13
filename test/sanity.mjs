@@ -161,7 +161,7 @@ assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely 
 assert.match(worker, /const \{ cycle, tier \} = await c\.req\.json/, 'Subscription checkout must accept the plan explicitly selected by the main administrator');
 assert.match(worker, /Choose a paid plan/, 'Subscription checkout must reject missing or trial-only plan selections');
 assert.match(worker, /selected\.max_students/, 'Subscription checkout must validate selected plan capacity against active students');
-assert.match(worker, /UPDATE schools SET status='active', tier=\\?, cycle=\\?, renews_at=\\?/, 'The selected plan must become active only after payment verification');
+assert.match(worker, /UPDATE schools SET status='active', tier=\?, cycle=\?, renews_at=\?/, 'The selected plan must become active only after payment verification');
 assert.match(app, /id="plan-tier"/, 'Billing must provide an actual subscription tier selector');
 assert.match(app, /body: \{ tier, cycle: \$\('#cy'\)\.value \}/, 'The selected plan and billing cycle must be submitted to the server');
 assert.match(sw, /const VERSION = 'v15'/, 'The service worker cache must refresh for the subscription checkout change');
