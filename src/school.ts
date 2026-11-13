@@ -1024,7 +1024,16 @@ export class SchoolDO extends DurableObject<Env> {
       if (a.type === 'guardian') fail(403, 'No access');
       const rows = this.q(`SELECT c.*, t.name AS class_teacher_name, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id AND s.status='active') AS students
         FROM classes c LEFT JOIN staff t ON t.id=c.class_teacher_id WHERE c.active=1 ORDER BY c.grade, c.name`);
-      return c.json(rows.filter((r) => this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, r.id) && ['classes.view','students.view','students.manage','fees.manage','attendance.manage'].some((p) => this.hasPermission(a, p))) || a.teaches.has(r.id)).map((r) => ({ ...r, subjects: this.q('SELECT cs.id, cs.subject, cs.teacher_id, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', r.id) })));
+      return c.json(rows.filter((r) => this.isFullAdmin(a) || (a.role === 'subadmin' && this.inClassScope(a, r.id) && ['classes.view','students.view','students.manage','fees.manage','attendance.manage'].some((p) => this.hasPermission(a, p))) || a.teaches.has(r.id)).map((r) => ({
+        ...r,
+        subjects: this.q('SELECT id, subject, teacher_id FROM class_subjects WHERE class_id=? ORDER BY subject', r.id).map((subject) => {
+          const assignments = this.q(`SELECT a.id AS assignment_id, a.teacher_id, t.name AS teacher_name, a.from_date, a.to_date
+            FROM class_subject_teacher_assignments a JOIN staff t ON t.id=a.teacher_id
+            WHERE a.class_subject_id=? ORDER BY a.from_date DESC`, subject.id);
+          const current = assignments.find((assignment) => !assignment.to_date);
+          return { ...subject, teacher_name: current?.teacher_name || null, teachers: assignments };
+        })
+      })));
     });
     app.post('/classes', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
@@ -1075,29 +1084,89 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/classes/:id/subjects', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
-      if (b.confirm !== true) fail(400, 'Confirm this subject and teacher assignment before adding it');
+      if (b.confirm !== true) fail(400, 'Confirm this subject before adding it');
       const classId = c.req.param('id');
       if (!this.one('SELECT 1 FROM classes WHERE id=? AND active=1', classId)) fail(404, 'Active class not found');
       const subject = String(b.subject || '').trim().slice(0, 80);
       if (!subject) fail(400, 'Subject is required');
       if (this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?)', classId, subject)) fail(409, 'This subject is already assigned to the class');
-      const teacherId = String(b.teacher_id || '') || null;
-      if (teacherId && !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
       const subjectId = 'cs_' + rid(10);
-      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', subjectId, classId, subject, teacherId);
-      if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-        rid(10), classId, subject, teacherId, pkt().date, a.key);
-      this.audit(a, 'class.subject.add', 'class', c.req.param('id'), b);
+      this.run('INSERT INTO class_subjects VALUES (?,?,?,NULL)', subjectId, classId, subject);
+      const teacherIds = [...new Set([...(Array.isArray(b.teacher_ids) ? b.teacher_ids : []), ...(b.teacher_id ? [b.teacher_id] : [])].map((id) => String(id || '')).filter(Boolean))];
+      for (const teacherId of teacherIds) {
+        if (!this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
+        const fromDate = String(b.from_date || pkt().date);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !Number.isFinite(Date.parse(fromDate + 'T00:00:00Z'))) fail(400, 'Enter a valid teacher assignment start date');
+        const assignmentId = 'csta_' + rid(10);
+        this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+          assignmentId, subjectId, teacherId, fromDate, a.key, now());
+        this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+          rid(10), classId, subject, teacherId, fromDate, a.key);
+        if (!this.one('SELECT teacher_id FROM class_subjects WHERE id=? AND teacher_id IS NOT NULL', subjectId)) {
+          this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
+        }
+      }
+      this.audit(a, 'class.subject.add', 'class', classId, { subject, teacher_ids: teacherIds });
+      return c.json({ ok: true, id: subjectId, teacher_count: teacherIds.length });
+    });
+    app.post('/classes/:id/subjects/:sid/teachers', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm this teacher assignment before saving');
+      const classId = c.req.param('id'), subjectId = c.req.param('sid');
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      if (!subject) fail(404, 'Subject not found in this class');
+      const teacherId = String(b.teacher_id || '');
+      if (!teacherId || !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
+      const fromDate = String(b.from_date || pkt().date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !Number.isFinite(Date.parse(fromDate + 'T00:00:00Z'))) fail(400, 'Enter a valid teacher assignment start date');
+      const overlap = this.one(`SELECT id FROM class_subject_teacher_assignments
+        WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1`,
+        subjectId, teacherId, fromDate, fromDate);
+      if (overlap) fail(409, 'This teacher already has an overlapping assignment for this subject');
+      const assignmentId = 'csta_' + rid(10);
+      this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+        assignmentId, subjectId, teacherId, fromDate, a.key, now());
+      this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+        rid(10), classId, subject.subject, teacherId, fromDate, a.key);
+      if (!subject.teacher_id) this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
+      this.audit(a, 'class.subject.teacher.add', 'class', classId, { subject_id: subjectId, subject: subject.subject, teacher_id: teacherId, from_date: fromDate });
+      this.notify('s:' + teacherId, 'Subject assigned', 'You are assigned to teach ' + subject.subject + ' in ' + this.one('SELECT name FROM classes WHERE id=?', classId)?.name + ' from ' + fromDate + '.');
+      return c.json({ ok: true, id: assignmentId });
+    });
+    app.post('/classes/:id/subjects/:sid/teachers/:aid/end', async (c) => {
+      const a = c.get('actor'); this.requireFullAdmin(a);
+      const b = await c.req.json<any>();
+      if (b.confirm !== true) fail(400, 'Confirm ending this subject teacher assignment');
+      const classId = c.req.param('id'), subjectId = c.req.param('sid'), assignmentId = c.req.param('aid');
+      const assignment = this.one('SELECT * FROM class_subject_teacher_assignments WHERE id=? AND class_subject_id=? AND to_date IS NULL', assignmentId, subjectId);
+      if (!assignment) fail(404, 'Active subject teacher assignment not found');
+      const toDate = String(b.to_date || pkt().date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(toDate) || !Number.isFinite(Date.parse(toDate + 'T00:00:00Z')) || toDate < assignment.from_date) fail(400, 'Choose a valid end date on or after the assignment start date');
+      this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=? AND to_date IS NULL', toDate, assignmentId);
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      if (subject) {
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
+          toDate, classId, subject.subject, assignment.teacher_id);
+        if (subject.teacher_id === assignment.teacher_id) {
+          const next = this.one('SELECT teacher_id FROM class_subject_teacher_assignments WHERE class_subject_id=? AND to_date IS NULL ORDER BY from_date DESC LIMIT 1', subjectId);
+          this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', next?.teacher_id || null, subjectId);
+        }
+      }
+      this.audit(a, 'class.subject.teacher.end', 'class', classId, { subject_id: subjectId, teacher_id: assignment.teacher_id, to_date: toDate });
       return c.json({ ok: true });
     });
     app.delete('/classes/:id/subjects/:sid', (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
-      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject teacher assignment');
-      const sub = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
-      if (sub?.teacher_id) this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-        pkt().date, sub.class_id, sub.subject, sub.teacher_id);
-      this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
-      this.audit(a, 'class.subject.remove', 'class', c.req.param('id'), c.req.param('sid'));
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject');
+      const subjectId = c.req.param('sid'), classId = c.req.param('id');
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      if (!subject) fail(404, 'Subject not found');
+      const today = pkt().date;
+      this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE class_subject_id=? AND to_date IS NULL', today, subjectId);
+      this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND to_date IS NULL', today, classId, subject.subject);
+      this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      this.audit(a, 'class.subject.remove', 'class', classId, subjectId);
       return c.json({ ok: true });
     });
     app.get('/classes/:id', (c) => {
@@ -1110,7 +1179,13 @@ export class SchoolDO extends DurableObject<Env> {
         .map((v) => ({ id: v.id, student_name: v.student_name, total: this.voucherTotal(v), paid: v.paid, status: v.status })) : null;
       return c.json({
         class: { ...cl, class_teacher_name: this.one('SELECT name FROM staff WHERE id=?', cl.class_teacher_id)?.name },
-        subjects: this.q('SELECT cs.subject, t.name AS teacher_name FROM class_subjects cs LEFT JOIN staff t ON t.id=cs.teacher_id WHERE cs.class_id=?', cl.id),
+        subjects: this.q('SELECT id, subject, teacher_id FROM class_subjects WHERE class_id=? ORDER BY subject', cl.id).map((subject) => {
+          const assignments = this.q(`SELECT a.id AS assignment_id, a.teacher_id, t.name AS teacher_name, a.from_date, a.to_date
+            FROM class_subject_teacher_assignments a JOIN staff t ON t.id=a.teacher_id
+            WHERE a.class_subject_id=? ORDER BY a.from_date DESC`, subject.id);
+          const current = assignments.filter((assignment) => !assignment.to_date);
+          return { ...subject, teacher_name: current[0]?.teacher_name || null, teachers: assignments };
+        }),
         students, today: this.attendanceSheet(a, cl.id, pkt().date), fees,
         history: this.q('SELECT a.from_date, a.to_date, t.name FROM class_teacher_assignments a JOIN staff t ON t.id=a.teacher_id WHERE a.class_id=? ORDER BY a.from_date DESC', cl.id),
       });
