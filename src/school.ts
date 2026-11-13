@@ -1090,22 +1090,26 @@ export class SchoolDO extends DurableObject<Env> {
       const subject = String(b.subject || '').trim().slice(0, 80);
       if (!subject) fail(400, 'Subject is required');
       if (this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?)', classId, subject)) fail(409, 'This subject is already assigned to the class');
-      const subjectId = 'cs_' + rid(10);
-      this.run('INSERT INTO class_subjects VALUES (?,?,?,NULL)', subjectId, classId, subject);
       const teacherIds = [...new Set([...(Array.isArray(b.teacher_ids) ? b.teacher_ids : []), ...(b.teacher_id ? [b.teacher_id] : [])].map((id) => String(id || '')).filter(Boolean))];
       for (const teacherId of teacherIds) {
         if (!this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
-        const fromDate = String(b.from_date || pkt().date);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !Number.isFinite(Date.parse(fromDate + 'T00:00:00Z'))) fail(400, 'Enter a valid teacher assignment start date');
-        const assignmentId = 'csta_' + rid(10);
-        this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
-          assignmentId, subjectId, teacherId, fromDate, a.key, now());
-        this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-          rid(10), classId, subject, teacherId, fromDate, a.key);
-        if (!this.one('SELECT teacher_id FROM class_subjects WHERE id=? AND teacher_id IS NOT NULL', subjectId)) {
-          this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
-        }
       }
+      const fromDate = String(b.from_date || pkt().date);
+      if (teacherIds.length && (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !Number.isFinite(Date.parse(fromDate + 'T00:00:00Z')))) fail(400, 'Enter a valid teacher assignment start date');
+      const subjectId = 'cs_' + rid(10);
+      this.tx(() => {
+        this.run('INSERT INTO class_subjects VALUES (?,?,?,NULL)', subjectId, classId, subject);
+        for (const teacherId of teacherIds) {
+          const assignmentId = 'csta_' + rid(10);
+          this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+            assignmentId, subjectId, teacherId, fromDate, a.key, now());
+          this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+            rid(10), classId, subject, teacherId, fromDate, a.key);
+          if (!this.one('SELECT teacher_id FROM class_subjects WHERE id=? AND teacher_id IS NOT NULL', subjectId)) {
+            this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
+          }
+        }
+      });
       this.audit(a, 'class.subject.add', 'class', classId, { subject, teacher_ids: teacherIds });
       return c.json({ ok: true, id: subjectId, teacher_count: teacherIds.length });
     });
@@ -1120,16 +1124,18 @@ export class SchoolDO extends DurableObject<Env> {
       if (!teacherId || !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
       const fromDate = String(b.from_date || pkt().date);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !Number.isFinite(Date.parse(fromDate + 'T00:00:00Z'))) fail(400, 'Enter a valid teacher assignment start date');
-      const overlap = this.one(`SELECT id FROM class_subject_teacher_assignments
-        WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1`,
-        subjectId, teacherId, fromDate, fromDate);
-      if (overlap) fail(409, 'This teacher already has an overlapping assignment for this subject');
       const assignmentId = 'csta_' + rid(10);
-      this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
-        assignmentId, subjectId, teacherId, fromDate, a.key, now());
-      this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-        rid(10), classId, subject.subject, teacherId, fromDate, a.key);
-      if (!subject.teacher_id) this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
+      this.tx(() => {
+        const overlap = this.one(`SELECT id FROM class_subject_teacher_assignments
+          WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1`,
+          subjectId, teacherId, fromDate, fromDate);
+        if (overlap) fail(409, 'This teacher already has an overlapping assignment for this subject');
+        this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+          assignmentId, subjectId, teacherId, fromDate, a.key, now());
+        this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+          rid(10), classId, subject.subject, teacherId, fromDate, a.key);
+        if (!subject.teacher_id) this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, subjectId);
+      });
       this.audit(a, 'class.subject.teacher.add', 'class', classId, { subject_id: subjectId, subject: subject.subject, teacher_id: teacherId, from_date: fromDate });
       this.notify('s:' + teacherId, 'Subject assigned', 'You are assigned to teach ' + subject.subject + ' in ' + this.one('SELECT name FROM classes WHERE id=?', classId)?.name + ' from ' + fromDate + '.');
       return c.json({ ok: true, id: assignmentId });
@@ -1164,9 +1170,15 @@ export class SchoolDO extends DurableObject<Env> {
       const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
       if (!subject) fail(404, 'Subject not found');
       const today = pkt().date;
-      this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE class_subject_id=? AND to_date IS NULL', today, subjectId);
-      this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND to_date IS NULL', today, classId, subject.subject);
-      this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      this.tx(() => {
+        const assignments = this.q('SELECT id, from_date FROM class_subject_teacher_assignments WHERE class_subject_id=? AND (to_date IS NULL OR to_date>=?)', subjectId, today);
+        for (const assignment of assignments) {
+          const endDate = assignment.from_date > today ? addDays(assignment.from_date, -1) : today;
+          this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', endDate, assignment.id);
+        }
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND (to_date IS NULL OR to_date>=?)', today, classId, subject.subject, today);
+        this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      });
       this.audit(a, 'class.subject.remove', 'class', classId, subjectId);
       return c.json({ ok: true });
     });
