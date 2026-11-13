@@ -1286,7 +1286,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (s.status !== 'left') fail(409, 'Only a former student can be restored');
       const classId = String(b.class_id || s.class_id);
       const destination = this.one('SELECT id, name FROM classes WHERE id=? AND active=1', classId);
-      if (!destination) fail(400, 'Choose an active class for this student before restoring');
+      if (!destination) return fail(400, 'Choose an active class for this student before restoring');
       if (!this.inClassScope(a, classId)) fail(403, 'The destination class is outside your assigned scope');
       const activeCount = Number(this.one("SELECT COUNT(*) AS n FROM students WHERE status!='left'")?.n || 0);
       if (activeCount >= ctx.studentCap) fail(402, `Your plan allows ${ctx.studentCap} students. Upgrade under Billing before restoring another student.`);
@@ -1758,7 +1758,7 @@ export class SchoolDO extends DurableObject<Env> {
         if (Number(this.one('SELECT changes() AS n')?.n || 0) !== 1) fail(409, 'This receipt has already been cancelled or changed.');
 
         const original = this.one('SELECT * FROM vouchers WHERE id=?', p!.voucher_id);
-        if (!original) fail(409, 'The original voucher is missing. No financial changes were made.');
+        if (!original) return fail(409, 'The original voucher is missing. No financial changes were made.');
         const originalPaid = Number(original.paid) - Number(p!.amount);
         if (originalPaid < 0) fail(409, 'The receipt exceeds the recorded amount paid on its voucher.');
 
