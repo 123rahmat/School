@@ -1139,17 +1139,18 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm ending this subject teacher assignment');
       const classId = c.req.param('id'), subjectId = c.req.param('sid'), assignmentId = c.req.param('aid');
-      const assignment = this.one('SELECT * FROM class_subject_teacher_assignments WHERE id=? AND class_subject_id=? AND to_date IS NULL', assignmentId, subjectId);
+      const today = pkt().date;
+      const assignment = this.one('SELECT * FROM class_subject_teacher_assignments WHERE id=? AND class_subject_id=? AND (to_date IS NULL OR to_date>=?)', assignmentId, subjectId, today);
       if (!assignment) fail(404, 'Active subject teacher assignment not found');
-      const toDate = String(b.to_date || pkt().date);
+      const toDate = String(b.to_date || today);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(toDate) || !Number.isFinite(Date.parse(toDate + 'T00:00:00Z')) || toDate < assignment.from_date) fail(400, 'Choose a valid end date on or after the assignment start date');
-      this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=? AND to_date IS NULL', toDate, assignmentId);
+      this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', toDate, assignmentId);
       const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
       if (subject) {
-        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-          toDate, classId, subject.subject, assignment.teacher_id);
-        if (subject.teacher_id === assignment.teacher_id) {
-          const next = this.one('SELECT teacher_id FROM class_subject_teacher_assignments WHERE class_subject_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) ORDER BY from_date DESC LIMIT 1', subjectId, pkt().date, pkt().date);
+        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND (to_date IS NULL OR to_date>=?)',
+          toDate, classId, subject.subject, assignment.teacher_id, today);
+        if (subject.teacher_id === assignment.teacher_id && toDate < today) {
+          const next = this.one('SELECT teacher_id FROM class_subject_teacher_assignments WHERE class_subject_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) ORDER BY from_date DESC LIMIT 1', subjectId, today, today);
           this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', next?.teacher_id || null, subjectId);
         }
       }
