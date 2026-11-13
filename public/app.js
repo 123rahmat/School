@@ -1922,7 +1922,12 @@ async function openStudentNotice(student) {
   const cls = classes.find((x) => x.id === student.class_id);
   const isClassTeacher = (ME.classTeacherOf || []).includes(student.class_id);
   const canManageClass = ME.isAdmin || ME.canManageNotices || isClassTeacher;
-  const ownSubjects = (cls?.subjects || []).filter((x) => x.teacher_id === ME.id);
+  const todayDate = today();
+  const ownSubjects = (cls?.subjects || []).filter((x) => {
+    const assignments = Array.isArray(x.teachers) ? x.teachers : [];
+    if (assignments.length) return assignments.some((t) => t.teacher_id === ME.id && t.from_date <= todayDate && (!t.to_date || t.to_date >= todayDate));
+    return x.teacher_id === ME.id;
+  });
   const subjectOptions = canManageClass
     ? '<option value="">General student notice</option>' + (cls?.subjects || []).map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('')
     : ownSubjects.map((x) => `<option value="${esc(x.subject)}">${esc(x.subject)}</option>`).join('');
