@@ -6,7 +6,6 @@ const [wrangler, util, worker, platform, app, sw, school, schema, css, html, seo
   read('wrangler.toml'),
   read('src/util.ts'),
   read('src/index.ts'),
-  read('src/seo.ts'),
   read('src/platform.ts'),
   read('public/app.js'),
   read('public/sw.js'),
@@ -14,6 +13,7 @@ const [wrangler, util, worker, platform, app, sw, school, schema, css, html, seo
   read('src/schema.ts'),
   read('public/app.css'),
   read('public/index.html'),
+  read('src/seo.ts'),
 ]);
 
 assert.match(wrangler, /^name = "school"$/m, 'Wrangler deploy target must match the Cloudflare Worker named school');
