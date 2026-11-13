@@ -38,8 +38,8 @@ assert.match(worker, /The invoice amount is authoritative; never accept a client
 assert.match(worker, /status='submitted'.*status='open'/s, 'Subscription payment confirmation must use conditional state transitions');
 assert.match(worker, /submitted amount does not match the invoice/, 'Subscription payment confirmation must reject amount mismatches');
 assert.match(worker, /WHERE NOT EXISTS \(SELECT 1 FROM invoices WHERE school_id=\? AND status='open'\)/, 'Invoice generation must avoid duplicate open invoices');
-assert.match(worker, /safeType = \['application\\/pdf', 'image\\/jpeg', 'image\\/png', 'image\\/webp'\]/, 'Owner billing uploads must use a safe inline content-type allowlist');
-assert.match(school, /safeType = \['application\\/pdf', 'image\\/jpeg', 'image\\/png', 'image\\/webp'\]/, 'School file downloads must use a safe inline content-type allowlist');
+assert.ok(worker.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'Owner billing uploads must use a safe inline content-type allowlist');
+assert.ok(school.includes("safeType = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']"), 'School file downloads must use a safe inline content-type allowlist');
 assert.match(school, /'x-content-type-options': 'nosniff'/, 'Private school file responses must prevent MIME sniffing');
 
 assert.doesNotMatch(worker, /app\.post\('\/api\/(?:auth|signup)\/(?:start|verify)'/, 'Legacy email/phone OTP auth routes must not exist');
