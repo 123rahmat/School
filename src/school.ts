@@ -234,6 +234,9 @@ export class SchoolDO extends DurableObject<Env> {
 
   async putFile(ctx: Ctx, a: Actor, file: File, kind: string, maxMb = 10): Promise<string> {
     if (file.size > maxMb * 1024 * 1024) fail(400, `File too large (max ${maxMb} MB)`);
+    const contentType = String(file.type || '').split(';')[0].trim().toLowerCase();
+    const allowedTypes = kind === 'results' ? ['application/pdf'] : kind === 'slips' ? ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] : [];
+    if (!allowedTypes.includes(contentType)) fail(400, kind === 'results' ? 'Results must be uploaded as PDF files' : 'Upload a PDF, JPEG, PNG or WebP file');
     const key = `${ctx.schoolId}/${kind}/${rid(16)}-${(file.name || 'file').replace(/[^\w.-]/g, '_').slice(-60)}`;
     const reservation = 'up_' + rid(12);
     // Reserve synchronously before the network await. Concurrent uploads in this
@@ -241,9 +244,9 @@ export class SchoolDO extends DurableObject<Env> {
     if (this.storageUsed() + file.size > ctx.storageLimitBytes) fail(507, 'Storage is full. Add a 5 GB storage block under Billing.');
     this.run('INSERT INTO file_upload_reservations (id, key, size, created_at) VALUES (?,?,?,?)', reservation, key, file.size, now());
     try {
-      await this.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+      await this.env.FILES.put(key, file.stream(), { httpMetadata: { contentType } });
       this.tx(() => {
-        this.run('INSERT INTO files (key, size, kind, uploaded_by, content_type, created_at) VALUES (?,?,?,?,?,?)', key, file.size, kind, a.key, file.type, now());
+        this.run('INSERT INTO files (key, size, kind, uploaded_by, content_type, created_at) VALUES (?,?,?,?,?,?)', key, file.size, kind, a.key, contentType, now());
         this.run('DELETE FROM file_upload_reservations WHERE id=?', reservation);
       });
     } catch (error) {
@@ -827,7 +830,12 @@ export class SchoolDO extends DurableObject<Env> {
       if (b.confirm !== true) fail(400, 'Review the new staff account and confirm before creating it');
       if (!b.name || !b.email) fail(400, 'Name and a Google sign-in email are required');
       const role = ['teacher', 'subadmin', 'admin'].includes(b.role) ? b.role : 'teacher';
-      if (role !== 'teacher') this.requireMain(a);
+      if (role !== 'teacher') {
+        this.requireMain(a);
+        const ctx = c.get('ctx');
+        const adminSeats = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role IN ('admin','subadmin')")?.n || 0);
+        if (adminSeats >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} additional administrator account(s). Upgrade under Billing to add another.`);
+      }
       const email = normId(b.email), phone = normId(b.phone) || null;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Enter a valid Google sign-in email');
       if (this.one('SELECT 1 FROM staff WHERE email=? AND active=1', email) || (phone && this.one('SELECT 1 FROM staff WHERE phone=? AND active=1', phone))) fail(409, 'A staff member with this email or phone already exists');
@@ -876,6 +884,11 @@ export class SchoolDO extends DurableObject<Env> {
       if (s!.is_main && !a.isMain) fail(403, 'Only the main admin can edit the main admin');
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Review the staff account changes and confirm before saving');
+      if (s!.active && 'role' in b && ['admin','subadmin'].includes(String(b.role)) && !['admin','subadmin'].includes(String(s!.role))) {
+        const ctx = c.get('ctx');
+        const adminSeats = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role IN ('admin','subadmin') AND id<>?", id)?.n || 0);
+        if (adminSeats >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} additional administrator account(s). Upgrade under Billing to add another.`);
+      }
       const changes: Row = {};
       for (const k of ['name', 'email', 'phone', 'subjects', 'role', 'subrole']) if (k in b) {
         let v = b[k];
@@ -933,6 +946,7 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       const s = this.one('SELECT * FROM staff WHERE id=?', id); if (!s) fail(404, 'Not found');
       if (s!.is_main) fail(400, 'The main admin cannot be deactivated');
+      if (s!.role === 'admin' && !a.isMain) fail(403, 'Only the main admin can deactivate another full administrator');
       const cash = Number(this.one("SELECT COALESCE(SUM(amount),0) AS n FROM payments WHERE held_by=? AND handover_id IS NULL AND status IN ('submitted','verified')", 's:' + id)!.n);
       if (cash > 0 && !b.confirm_cash) return c.json({ needsConfirm: true, message: `${s!.name} still holds ${money(cash)} in cash. Settle it first, or confirm to continue.` }, 409);
       if (b.confirm !== true) fail(400, 'Confirm this account deactivation before continuing');
@@ -946,8 +960,16 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm this staff account reactivation before continuing');
       const id = c.req.param('id');
-      this.run('UPDATE staff SET active=1, left_at=NULL, left_reason=NULL WHERE id=?', id);
-      const s = this.one('SELECT * FROM staff WHERE id=?', id)!;
+      const s = this.one('SELECT * FROM staff WHERE id=?', id);
+      if (!s) fail(404, 'Staff account not found');
+      if (s.active) fail(409, 'This staff account is already active');
+      if (s.is_main || (s.role === 'admin' && !a.isMain)) fail(403, 'Only the main admin can reactivate a full administrator account');
+      if (['admin','subadmin'].includes(String(s.role))) {
+        const ctx = c.get('ctx');
+        const adminSeats = Number(this.one("SELECT COUNT(*) AS n FROM staff WHERE active=1 AND is_main=0 AND role IN ('admin','subadmin')")?.n || 0);
+        if (adminSeats >= ctx.subAdminCap) fail(402, `Your plan allows ${ctx.subAdminCap} additional administrator account(s). Upgrade under Billing before reactivating this account.`);
+      }
+      this.run('UPDATE staff SET active=1, left_at=NULL, left_reason=NULL WHERE id=? AND active=0', id);
       await this.syncLogin('staff', id, [s.email, s.phone]);
       this.audit(a, 'staff.reactivate', 'staff', id);
       return c.json({ ok: true });
@@ -998,10 +1020,14 @@ export class SchoolDO extends DurableObject<Env> {
     app.post('/classes', async (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
-      if (!b.name) fail(400, 'Class name is required');
+      const name = String(b.name || '').trim().slice(0, 80);
+      if (!name) fail(400, 'Class name is required');
+      if (this.one('SELECT 1 FROM classes WHERE lower(name)=lower(?) AND active=1', name)) fail(409, 'An active class already has this name');
+      const teacherId = String(b.class_teacher_id || '') || null;
+      if (teacherId && !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
       const id = 'cl_' + rid(10);
-      this.run('INSERT INTO classes (id, name, grade, section, room, class_teacher_id, created_at) VALUES (?,?,?,?,?,?,?)', id, b.name.trim(), Number(b.grade) || 0, b.section || null, b.room || null, b.class_teacher_id || null, now());
-      if (b.class_teacher_id) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), id, b.class_teacher_id, pkt().date);
+      this.run('INSERT INTO classes (id, name, grade, section, room, class_teacher_id, created_at) VALUES (?,?,?,?,?,?,?)', id, name, Number(b.grade) || 0, b.section || null, b.room || null, teacherId, now());
+      if (teacherId) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), id, teacherId, pkt().date);
       this.audit(a, 'class.add', 'class', id, b);
       return c.json(this.one('SELECT * FROM classes WHERE id=?', id));
     });
@@ -1041,20 +1067,26 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); this.requireFullAdmin(a);
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm this subject and teacher assignment before adding it');
-      if (!b.subject) fail(400, 'Subject is required');
+      const classId = c.req.param('id');
+      if (!this.one('SELECT 1 FROM classes WHERE id=? AND active=1', classId)) fail(404, 'Active class not found');
+      const subject = String(b.subject || '').trim().slice(0, 80);
+      if (!subject) fail(400, 'Subject is required');
+      if (this.one('SELECT 1 FROM class_subjects WHERE class_id=? AND lower(subject)=lower(?)', classId, subject)) fail(409, 'This subject is already assigned to the class');
+      const teacherId = String(b.teacher_id || '') || null;
+      if (teacherId && !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
       const subjectId = 'cs_' + rid(10);
-      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', subjectId, c.req.param('id'), b.subject.trim(), b.teacher_id || null);
-      if (b.teacher_id) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-        rid(10), c.req.param('id'), b.subject.trim(), b.teacher_id, pkt().date, a.key);
+      this.run('INSERT INTO class_subjects VALUES (?,?,?,?)', subjectId, classId, subject, teacherId);
+      if (teacherId) this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+        rid(10), classId, subject, teacherId, pkt().date, a.key);
       this.audit(a, 'class.subject.add', 'class', c.req.param('id'), b);
       return c.json({ ok: true });
     });
     app.delete('/classes/:id/subjects/:sid', (c) => {
       const a = c.get('actor'); this.requireFullAdmin(a);
+      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject teacher assignment');
       const sub = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
       if (sub?.teacher_id) this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
         pkt().date, sub.class_id, sub.subject, sub.teacher_id);
-      if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject teacher assignment');
       this.run('DELETE FROM class_subjects WHERE id=? AND class_id=?', c.req.param('sid'), c.req.param('id'));
       this.audit(a, 'class.subject.remove', 'class', c.req.param('id'), c.req.param('sid'));
       return c.json({ ok: true });
@@ -1624,7 +1656,7 @@ export class SchoolDO extends DurableObject<Env> {
       let v = this.q('SELECT * FROM vouchers WHERE month=?', month);
       const allowed = this.isFullAdmin(a) ? null : this.scopedClassIds(a).filter((id) => this.canSetFees(a, id));
       if (allowed) v = v.filter((x) => allowed.includes(x.class_id));
-      const expected = v.reduce((t, x) => t + x.current - x.discount + x.fine, 0);
+      const expected = v.reduce((t, x) => t + this.voucherTotal(x), 0);
       let daily = this.q(`SELECT substr(datetime(verified_at, '+5 hours'),1,10) AS day, method, SUM(amount) AS amount, COUNT(*) AS n, class_id FROM payments
         WHERE status='verified' AND substr(datetime(verified_at, '+5 hours'),1,7)=? GROUP BY day, method, class_id ORDER BY day`, month);
       if (allowed) daily = daily.filter((x) => allowed.includes(x.class_id));
