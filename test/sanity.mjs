@@ -104,26 +104,18 @@ assert.ok(css.includes('@media (min-width: 601px) and (max-width: 860px)'), 'Tab
 assert.ok(css.includes('@media (max-width: 600px)'), 'Phone layout must use phone-appropriate spacing and form columns');
 assert.ok(css.includes('minmax(0, 1fr)'), 'Workspace columns must shrink without forcing viewport overflow');
 assert.match(html, /viewport-fit=cover/, 'Installed app must account for device safe areas');
+const dollar = String.fromCharCode(36);
 const collectionSelectors = [
-  " $('[data-deldisc]')".trim(), " $('[data-cancel]')".trim(), " $('#side nav a')".trim(), " $('[data-rm]', m)".trim(),
-  " $('[data-v]')".trim(), " $('[data-r]')".trim(), " $('[data-deln]')".trim(), " $('[data-pub]')".trim(), " $('[data-del]')".trim(),
-  " $('[data-a]')".trim(), " $('[data-d]')".trim(), " $('[data-st]')".trim(), " $('[data-storage-approve]', storageQueue)".trim(),
-  " $('[data-storage-reject]', storageQueue)".trim(), " $('[data-ok]')".trim(),
+  dollar + "('[data-deldisc]')", dollar + "('[data-cancel]')", dollar + "('#side nav a')", dollar + "('[data-rm]', m)",
+  dollar + "('[data-v]')", dollar + "('[data-r]')", dollar + "('[data-deln]')", dollar + "('[data-pub]')", dollar + "('[data-del]')",
+  dollar + "('[data-a]')", dollar + "('[data-d]')", dollar + "('[data-st]')", dollar + "('[data-storage-approve]', storageQueue)",
+  dollar + "('[data-storage-reject]', storageQueue)", dollar + "('[data-ok]')",
 ];
 for (const selector of collectionSelectors) {
   const needle = selector + '.forEach';
   let position = app.indexOf(needle);
   while (position !== -1) {
-    assert.notEqual(app[position - 2], String.fromCharCode(36),
-      `Collection event binding must use the multi-match selector: ${selector}`);
-    position = app.indexOf(needle, position + needle.length);
-  }
-}
-assert.match(app, /layout\.classList\.toggle\('nav-collapsed'/, 'Desktop navigation must be collapsible like a ChatGPT-style sidebar');
-assert.match(app, /\$\$\('#side nav a'\)/, 'Navigation link binding must safely select all sidebar links');
-
-console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
-,
+    assert.notEqual(app[position - 2], dollar,
       `Collection event binding must use $$(), not $(): ${selector}`);
     position = app.indexOf(needle, position + needle.length);
   }
