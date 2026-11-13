@@ -2333,17 +2333,30 @@ export class SchoolDO extends DurableObject<Env> {
         }
       }
 
-      const subjects = this.q('SELECT id, class_id, subject FROM class_subjects WHERE teacher_id=?', old.id);
+      const subjects = this.q(`SELECT DISTINCT cs.id, cs.class_id, cs.subject
+        FROM class_subject_teacher_assignments a
+        JOIN class_subjects cs ON cs.id=a.class_subject_id
+        WHERE a.teacher_id=? AND a.to_date IS NULL`, old.id);
       for (const sub of subjects) {
-        this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-          endDate, sub.class_id, sub.subject, old.id);
-        if (subjectIds.has(sub.id)) {
-          this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', newId, sub.id);
-          this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-            rid(10), sub.class_id, sub.subject, newId, effective, a.key);
-        } else {
-          this.run('UPDATE class_subjects SET teacher_id=NULL WHERE id=?', sub.id);
+        const assignments = this.q('SELECT id, from_date FROM class_subject_teacher_assignments WHERE class_subject_id=? AND teacher_id=? AND to_date IS NULL', sub.id, old.id);
+        for (const assignment of assignments) {
+          const assignmentEnd = assignment.from_date > endDate ? addDays(assignment.from_date, -1) : endDate;
+          this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=? AND to_date IS NULL', assignmentEnd, assignment.id);
+          this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
+            assignmentEnd, sub.class_id, sub.subject, old.id);
         }
+        if (subjectIds.has(sub.id)) {
+          const alreadyAssigned = this.one('SELECT 1 FROM class_subject_teacher_assignments WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1',
+            sub.id, newId, effective, effective);
+          if (!alreadyAssigned) {
+            this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+              'csta_' + rid(10), sub.id, newId, effective, a.key, now());
+            this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+              rid(10), sub.class_id, sub.subject, newId, effective, a.key);
+          }
+        }
+        const nextPrimary = this.one('SELECT teacher_id FROM class_subject_teacher_assignments WHERE class_subject_id=? AND to_date IS NULL ORDER BY from_date DESC LIMIT 1', sub.id);
+        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=? AND teacher_id=?', nextPrimary?.teacher_id || null, sub.id, old.id);
       }
 
       this.run('UPDATE staff SET active=0, left_at=?, left_reason=? WHERE id=?',
@@ -2360,16 +2373,26 @@ export class SchoolDO extends DurableObject<Env> {
     if (teacherId && !this.one("SELECT 1 FROM staff WHERE id=? AND role='teacher' AND active=1", teacherId)) fail(400, 'Choose an active teacher account');
     const oldTeacherId = cl!.class_teacher_id;
     const movedSubjects = subjectsToo && oldTeacherId && teacherId
-      ? this.q('SELECT id, subject FROM class_subjects WHERE class_id=? AND teacher_id=?', classId, oldTeacherId) : [];
+      ? this.q(`SELECT a.id AS assignment_id, cs.id, cs.subject, a.from_date FROM class_subject_teacher_assignments a
+        JOIN class_subjects cs ON cs.id=a.class_subject_id
+        WHERE cs.class_id=? AND a.teacher_id=? AND a.to_date IS NULL`, classId, oldTeacherId) : [];
     this.tx(() => {
       this.run('UPDATE class_teacher_assignments SET to_date=? WHERE class_id=? AND to_date IS NULL', addDays(from, -1), classId);
       if (teacherId) this.run('INSERT INTO class_teacher_assignments VALUES (?,?,?,?,NULL)', rid(10), classId, teacherId, from);
       for (const sub of movedSubjects) {
+        const endDate = sub.from_date > addDays(from, -1) ? addDays(sub.from_date, -1) : addDays(from, -1);
+        this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=? AND to_date IS NULL', endDate, sub.assignment_id);
         this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND to_date IS NULL',
-          addDays(from, -1), classId, sub.subject, oldTeacherId);
-        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=?', teacherId, sub.id);
-        this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
-          rid(10), classId, sub.subject, teacherId, from, a.key);
+          endDate, classId, sub.subject, oldTeacherId);
+        const alreadyAssigned = this.one('SELECT 1 FROM class_subject_teacher_assignments WHERE class_subject_id=? AND teacher_id=? AND from_date<=? AND (to_date IS NULL OR to_date>=?) LIMIT 1',
+          sub.id, teacherId, from, from);
+        if (!alreadyAssigned) {
+          this.run('INSERT INTO class_subject_teacher_assignments (id,class_subject_id,teacher_id,from_date,changed_by,created_at) VALUES (?,?,?,?,?,?)',
+            'csta_' + rid(10), sub.id, teacherId, from, a.key, now());
+          this.run('INSERT INTO class_subject_history (id,class_id,subject,teacher_id,from_date,changed_by) VALUES (?,?,?,?,?,?)',
+            rid(10), classId, sub.subject, teacherId, from, a.key);
+        }
+        this.run('UPDATE class_subjects SET teacher_id=? WHERE id=? AND teacher_id=?', teacherId, sub.id, oldTeacherId);
       }
       this.run('UPDATE classes SET class_teacher_id=? WHERE id=?', teacherId, classId);
     });
