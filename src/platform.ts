@@ -6,6 +6,7 @@ type Reply = { results: Record<string, unknown>[]; changes: number };
 
 const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS plans (tier TEXT PRIMARY KEY, min_students INTEGER NOT NULL, max_students INTEGER NOT NULL, monthly INTEGER NOT NULL, yearly INTEGER NOT NULL, storage_gb REAL NOT NULL, sub_admins INTEGER NOT NULL, sort INTEGER NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS platform_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS schools (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'school', tier TEXT NOT NULL DEFAULT 'trial', cycle TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'trial', renews_at TEXT NOT NULL, grace_days INTEGER NOT NULL DEFAULT 4, price_override INTEGER, extra_storage_gb REAL NOT NULL DEFAULT 0, launch_price_until TEXT, students INTEGER NOT NULL DEFAULT 0, storage_bytes INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS logins (identifier TEXT NOT NULL, school_id TEXT NOT NULL, kind TEXT NOT NULL, ref_id TEXT NOT NULL, PRIMARY KEY(identifier, school_id, kind, ref_id))",
   "CREATE INDEX IF NOT EXISTS logins_school ON logins(school_id, kind, ref_id)",
