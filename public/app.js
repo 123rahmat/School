@@ -396,12 +396,64 @@ function nav() {
   return items.join('');
 }
 
+function workspaceToolsHtml() {
+  if (!ME) return '';
+  const items = [];
+  const add = (href, label, hint, icon, meta = '') => items.push({ href, label, hint, icon, meta });
+  if (ME.kind === 'owner') {
+    add('/owner', 'Platform overview', 'Institutions, billing and storage', '⌂');
+  } else if (ME.kind === 'guardian') {
+    add('/', 'My children', 'Profiles and school information', '01');
+    add('/notices', 'School notices', 'Announcements from the institution', '02');
+    add('/threads', 'Messages', 'Contact the school team', '03');
+    add('/submissions', 'My submissions', 'Track forms sent from this device', '04');
+    add('/notifications', 'Notifications', 'Important account updates', '05', ME.unread ? String(ME.unread) : '');
+  } else {
+    add('/', ME.isAdmin ? 'Dashboard' : 'Today', 'Your school at a glance', '⌂');
+    add('/students', 'Students', 'Profiles, enrolment and records', '01');
+    add('/classes', 'Classes', 'Class groups and teacher assignments', '02');
+    add('/attendance', 'Attendance', 'Daily registers and corrections', '03');
+    if (ME.canFees || (ME.classTeacherOf || []).length) add('/fees', 'Fees', 'Vouchers and payment records', '04');
+    if (ME.isAdmin) add('/staff', 'Teachers & staff', 'Accounts and responsibilities', '05');
+    add('/results', 'Results', 'Upload and publish result files', '06');
+    add('/notices', 'Notices', 'School and class announcements', '07');
+    if (ME.isMainAdmin) add('/billing', 'Billing', 'Plan, renewal and storage', '08');
+    add('/notifications', 'Notifications', 'Updates for your account', '09', ME.unread ? String(ME.unread) : '');
+  }
+  const role = ME.kind === 'owner' ? 'Platform owner' : ME.kind === 'guardian' ? 'Parent / guardian' : (ME.subrole || ME.role || 'Staff');
+  const workspace = ME.kind === 'owner' ? 'Platform workspace' : (ME.schoolName || 'Institution workspace');
+  const initials = String(ME.name || 'U').trim().split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
+  const dateLabel = new Date().toLocaleDateString('en-PK', { timeZone: 'Asia/Karachi', weekday: 'long', day: 'numeric', month: 'short' });
+  return `
+    <div class="tools-head">
+      <div><span class="tools-kicker">WORKSPACE</span><h2>Quick access</h2></div>
+      <button type="button" class="tools-close" id="tools-close" aria-label="Close workspace panel" title="Close panel">×</button>
+    </div>
+    <div class="tools-date"><span class="tools-date-dot"></span><span>${esc(dateLabel)}</span></div>
+    <div class="tools-profile">
+      <div class="tools-avatar" aria-hidden="true">${esc(initials || 'U')}</div>
+      <div class="tools-profile-copy"><b>${esc(ME.name || 'Account')}</b><span>${esc(role)}</span></div>
+    </div>
+    <div class="tools-workspace-name"><span>ACTIVE WORKSPACE</span><b>${esc(workspace)}</b>${ME.schoolStatus ? `<small class="tools-status ${ME.schoolStatus === 'active' || ME.schoolStatus === 'trial' ? 'is-ok' : 'is-warn'}">${esc(ME.schoolStatus)}</small>` : ''}</div>
+    <div class="tools-section-label">SHORTCUTS</div>
+    <nav class="tools-links" aria-label="Quick access links">
+      ${items.map((item) => `<a href="${item.href}" class="tools-link ${currentPath() === item.href ? 'active' : ''}">
+        <span class="tools-link-icon" aria-hidden="true">${esc(item.icon)}</span>
+        <span class="tools-link-copy"><b>${esc(item.label)}</b><small>${esc(item.hint)}</small></span>
+        ${item.meta ? `<span class="tools-link-count">${esc(item.meta)}</span>` : '<span class="tools-link-arrow" aria-hidden="true">↗</span>'}
+      </a>`).join('')}
+    </nav>
+    <div class="tools-note"><span class="tools-note-mark">i</span><p>Shortcuts are tailored to your account. The school server checks your permissions whenever you open a page or perform an action.</p></div>
+  `;
+}
+
 function view(html) {
   const owner = ME && ME.kind === 'owner';
   $('#app').innerHTML = `
   <div id="connection-notice-slot">${connectionBannerHtml()}</div>
   <div class="layout">
     <button type="button" class="nav-scrim" id="nav-scrim" aria-label="Close navigation" tabindex="-1"></button>
+    <button type="button" class="tools-scrim" id="tools-scrim" aria-label="Close workspace tools" tabindex="-1"></button>
     <aside class="side" id="side">
       <div class="brand"><img src="/icon.svg" alt=""><span>${esc(owner ? 'Platform owner' : ME?.schoolName || 'Institution')}</span></div>
       <nav>${nav()}</nav>
@@ -412,21 +464,51 @@ function view(html) {
     </aside>
     <div class="main">
       <div class="top">
-        <button class="btn menu" id="menu" aria-label="Open navigation" aria-controls="side" aria-expanded="false">☰</button>
+        <button class="btn menu" id="menu" aria-label="Open navigation" aria-controls="side" aria-expanded="false" title="Navigation">☰</button>
         ${ME && ME.kind === 'staff' ? `<div class="search"><input id="q" type="search" placeholder="Search students, staff, parents or account ID" autocomplete="off"><div class="results hidden" id="qr"></div></div>` : '<div style="flex:1"></div>'}
+        <button type="button" class="btn tools-toggle" id="tools-toggle" aria-controls="tools-panel" aria-expanded="false" title="Open workspace tools"><span class="tools-toggle-icon" aria-hidden="true">☷</span><span class="tools-toggle-text">Tools</span></button>
         <button class="btn small hidden" id="install">Install app</button>
       </div>
       <div class="content">${billingBanner()}<div id="sync-status-slot">${syncStatusHtml()}</div>${html}</div>
     </div>
+    <aside class="tools-panel" id="tools-panel" aria-label="Workspace tools">${workspaceToolsHtml()}</aside>
   </div>`;
   const layout = $('.layout'), side = $('#side'), menu = $('#menu'), scrim = $('#nav-scrim');
+  const toolsPanel = $('#tools-panel'), toolsButton = $('#tools-toggle'), toolsScrim = $('#tools-scrim');
   const mobileNav = () => window.matchMedia('(max-width: 860px)').matches;
+  const compactTools = () => window.matchMedia('(max-width: 1350px)').matches;
   menu.setAttribute('aria-expanded', String(!mobileNav()));
   menu.setAttribute('aria-label', mobileNav() ? 'Open navigation' : 'Collapse navigation');
+  let toolsOpen = false;
+  try {
+    const saved = localStorage.getItem('institution.workspace-tools-open');
+    toolsOpen = saved === null ? window.matchMedia('(min-width: 1351px)').matches : saved === '1';
+  } catch { toolsOpen = window.matchMedia('(min-width: 1351px)').matches; }
+  const applyToolsState = () => {
+    if (compactTools()) {
+      layout.classList.remove('tools-hidden');
+      toolsPanel.classList.toggle('open', toolsOpen);
+      toolsScrim.classList.toggle('open', toolsOpen);
+    } else {
+      toolsPanel.classList.remove('open');
+      toolsScrim.classList.remove('open');
+      layout.classList.toggle('tools-hidden', !toolsOpen);
+    }
+    toolsButton.setAttribute('aria-expanded', String(toolsOpen));
+    toolsButton.setAttribute('aria-label', toolsOpen ? 'Close workspace tools' : 'Open workspace tools');
+    toolsButton.title = toolsOpen ? 'Close workspace tools' : 'Open workspace tools';
+  };
+  const setToolsOpen = (open, persist = true) => {
+    toolsOpen = open;
+    if (open && mobileNav()) setNavOpen(false);
+    if (persist) { try { localStorage.setItem('institution.workspace-tools-open', open ? '1' : '0'); } catch {} }
+    applyToolsState();
+  };
   const setNavOpen = (open) => {
     if (mobileNav()) {
       side.classList.toggle('open', open);
       scrim.classList.toggle('open', open);
+      if (open && toolsOpen) setToolsOpen(false);
     } else {
       layout.classList.toggle('nav-collapsed', !open);
       side.classList.remove('open');
@@ -435,9 +517,21 @@ function view(html) {
     menu.setAttribute('aria-expanded', String(open));
     menu.setAttribute('aria-label', open ? 'Collapse navigation' : 'Expand navigation');
   };
+  applyToolsState();
   menu.onclick = () => setNavOpen(mobileNav() ? !side.classList.contains('open') : layout.classList.contains('nav-collapsed'));
   scrim.onclick = () => setNavOpen(false);
-  $$('#side nav a').forEach((a) => a.addEventListener('click', () => setNavOpen(false)));
+  toolsButton.onclick = () => setToolsOpen(!toolsOpen);
+  toolsScrim.onclick = () => setToolsOpen(false);
+  const closeTools = $('#tools-close'); if (closeTools) closeTools.onclick = () => setToolsOpen(false);
+  $('#side nav a').forEach((a) => a.addEventListener('click', () => { if (mobileNav()) setNavOpen(false); }));
+  $('#tools-panel nav a').forEach((a) => a.addEventListener('click', () => { if (compactTools()) setToolsOpen(false); }));
+  const closeDrawers = (event) => {
+    if (event.key !== 'Escape') return;
+    setNavOpen(false);
+    setToolsOpen(false);
+  };
+  document.addEventListener('keydown', closeDrawers);
+  window.addEventListener('resize', applyToolsState, { passive: true });
   const lo = $('#logout'); if (lo) lo.onclick = async (e) => {
     e.preventDefault();
     if (!navigator.onLine) {
