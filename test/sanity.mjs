@@ -208,5 +208,7 @@ assert.match(seo, /function renderSitemap/, 'The SEO module must provide an XML 
 assert.match(wrangler, /"\/about", "\/robots\.txt", "\/sitemap\.xml"/, 'SEO routes must be handled by the Worker rather than the SPA fallback');
 assert.match(sw, /const VERSION = 'v16'/, 'PWA cache must refresh for the new login startup and SEO release');
 assert.match(sw, /if \(SHELL\.includes\(url\.pathname\)\)[\s\S]*?caches\.match\(e\.request\)/, 'Static app shell assets must use the versioned cache for fast startup');
+assert.doesNotMatch(html, /\\\\n<meta/, 'Application metadata tags must be separate valid HTML elements');
+assert.doesNotMatch(app, /landingPage\\(|setupLandingInstall|loadLandingContact/, 'Unused public landing JavaScript must not be shipped in the app bundle');
 
 console.log('School platform sanity checks passed: Google role validation, institution-only registration, account IDs, session routing, private API cache protections and offline attendance safeguards.');
