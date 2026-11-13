@@ -523,8 +523,8 @@ function view(html) {
   toolsButton.onclick = () => setToolsOpen(!toolsOpen);
   toolsScrim.onclick = () => setToolsOpen(false);
   const closeTools = $('#tools-close'); if (closeTools) closeTools.onclick = () => setToolsOpen(false);
-  $('#side nav a').forEach((a) => a.addEventListener('click', () => { if (mobileNav()) setNavOpen(false); }));
-  $('#tools-panel nav a').forEach((a) => a.addEventListener('click', () => { if (compactTools()) setToolsOpen(false); }));
+  $$('#side nav a').forEach((a) => a.addEventListener('click', () => { if (mobileNav()) setNavOpen(false); }));
+  $$('#tools-panel nav a').forEach((a) => a.addEventListener('click', () => { if (compactTools()) setToolsOpen(false); }));
   const closeDrawers = (event) => {
     if (event.key !== 'Escape') return;
     setNavOpen(false);
