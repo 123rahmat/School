@@ -1115,3 +1115,128 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .tools-toggle-text { display:none; }
 }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+
+
+/* Persistent labelled navigation, account popover and quiet startup shell. */
+.top { display:flex; align-items:center; gap:12px; }
+.top-actions { display:flex; align-items:center; gap:10px; margin-left:auto; flex:0 0 auto; }
+.top .menu { display:none !important; }
+.nav-scrim { display:none !important; }
+.side { display:flex; flex-direction:column; min-width:0; }
+.side nav { display:grid; gap:3px; }
+.side nav a {
+  display:flex; justify-content:flex-start; align-items:center; gap:10px;
+  min-height:40px; padding:9px 10px; white-space:normal; text-decoration:none;
+}
+.side nav a .nav-icon {
+  display:inline-grid; place-items:center; flex:0 0 22px; width:22px;
+  color:#57749e; font-size:17px; line-height:1;
+}
+.side nav a .nav-label { min-width:0; flex:1; overflow-wrap:anywhere; }
+.side nav a.active .nav-icon { color:#315fae; }
+.side .group { margin-top:7px; }
+.tools-profile { display:none !important; }
+
+/* The left navigation is never collapsed on desktop or tablet. */
+@media (min-width:861px) {
+  .layout {
+    display:grid !important;
+    grid-template-columns:minmax(0,240px) minmax(0,1fr) minmax(264px,292px);
+  }
+  .layout.tools-hidden { grid-template-columns:minmax(0,240px) minmax(0,1fr) 0; }
+  .layout.nav-collapsed { grid-template-columns:minmax(0,240px) minmax(0,1fr) minmax(264px,292px); }
+  .layout.nav-collapsed.tools-hidden { grid-template-columns:minmax(0,240px) minmax(0,1fr) 0; }
+  .layout.nav-collapsed > .side { display:flex !important; visibility:visible !important; }
+  .side { position:sticky !important; top:0; height:100vh; transform:none !important; }
+}
+@media (min-width:861px) and (max-width:1350px) {
+  .layout,.layout.nav-collapsed { grid-template-columns:minmax(0,218px) minmax(0,1fr) !important; }
+  .layout.tools-hidden { grid-template-columns:minmax(0,218px) minmax(0,1fr) !important; }
+}
+
+/* Keep the full labelled sidebar visible on phones as well; the main area scrolls independently. */
+@media (max-width:860px) {
+  .layout { display:grid !important; grid-template-columns:minmax(0,176px) minmax(0,1fr) !important; min-height:100svh; }
+  .side {
+    display:flex !important; position:sticky !important; inset:auto !important; top:0;
+    width:auto !important; height:100svh; max-height:100svh; padding:12px 8px;
+    overflow-y:auto; transform:none !important; z-index:2;
+  }
+  .side.open { transform:none !important; }
+  .side nav a { min-height:42px; padding:8px 7px; font-size:.78rem; gap:7px; }
+  .side nav a .nav-icon { flex-basis:19px; width:19px; font-size:15px; }
+  .side .brand { padding:4px 6px 13px; gap:7px; font-size:.8rem; }
+  .side .brand img { width:27px; height:27px; }
+  .side .group { padding:12px 7px 5px; font-size:9px; }
+  .top .menu { display:none !important; }
+  .nav-scrim { display:none !important; }
+  .main { min-width:0; }
+  .content { min-width:0; padding:14px 12px; }
+}
+@media (max-width:560px) {
+  .layout { grid-template-columns:minmax(0,150px) minmax(0,1fr) !important; }
+  .side { padding:10px 6px; }
+  .side nav a { padding:8px 5px; font-size:.73rem; }
+  .side .brand { font-size:.74rem; }
+  .side .group { font-size:8px; letter-spacing:.07em; }
+  .top { padding:8px 9px; gap:7px; }
+  .top-actions { gap:6px; }
+  .tools-toggle { width:40px; min-height:40px; padding:0; justify-content:center; }
+  .tools-toggle-text { display:none; }
+  .account-toggle { width:40px; height:40px; }
+}
+
+/* Chat-style user avatar menu: identity, school controls, plan and secure sign-out. */
+.account-menu { position:relative; flex:0 0 auto; z-index:70; }
+.account-toggle {
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  width:auto; min-width:44px; height:44px; padding:3px 6px 3px 3px;
+  border:1px solid var(--line); border-radius:999px; background:#fff; cursor:pointer;
+  box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.account-toggle:hover { background:#f6f8fb; border-color:#cbd7e7; }
+.account-avatar {
+  display:inline-grid; place-items:center; flex:0 0 36px; width:36px; height:36px;
+  border-radius:50%; background:#eaf1fc; color:#315f9f; font-size:.78rem; font-weight:700;
+  letter-spacing:.025em;
+}
+.account-avatar-large { width:42px; height:42px; flex-basis:42px; }
+.account-toggle-caret { color:#748197; font-size:15px; }
+.account-panel {
+  position:absolute; top:calc(100% + 9px); right:0; width:min(310px,calc(100vw - 22px));
+  padding:10px; border:1px solid #e1e7ef; border-radius:15px; background:#fff;
+  box-shadow:0 18px 50px rgba(24,39,61,.16); z-index:80;
+}
+.account-panel-user { display:flex; align-items:center; gap:11px; padding:8px 8px 11px; }
+.account-panel-user > span:last-child { display:grid; gap:2px; min-width:0; }
+.account-panel-user b { color:#26364d; font-size:.88rem; overflow-wrap:anywhere; }
+.account-panel-user small { color:#748197; font-size:.74rem; text-transform:capitalize; }
+.account-panel-school { padding:0 8px 10px; color:#718096; font-size:.74rem; overflow-wrap:anywhere; }
+.account-panel-links { display:grid; gap:3px; }
+.account-panel-links a,.account-panel-link,.account-signout {
+  display:flex; align-items:center; gap:10px; width:100%; min-height:40px; padding:8px 10px;
+  border:0; border-radius:9px; background:transparent; color:#3d4e65; text-decoration:none;
+  text-align:left; font:500 .82rem var(--sans); cursor:pointer;
+}
+.account-panel-links a:hover,.account-panel-link:hover { background:#f3f6fb; color:#234c86; text-decoration:none; }
+.account-panel-links a > span:first-child,.account-panel-link > span:first-child,.account-signout > span:first-child {
+  display:inline-grid; place-items:center; width:20px; color:#6681a8; font-size:16px;
+}
+.account-panel-links .badge { margin-left:auto; }
+.account-panel-divider { height:1px; margin:7px 2px; background:#e8edf3; }
+.account-signout { color:#a33d3d; }
+.account-signout:hover { background:#fff1f0; color:#922f2f; }
+.account-signout > span:first-child { color:#a33d3d; }
+.account-panel button:disabled { opacity:.55; cursor:wait; }
+
+/* Loading is a static brand hand-off: no orbit, spinner or animated progress line. */
+.boot-screen {
+  min-height:100svh; gap:13px; background:#f5f7fb !important;
+}
+.boot-logo-stage { width:76px !important; height:76px !important; }
+.boot-logo { width:54px !important; height:54px !important; animation:none !important; box-shadow:0 8px 24px rgba(49,95,174,.12) !important; }
+.boot-logo-glow,.boot-orbit,.boot-progress,.boot-message { display:none !important; animation:none !important; }
+.boot-brand { color:#40516a !important; font-size:.92rem; font-weight:600; letter-spacing:.01em; }
+@media (prefers-reduced-motion:reduce) {
+  .boot-screen,.boot-logo,.account-panel,.side,.tools-panel { animation:none !important; transition:none !important; }
+}
