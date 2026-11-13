@@ -34,9 +34,11 @@ export class PlatformDO extends DurableObject<Env> {
       for (const sql of SCHEMA) this.sql.exec(sql);
       const row = this.sql.exec('SELECT COUNT(*) AS n FROM plans').toArray()[0] as { n: number };
       if (!Number(row?.n)) {
-        const plans = [['trial',0,50,0,0,0.5,1,0],['starter',0,500,1000,10000,5,3,1],['growth',501,800,1500,15000,8,5,2],['large',801,1200,2000,20000,12,8,3],['xl',1201,2000,3000,30000,20,12,4],['custom',2001,1000000,0,0,50,50,5]];
+        const plans = [['trial',0,50,0,0,0.5,1000000,0],['starter',0,500,1000,10000,5,1000000,1],['growth',501,800,1500,15000,8,1000000,2],['large',801,1200,2000,20000,12,1000000,3],['xl',1201,2000,3000,30000,20,1000000,4],['custom',2001,1000000,0,0,50,1000000,5]];
         for (const p of plans) this.sql.exec('INSERT OR IGNORE INTO plans (tier,min_students,max_students,monthly,yearly,storage_gb,sub_admins,sort) VALUES (?,?,?,?,?,?,?,?)', ...p);
       }
+      // Existing platform databases are upgraded in place: Mini Admins are unlimited on every tier.
+      this.sql.exec('UPDATE plans SET sub_admins=1000000');
     });
   }
   private execute(s: Statement): Reply {
