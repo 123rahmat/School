@@ -1052,7 +1052,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (!validDate(effectiveFrom) || (effectiveTo && (!validDate(effectiveTo) || effectiveTo < effectiveFrom))) fail(400, 'Choose a valid effective date range.');
       const classRow = this.one('SELECT id FROM classes WHERE id=? AND active=1', classId);
       if (!classRow) fail(404, 'Active class not found');
-      const subject = this.one('SELECT id, subject FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      const subject = this.one('SELECT id, subject FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId)!;
       if (!subject) fail(400, 'Choose a subject belonging to this class');
       const teacher = this.one("SELECT id, name FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId);
       if (!teacher) fail(400, 'Choose an active teacher');
@@ -1095,7 +1095,7 @@ export class SchoolDO extends DurableObject<Env> {
       if (b.confirm !== true) fail(400, 'Confirm cancellation of this timetable period');
       const reason = String(b.reason || '').trim().slice(0, 500);
       if (!reason) fail(400, 'Enter a reason for cancelling this period');
-      const slot = this.one("SELECT * FROM class_timetable_slots WHERE id=? AND status='active'", c.req.param('id'));
+      const slot = this.one("SELECT * FROM class_timetable_slots WHERE id=? AND status='active'", c.req.param('id'))!;
       if (!slot) fail(404, 'Active timetable period not found');
       const changed = this.run("UPDATE class_timetable_slots SET status='cancelled', cancelled_by=?, cancelled_at=?, cancel_reason=? WHERE id=? AND status='active'",
         a.key, now(), reason, slot.id);
@@ -1205,7 +1205,7 @@ export class SchoolDO extends DurableObject<Env> {
       const b = await c.req.json<any>();
       if (b.confirm !== true) fail(400, 'Confirm this teacher assignment before saving');
       const classId = c.req.param('id'), subjectId = c.req.param('sid');
-      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId)!;
       if (!subject) fail(404, 'Subject not found in this class');
       const teacherId = String(b.teacher_id || '');
       if (!teacherId || !this.one("SELECT id FROM staff WHERE id=? AND active=1 AND role IN ('teacher','subadmin','admin')", teacherId)) fail(400, 'Choose an active teacher account');
@@ -1233,12 +1233,12 @@ export class SchoolDO extends DurableObject<Env> {
       if (b.confirm !== true) fail(400, 'Confirm ending this subject teacher assignment');
       const classId = c.req.param('id'), subjectId = c.req.param('sid'), assignmentId = c.req.param('aid');
       const today = pkt().date;
-      const assignment = this.one('SELECT * FROM class_subject_teacher_assignments WHERE id=? AND class_subject_id=? AND (to_date IS NULL OR to_date>=?)', assignmentId, subjectId, today);
+      const assignment = this.one('SELECT * FROM class_subject_teacher_assignments WHERE id=? AND class_subject_id=? AND (to_date IS NULL OR to_date>=?)', assignmentId, subjectId, today)!;
       if (!assignment) fail(404, 'Active subject teacher assignment not found');
       const toDate = String(b.to_date || today);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(toDate) || !Number.isFinite(Date.parse(toDate + 'T00:00:00Z')) || toDate < assignment.from_date) fail(400, 'Choose a valid end date on or after the assignment start date');
       this.run('UPDATE class_subject_teacher_assignments SET to_date=? WHERE id=?', toDate, assignmentId);
-      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId)!;
       if (subject) {
         this.run('UPDATE class_subject_history SET to_date=? WHERE class_id=? AND subject=? AND teacher_id=? AND (to_date IS NULL OR to_date>=?)',
           toDate, classId, subject.subject, assignment.teacher_id, today);
@@ -1254,7 +1254,7 @@ export class SchoolDO extends DurableObject<Env> {
       const a = c.get('actor'); this.requireFullAdmin(a);
       if (c.req.query('confirm') !== '1') fail(400, 'Confirm removal of this subject');
       const subjectId = c.req.param('sid'), classId = c.req.param('id');
-      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId);
+      const subject = this.one('SELECT * FROM class_subjects WHERE id=? AND class_id=?', subjectId, classId)!;
       if (!subject) fail(404, 'Subject not found');
       const today = pkt().date;
       this.tx(() => {
@@ -2109,7 +2109,7 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.patch('/notices/:id', async (c) => {
       const a = c.get('actor');
-      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id'));
+      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id'))!;
       if (!n || n.audience !== 'student') fail(404, 'Student notice not found');
       if (!this.canManageStudentNotice(a, n)) fail(403, 'Only the assigned class teacher, subject teacher or administrator can update this notice');
       const b = await c.req.json<any>();
@@ -2125,7 +2125,7 @@ export class SchoolDO extends DurableObject<Env> {
     });
     app.delete('/notices/:id', async (c) => {
       const a = c.get('actor');
-      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id')); if (!n) fail(404, 'Not found');
+      const n = this.one('SELECT * FROM notices WHERE id=? AND deleted_at IS NULL', c.req.param('id'))!; if (!n) fail(404, 'Not found');
       if (!this.canDeleteNotice(a, n!)) fail(403, 'You can remove only notices for classes you administer or notices you posted yourself');
       const b = await c.req.json<any>().catch(() => ({}));
       if (b.confirm !== true) fail(400, 'Confirm that you want to remove this notice');
