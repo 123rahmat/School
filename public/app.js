@@ -1466,7 +1466,7 @@ route('/classes', async () => {
     <div><label>Room</label><input name="room" value="${esc(c?.room)}"></div>
     <div><label>Class teacher</label><select name="class_teacher_id"><option value="">—</option>${staff.map((t) => `<option value="${t.id}" ${c?.class_teacher_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
     ${c ? `<div class="full stack"><h3>Subjects and teacher assignments</h3>${c.subjects.map((s) => `<div class="card stack"><div class="row between"><b>${esc(s.subject)}</b><a href="#" data-rm="${s.id}">Remove subject</a></div>
-        ${(s.teachers || []).map((t) => `<div class="row between small"><span>${esc(t.teacher_name)} · from ${fmtDate(t.from_date)}${t.to_date ? ' · ended ' + fmtDate(t.to_date) : ' · current'}</span>${t.to_date ? '' : `<button type="button" class="btn small danger" data-end-assignment="${esc(t.assignment_id)}" data-subject-id="${esc(s.id)}">End assignment</button>`}</div>`).join('') || '<p class="small muted">No teacher assigned yet.</p>'}
+        ${(s.teachers || []).map((t) => `<div class="row between small"><span>${esc(t.teacher_name)} · ${t.from_date > today() ? 'starts ' + fmtDate(t.from_date) : 'from ' + fmtDate(t.from_date)}${t.to_date ? (t.to_date >= today() ? ' · until ' + fmtDate(t.to_date) : ' · ended ' + fmtDate(t.to_date)) : ' · ongoing'}</span>${!t.to_date || t.to_date >= today() ? `<button type="button" class="btn small danger" data-end-assignment="${esc(t.assignment_id)}" data-subject-id="${esc(s.id)}">Set end date</button>` : ''}</div>`).join('') || '<p class="small muted">No teacher assigned yet.</p>'}
         <div class="row"><select data-teacher-for="${esc(s.id)}">${staff.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><input type="date" data-from-for="${esc(s.id)}" value="${today()}" aria-label="Assignment start date"><button type="button" class="btn small" data-add-assignment="${esc(s.id)}">Assign teacher</button></div>
       </div>`).join('')}
       <div class="row" style="margin-top:8px"><input id="subj" placeholder="New subject"><select id="subt"><option value="">No teacher yet</option>${staff.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select><button type="button" class="btn small" id="addsub">Add subject</button></div></div>` : ''}
@@ -1497,10 +1497,13 @@ route('/classes', async () => {
         if (!teacher_id || !from_date || !confirm('Assign this teacher to ' + c.name + ' from ' + fmtDate(from_date) + '?')) return;
         await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers`, { body: { teacher_id, from_date, confirm: true } }), 'Teacher assigned to subject'); render();
       });
-      $('[data-end-assignment]', m).forEach((button) => button.onclick = async () => {
+      $$('[data-end-assignment]', m).forEach((button) => button.onclick = async () => {
         const sid = button.dataset.subjectId, aid = button.dataset.endAssignment;
-        if (!confirm('End this teacher assignment from today? Its historical record will remain.')) return;
-        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers/${aid}/end`, { body: { to_date: today(), confirm: true } }), 'Subject teacher assignment ended'); closeModal(); render();
+        const endDate = prompt('Enter the last date this teacher should teach this subject (YYYY-MM-DD).', today());
+        if (!endDate) return;
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(endDate) || !Number.isFinite(Date.parse(endDate + 'T00:00:00Z'))) return toast('Enter a valid date in YYYY-MM-DD format.');
+        if (!confirm('End this teacher assignment after ' + fmtDate(endDate) + '? Its history will be retained.')) return;
+        await act(() => S(`/classes/${c.id}/subjects/${sid}/teachers/${aid}/end`, { body: { to_date: endDate, confirm: true } }), 'Subject teacher end date saved'); closeModal(); render();
       });
       $('[data-rm]', m).forEach((a) => a.onclick = async (e) => { e.preventDefault(); if (!confirm('Remove this subject? All teacher assignment history will remain.')) return; await act(() => S(`/classes/${c.id}/subjects/${a.dataset.rm}?confirm=1`, { method: 'DELETE' }), 'Removed'); closeModal(); render(); });
     }
